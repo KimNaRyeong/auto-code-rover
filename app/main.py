@@ -246,7 +246,7 @@ def add_task_related_args(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--model-temperature",
         type=float,
-        default=0.0,
+        default=0.2,
         help="The model temperature to use, for OpenAI models.",
     )
     parser.add_argument(
