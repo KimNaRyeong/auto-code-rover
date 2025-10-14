@@ -131,13 +131,13 @@ def run_one_task(task: Task, output_dir: str, model_names: Iterable[str]) -> boo
 
         logger.info("Overall retry {} failed; proceeding to next retry", idx)
 
-    logger.info("Starting patch selection")
+    # logger.info("Starting patch selection")
 
-    selected, details = select_patch(task, output_dir)
-    Path(output_dir, "selected_patch.json").write_text(json.dumps(details, indent=4))
+    # selected, details = select_patch(task, output_dir)
+    # Path(output_dir, "selected_patch.json").write_text(json.dumps(details, indent=4))
 
-    logger.info("Selected patch {}. Reason: {}", selected, details["reason"])
-
+    # logger.info("Selected patch {}. Reason: {}", selected, details["reason"])
+    logger.info("Search-only: skipping patch selection")
     return True
 
 
@@ -309,6 +309,9 @@ def _run_one_task(
     # logger.info("Additional class context code: {}", class_context_code)
     # done with search; dump the tool calls used for recording
     api_manager.search_manager.dump_tool_call_layers_to_file()
+
+    # ======== SEARCH-ONLY MODE ========
+    return True
 
     # Write patch
     print_banner("PATCH GENERATION")

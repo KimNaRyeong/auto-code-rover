@@ -401,7 +401,7 @@ def run_task_groups(
     if config.only_save_sbfl_result:
         log.print_with_time("Only saving SBFL results. Exiting.")
         return
-
+    print(organize_output)
     if organize_output:
         # post-process completed experiments to get input file to SWE-bench
         log.print_with_time("Post-processing completed experiment results.")
