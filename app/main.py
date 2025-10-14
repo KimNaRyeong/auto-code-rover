@@ -103,21 +103,27 @@ def main():
 
     subcommand = getattr(args, subparser_dest_attr_name)
     if subcommand == "swe-bench":
-        if args.result_analysis:
+        if args.result_analysis: # args.result_analysis: False
             # do analysis and exit
             result_analysis.analyze(config.output_dir)
             exit(0)
 
+        # args.task: None
+        # args.task_list_file: SWE-bench/tasks.txt
+        # args.setup_map: SWE-bench/setup_result/setup_map.json
+        # args.tasks_map: SWE-bench/setup_result/tasks_map.json
         tasks = make_swe_tasks(
             args.task, args.task_list_file, args.setup_map, args.tasks_map
-        )
+        ) # [RawSweTask(task_id, setup_info, task_info)]
 
         config.only_eval_reproducer = args.eval_reproducer
 
         config.reproduce_and_review = args.reproduce_and_review
 
-        groups = group_swe_tasks_by_env(tasks)
+        groups = group_swe_tasks_by_env(tasks) # The env information is in the setup_map.json, {key(env): [task1, task2, ...]}
+
         run_task_groups(groups, num_processes, organize_output=True)
+
     elif subcommand == "github-issue":
         setup_dir = args.setup_dir
         if setup_dir is not None:
@@ -246,7 +252,7 @@ def add_task_related_args(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--model-temperature",
         type=float,
-        default=0.0,
+        default=0.2,
         help="The model temperature to use, for OpenAI models.",
     )
     parser.add_argument(
@@ -318,6 +324,7 @@ def make_swe_tasks(
         all_task_ids = [task_id]
     if len(all_task_ids) == 0:
         raise ValueError("No task ids to run.")
+    # all_task_ids = ['django__django-11133']
 
     with open(setup_map_file) as f:
         setup_map = json.load(f)
@@ -369,7 +376,9 @@ def group_swe_tasks_by_env(tasks: list[RawSweTask]) -> dict[str, list[RawSweTask
         groups[key].append(task)
     return groups
 
-
+# task_groups: {env(key): [task1, task2, ...], ...}
+# num_processes: 1
+# organize_output: True
 def run_task_groups(
     task_groups: Mapping[str, Sequence[RawTask]],
     num_processes: int,
@@ -378,31 +387,33 @@ def run_task_groups(
     """
     Main entry for running tasks.
     """
+    # all_tasks: list of RawSweTasks
     all_tasks = list(chain.from_iterable(task_groups.values()))
     num_tasks = len(all_tasks)
 
-    task_counter.init_total_num_tasks(num_tasks)
+    task_counter.init_total_num_tasks(num_tasks) # updates the global variable for total_num_tasks
 
     # print some info about task
     log.print_with_time(f"Total number of tasks: {num_tasks}")
     log.print_with_time(f"Total number of processes: {num_processes}")
     log.print_with_time(f"Task group info: (number of groups: {len(task_groups)})")
     for key, tasks in task_groups.items():
-        log.print_with_time(f"\t{key}: {len(tasks)} tasks")
+        log.print_with_time(f"\t{key}: {len(tasks)} tasks") # key: env
 
     # single process mode
     if num_processes == 1:
         log.print_with_time("Running in single process mode.")
         run_tasks_serial(all_tasks)
         log.print_with_time("Finished all tasks sequentially.")
+        return
     else:
         run_task_groups_parallel(task_groups, num_processes)
 
     if config.only_save_sbfl_result:
         log.print_with_time("Only saving SBFL results. Exiting.")
         return
-
-    if organize_output:
+    
+    if organize_output: # True
         # post-process completed experiments to get input file to SWE-bench
         log.print_with_time("Post-processing completed experiment results.")
         swe_input_file = organize_and_form_input(config.output_dir)
@@ -472,16 +483,17 @@ def run_raw_task(task: RawTask) -> bool:
     Returns:
         Whether the task completed successfully.
     """
-    if config.only_eval_reproducer:
+    if config.only_eval_reproducer: # False
         assert isinstance(task, RawSweTask)
         evaluate_swe_issue_reproducers(task)
         return True
 
     task_id = task.task_id
-    start_time_s = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    start_time_s = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # 시간 기록
     task_output_dir = pjoin(config.output_dir, f"{task_id}_{start_time_s}")
     apputils.create_dir_if_not_exists(task_output_dir)
 
+    # save meta data (meta.json, problem_statement.txt, developer_patch.diff) app/output/{task_name}_{time} dir
     task.dump_meta_data(task_output_dir)
 
     log.log_and_always_print(
@@ -491,7 +503,7 @@ def run_raw_task(task: RawTask) -> bool:
     run_ok = False
 
     try:
-        run_ok = do_inference(task.to_task(), task_output_dir)
+        run_ok = do_inference(task.to_task(), task_output_dir) # task.to_task(): SWE_Task
 
         if run_ok:
             run_status_message = f"Task {task_id} completed successfully."
@@ -590,6 +602,7 @@ def do_inference(python_task: Task, task_output_dir: str) -> bool:
                 run_ok = inference.run_one_task(
                     python_task, task_output_dir, config.models
                 )
+                return
 
             except common.ClaudeContentPolicyViolation:
                 log.log_and_always_print(

@@ -349,7 +349,9 @@ def organize_experiment_results(expr_dir: str):
 
     # start organizing
     for extract_status in ExtractStatus:
+        # output_dir/{applicable_patch, matched_but_empty_origin, matched_but_empty_diff, raw_patch_bug_unmatched, raw_patch_but_unparsed, no_patch, is_valid_json, not_valid_json}
         os.makedirs(extract_status.to_dir_name(expr_dir), exist_ok=True)
+
 
     for task_dir in task_exp_dirs:
         extract_status, _ = read_extract_status(task_dir)

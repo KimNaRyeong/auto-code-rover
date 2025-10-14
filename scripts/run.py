@@ -121,7 +121,7 @@ def run_agent(
     Returns:
         - The input file for SWE-bench.
     """
-    setup_map_json = pjoin(setup_result_dir, "setup_map.json")
+    setup_map_json = pjoin(setup_result_dir, "setup_map.json") # /opt/SWE-bench/setup_result/setup_map.json
     tasks_map_json = pjoin(setup_result_dir, "tasks_map.json")
     if not os.path.exists(setup_map_json):
         raise FileNotFoundError(f"setup_map.json not found in {setup_result_dir}")
@@ -376,6 +376,8 @@ def main():
     model = [m for m in config_dict["model"].split() if m]
     temperature = float(config_dict["temperature"])
     selected_tasks_file = config_dict["selected_tasks_file"]
+
+    # read the value of enable_sbfl from DEFAULT section
     enable_sbfl = config.getboolean("DEFAULT", "enable_sbfl", fallback=False)
     enable_validation = config.getboolean(
         "DEFAULT", "enable_validation", fallback=False
@@ -389,32 +391,32 @@ def main():
     print_more = config.getboolean("DEFAULT", "print", fallback=False)
     num_processes = int(config_dict["num_processes"])
 
-    expr_dir = pjoin(overall_expr_dir, expr_id)
-    task_list_file_path = pjoin(expr_dir, os.path.basename(selected_tasks_file))
-    if not args.eval_only:
+    expr_dir = pjoin(overall_expr_dir, expr_id) # /opt/auto-code-rover/experiment/vanilla-lite
+    task_list_file_path = pjoin(expr_dir, os.path.basename(selected_tasks_file)) # /opt/auto-code-rover/experiment/vanilla-lite/swe_lite_tasks_try.txt
+    if not args.eval_only: # False
         create_fresh_dir(expr_dir)
     shutil.copy(selected_tasks_file, expr_dir)
 
-    script_dir = pdirname(os.path.realpath(__file__))
-    root_dir = pdirname(script_dir)  # root of this repo
+    script_dir = pdirname(os.path.realpath(__file__)) # /opt/auto-code-rover/scripts
+    root_dir = pdirname(script_dir)  # root of this repo = /opt/auto-code-rover
 
     if args.eval_only:
         swe_input_file = pjoin(expr_dir, "predictions_for_swebench.json")
     else:
         swe_input_file = run_agent(
-            root_dir,
-            setup_result_dir,
-            expr_dir,
-            task_list_file_path,
-            model,
-            temperature,
-            enable_sbfl,
-            enable_validation,
-            enable_angelic,
-            enable_perfect_angelic,
-            print_more,
-            conv_round_limit,
-            num_processes,
+            root_dir, # /opt/auto-code-rover
+            setup_result_dir, # /opt/SWE-bench/setup_result/
+            expr_dir, # /opt/auto-code-rover/experiment/vanilla-lite
+            task_list_file_path, # /opt/auto-code-rover/experiment/vanilla-lite/swe_lite_tasks_try.txt
+            model, # gpt-4-0125-preview
+            temperature, # 0.2
+            enable_sbfl, # false
+            enable_validation, # false
+            enable_angelic, # false
+            enable_perfect_angelic, # false
+            print_more, # true
+            conv_round_limit, # 10
+            num_processes, # 4
         )
 
     eval_start_time = datetime.now()

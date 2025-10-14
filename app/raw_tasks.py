@@ -74,6 +74,8 @@ class RawSweTask(RawTask):
             "setup_info": self.setup_info,
             "task_info": self.task_info,
         }
+        print(meta)
+        print(pjoin(output_dir, "meta.json"))
         with open(pjoin(output_dir, "meta.json"), "w") as f:
             json.dump(meta, f, indent=4)
         with open(pjoin(output_dir, "problem_statement.txt"), "w") as f:

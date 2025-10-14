@@ -108,7 +108,7 @@ def run_one_task(task: Task, output_dir: str, model_names: Iterable[str]) -> boo
     model_name_cycle = cycle(model_names)
 
     for idx in range(config.overall_retry_limit):
-        model_name = next(model_name_cycle)
+        model_name = next(model_name_cycle) # 
         set_model(model_name)
 
         logger.info("Starting overall retry {} with model {}", idx, model_name)
@@ -125,7 +125,7 @@ def run_one_task(task: Task, output_dir: str, model_names: Iterable[str]) -> boo
 
         api_manager = ProjectApiManager(task, str(out_dir))
 
-        if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()):
+        if _run_one_task(str(out_dir), api_manager, task.get_issue_statement()): # task.get_issue_statement: problem_statement in tasks_map.json
             logger.info("Overall retry {} succeeded; ending workflow", idx)
             break
 
