@@ -1,0 +1,1384 @@
+2025-10-15 12:32:30.270 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-15 12:32:32.947 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=563, output_tokens=12, cost=0.005990
+2025-10-15 12:32:50.090 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=743, output_tokens=648, cost=0.026870
+2025-10-15 12:32:51.085 | INFO     | registered non reproducing test 0
+2025-10-15 12:33:10.482 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1736, output_tokens=659, cost=0.037130
+2025-10-15 12:33:12.467 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-15 12:33:17.022 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=869, output_tokens=181, cost=0.014120
+2025-10-15 12:33:17.043 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-15 12:33:19.785 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=535, output_tokens=49, cost=0.006820
+2025-10-15 12:33:19.787 | DEBUG    | Extracted a valid json.
+2025-10-15 12:33:19.787 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"LinkChecker\")",
+        "search_method(\"check\")",
+        "search_code(\"anchor\")",
+        "search_code(\"fetch\")"
+    ],
+    "bug_locations": []
+}
+2025-10-15 12:33:19.899 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-15 12:33:19.899 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-15 12:33:33.557 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1696, output_tokens=601, cost=0.034990
+2025-10-15 12:33:33.564 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-15 12:33:38.145 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2513, output_tokens=188, cost=0.030770
+2025-10-15 12:33:38.149 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-15 12:33:45.882 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=542, output_tokens=203, cost=0.011510
+2025-10-15 12:33:45.883 | DEBUG    | Extracted a valid json.
+2025-10-15 12:33:45.883 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "sphinx/builders/linkcheck.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The code within `linkcheck.py` should correctly handle anchor parsing and matching in a way that is compatible with both GitHub's way of rendering reStructuredText documents (adding `user-content-` prefix to anchors) and traditional anchor naming. This implies the linkchecker logic should be robust enough to recognize and validate anchors in URLs regardless of whether they include the `user-content-` prefix or not. The existing functionality of checking links and anchors for correctness should be preserved while expanding its capability to understand and validate GitHub-specific anchor transformations. This could involve adding a pre-validation step or a normalization process for anchors before attempting to match them with targets in the checked document, ensuring compatibility with GitHub's anchor naming conventions without affecting its ability to validate other types of links and anchors."
+        }
+    ]
+}
+2025-10-15 12:33:45.888 | DEBUG    | Bug location extracted successfully: [<file>sphinx/builders/linkcheck.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.builders.linkcheck
+3     ~~~~~~~~~~~~~~~~~~~~~~~~~
+4 
+5     The CheckExternalLinksBuilder class.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import json
+12 import re
+13 import socket
+14 import time
+15 import warnings
+16 from datetime import datetime, timezone
+17 from email.utils import parsedate_to_datetime
+18 from html.parser import HTMLParser
+19 from os import path
+20 from queue import PriorityQueue, Queue
+21 from threading import Thread
+22 from typing import (Any, Dict, Generator, List, NamedTuple, Optional, Pattern, Set, Tuple,
+23                     Union, cast)
+24 from urllib.parse import unquote, urlparse
+25 
+26 from docutils import nodes
+27 from docutils.nodes import Element
+28 from requests import Response
+29 from requests.exceptions import HTTPError, TooManyRedirects
+30 
+31 from sphinx.application import Sphinx
+32 from sphinx.builders.dummy import DummyBuilder
+33 from sphinx.config import Config
+34 from sphinx.deprecation import RemovedInSphinx50Warning
+35 from sphinx.environment import BuildEnvironment
+36 from sphinx.locale import __
+37 from sphinx.transforms.post_transforms import SphinxPostTransform
+38 from sphinx.util import encode_uri, logging, requests
+39 from sphinx.util.console import darkgray, darkgreen, purple, red, turquoise  # type: ignore
+40 from sphinx.util.nodes import get_node_line
+41 
+42 logger = logging.getLogger(__name__)
+43 
+44 uri_re = re.compile('([a-z]+:)?//')  # matches to foo:// and // (a protocol relative URL)
+45 
+46 Hyperlink = NamedTuple('Hyperlink', (('uri', str),
+47                                      ('docname', str),
+48                                      ('lineno', Optional[int])))
+49 CheckRequest = NamedTuple('CheckRequest', (('next_check', float),
+50                                            ('hyperlink', Optional[Hyperlink])))
+51 CheckResult = NamedTuple('CheckResult', (('uri', str),
+52                                          ('docname', str),
+53                                          ('lineno', int),
+54                                          ('status', str),
+55                                          ('message', str),
+56                                          ('code', int)))
+57 RateLimit = NamedTuple('RateLimit', (('delay', float), ('next_check', float)))
+58 
+59 # Tuple is old styled CheckRequest
+60 CheckRequestType = Union[CheckRequest, Tuple[float, str, str, int]]
+61 
+62 DEFAULT_REQUEST_HEADERS = {
+63     'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+64 }
+65 CHECK_IMMEDIATELY = 0
+66 QUEUE_POLL_SECS = 1
+67 DEFAULT_DELAY = 60.0
+68 
+69 
+70 def node_line_or_0(node: Element) -> int:
+71     """
+72     PriorityQueue items must be comparable. The line number is part of the
+73     tuple used by the PriorityQueue, keep an homogeneous type for comparison.
+74     """
+75     warnings.warn('node_line_or_0() is deprecated.',
+76                   RemovedInSphinx50Warning, stacklevel=2)
+77     return get_node_line(node) or 0
+78 
+79 
+80 class AnchorCheckParser(HTMLParser):
+81     """Specialized HTML parser that looks for a specific anchor."""
+82 
+83     def __init__(self, search_anchor: str) -> None:
+84         super().__init__()
+85 
+86         self.search_anchor = search_anchor
+87         self.found = False
+88 
+89     def handle_starttag(self, tag: Any, attrs: Any) -> None:
+90         for key, value in attrs:
+91             if key in ('id', 'name') and value == self.search_anchor:
+92                 self.found = True
+93                 break
+94 
+95 
+96 def check_anchor(response: requests.requests.Response, anchor: str) -> bool:
+97     """Reads HTML data from a response object `response` searching for `anchor`.
+98     Returns True if anchor was found, False otherwise.
+99     """
+100     parser = AnchorCheckParser(anchor)
+101     # Read file in chunks. If we find a matching anchor, we break
+102     # the loop early in hopes not to have to download the whole thing.
+103     for chunk in response.iter_content(chunk_size=4096, decode_unicode=True):
+104         if isinstance(chunk, bytes):    # requests failed to decode
+105             chunk = chunk.decode()      # manually try to decode it
+106 
+107         parser.feed(chunk)
+108         if parser.found:
+109             break
+110     parser.close()
+111     return parser.found
+112 
+113 
+114 class CheckExternalLinksBuilder(DummyBuilder):
+115     """
+116     Checks for broken external links.
+117     """
+118     name = 'linkcheck'
+119     epilog = __('Look for any errors in the above output or in '
+120                 '%(outdir)s/output.txt')
+121 
+122     def init(self) -> None:
+123         self.hyperlinks: Dict[str, Hyperlink] = {}
+124         self._good: Set[str] = set()
+125         self._broken: Dict[str, str] = {}
+126         self._redirected: Dict[str, Tuple[str, int]] = {}
+127         # set a timeout for non-responding servers
+128         socket.setdefaulttimeout(5.0)
+129 
+130         # create queues and worker threads
+131         self._wqueue: PriorityQueue[CheckRequestType] = PriorityQueue()
+132         self._rqueue: Queue[CheckResult] = Queue()
+133 
+134     @property
+135     def anchors_ignore(self) -> List[Pattern]:
+136         warnings.warn(
+137             "%s.%s is deprecated." % (self.__class__.__name__, "anchors_ignore"),
+138             RemovedInSphinx50Warning,
+139             stacklevel=2,
+140         )
+141         return [re.compile(x) for x in self.config.linkcheck_anchors_ignore]
+142 
+143     @property
+144     def auth(self) -> List[Tuple[Pattern, Any]]:
+145         warnings.warn(
+146             "%s.%s is deprecated." % (self.__class__.__name__, "auth"),
+147             RemovedInSphinx50Warning,
+148             stacklevel=2,
+149         )
+150         return [(re.compile(pattern), auth_info) for pattern, auth_info
+151                 in self.config.linkcheck_auth]
+152 
+153     @property
+154     def to_ignore(self) -> List[Pattern]:
+155         warnings.warn(
+156             "%s.%s is deprecated." % (self.__class__.__name__, "to_ignore"),
+157             RemovedInSphinx50Warning,
+158             stacklevel=2,
+159         )
+160         return [re.compile(x) for x in self.config.linkcheck_ignore]
+161 
+162     @property
+163     def good(self) -> Set[str]:
+164         warnings.warn(
+165             "%s.%s is deprecated." % (self.__class__.__name__, "good"),
+166             RemovedInSphinx50Warning,
+167             stacklevel=2,
+168         )
+169         return self._good
+170 
+171     @property
+172     def broken(self) -> Dict[str, str]:
+173         warnings.warn(
+174             "%s.%s is deprecated." % (self.__class__.__name__, "broken"),
+175             RemovedInSphinx50Warning,
+176             stacklevel=2,
+177         )
+178         return self._broken
+179 
+180     @property
+181     def redirected(self) -> Dict[str, Tuple[str, int]]:
+182         warnings.warn(
+183             "%s.%s is deprecated." % (self.__class__.__name__, "redirected"),
+184             RemovedInSphinx50Warning,
+185             stacklevel=2,
+186         )
+187         return self._redirected
+188 
+189     def check_thread(self) -> None:
+190         warnings.warn(
+191             "%s.%s is deprecated." % (self.__class__.__name__, "check_thread"),
+192             RemovedInSphinx50Warning,
+193             stacklevel=2,
+194         )
+195         # do nothing.
+196 
+197     def limit_rate(self, response: Response) -> Optional[float]:
+198         warnings.warn(
+199             "%s.%s is deprecated." % (self.__class__.__name__, "limit_rate"),
+200             RemovedInSphinx50Warning,
+201             stacklevel=2,
+202         )
+203         worker = HyperlinkAvailabilityCheckWorker(self.env, self.config,
+204                                                   None, None, {})
+205         return worker.limit_rate(response)
+206 
+207     def rqueue(self, response: Response) -> Queue:
+208         warnings.warn(
+209             "%s.%s is deprecated." % (self.__class__.__name__, "rqueue"),
+210             RemovedInSphinx50Warning,
+211             stacklevel=2,
+212         )
+213         return self._rqueue
+214 
+215     def workers(self, response: Response) -> List[Thread]:
+216         warnings.warn(
+217             "%s.%s is deprecated." % (self.__class__.__name__, "workers"),
+218             RemovedInSphinx50Warning,
+219             stacklevel=2,
+220         )
+221         return []
+222 
+223     def wqueue(self, response: Response) -> Queue:
+224         warnings.warn(
+225             "%s.%s is deprecated." % (self.__class__.__name__, "wqueue"),
+226             RemovedInSphinx50Warning,
+227             stacklevel=2,
+228         )
+229         return self._wqueue
+230 
+231     def process_result(self, result: CheckResult) -> None:
+232         filename = self.env.doc2path(result.docname, None)
+233 
+234         linkstat = dict(filename=filename, lineno=result.lineno,
+235                         status=result.status, code=result.code, uri=result.uri,
+236                         info=result.message)
+237         self.write_linkstat(linkstat)
+238 
+239         if result.status == 'unchecked':
+240             return
+241         if result.status == 'working' and result.message == 'old':
+242             return
+243         if result.lineno:
+244             logger.info('(%16s: line %4d) ', result.docname, result.lineno, nonl=True)
+245         if result.status == 'ignored':
+246             if result.message:
+247                 logger.info(darkgray('-ignored- ') + result.uri + ': ' + result.message)
+248             else:
+249                 logger.info(darkgray('-ignored- ') + result.uri)
+250         elif result.status == 'local':
+251             logger.info(darkgray('-local-   ') + result.uri)
+252             self.write_entry('local', result.docname, filename, result.lineno, result.uri)
+253         elif result.status == 'working':
+254             logger.info(darkgreen('ok        ') + result.uri + result.message)
+255         elif result.status == 'broken':
+256             if self.app.quiet or self.app.warningiserror:
+257                 logger.warning(__('broken link: %s (%s)'), result.uri, result.message,
+258                                location=(filename, result.lineno))
+259             else:
+260                 logger.info(red('broken    ') + result.uri + red(' - ' + result.message))
+261             self.write_entry('broken', result.docname, filename, result.lineno,
+262                              result.uri + ': ' + result.message)
+263         elif result.status == 'redirected':
+264             try:
+265                 text, color = {
+266                     301: ('permanently', purple),
+267                     302: ('with Found', purple),
+268                     303: ('with See Other', purple),
+269                     307: ('temporarily', turquoise),
+270                     308: ('permanently', purple),
+271                 }[result.code]
+272             except KeyError:
+273                 text, color = ('with unknown code', purple)
+274             linkstat['text'] = text
+275             logger.info(color('redirect  ') + result.uri +
+276                         color(' - ' + text + ' to ' + result.message))
+277             self.write_entry('redirected ' + text, result.docname, filename,
+278                              result.lineno, result.uri + ' to ' + result.message)
+279         else:
+280             raise ValueError("Unknown status %s." % result.status)
+281 
+282     def write_entry(self, what: str, docname: str, filename: str, line: int,
+283                     uri: str) -> None:
+284         self.txt_outfile.write("%s:%s: [%s] %s\n" % (filename, line, what, uri))
+285 
+286     def write_linkstat(self, data: dict) -> None:
+287         self.json_outfile.write(json.dumps(data))
+288         self.json_outfile.write('\n')
+289 
+290     def finish(self) -> None:
+291         checker = HyperlinkAvailabilityChecker(self.env, self.config, self)
+292         logger.info('')
+293 
+294         with open(path.join(self.outdir, 'output.txt'), 'w') as self.txt_outfile,\
+295              open(path.join(self.outdir, 'output.json'), 'w') as self.json_outfile:
+296             for result in checker.check(self.hyperlinks):
+297                 self.process_result(result)
+298 
+299         if self._broken:
+300             self.app.statuscode = 1
+301 
+302 
+303 class HyperlinkAvailabilityChecker:
+304     def __init__(self, env: BuildEnvironment, config: Config,
+305                  builder: CheckExternalLinksBuilder = None) -> None:
+306         # Warning: builder argument will be removed in the sphinx-5.0.
+307         # Don't use it from extensions.
+308         # tag: RemovedInSphinx50Warning
+309         self.builder = builder
+310         self.config = config
+311         self.env = env
+312         self.rate_limits: Dict[str, RateLimit] = {}
+313         self.workers: List[Thread] = []
+314 
+315         self.to_ignore = [re.compile(x) for x in self.config.linkcheck_ignore]
+316 
+317         if builder:
+318             self.rqueue = builder._rqueue
+319             self.wqueue = builder._wqueue
+320         else:
+321             self.rqueue = Queue()
+322             self.wqueue = PriorityQueue()
+323 
+324     def invoke_threads(self) -> None:
+325         for i in range(self.config.linkcheck_workers):
+326             thread = HyperlinkAvailabilityCheckWorker(self.env, self.config,
+327                                                       self.rqueue, self.wqueue,
+328                                                       self.rate_limits, self.builder)
+329             thread.start()
+330             self.workers.append(thread)
+331 
+332     def shutdown_threads(self) -> None:
+333         self.wqueue.join()
+334         for worker in self.workers:
+335             self.wqueue.put(CheckRequest(CHECK_IMMEDIATELY, None), False)
+336 
+337     def check(self, hyperlinks: Dict[str, Hyperlink]) -> Generator[CheckResult, None, None]:
+338         self.invoke_threads()
+339 
+340         total_links = 0
+341         for hyperlink in hyperlinks.values():
+342             if self.is_ignored_uri(hyperlink.uri):
+343                 yield CheckResult(hyperlink.uri, hyperlink.docname, hyperlink.lineno,
+344                                   'ignored', '', 0)
+345             else:
+346                 self.wqueue.put(CheckRequest(CHECK_IMMEDIATELY, hyperlink), False)
+347                 total_links += 1
+348 
+349         done = 0
+350         while done < total_links:
+351             yield self.rqueue.get()
+352             done += 1
+353 
+354         self.shutdown_threads()
+355 
+356     def is_ignored_uri(self, uri: str) -> bool:
+357         return any(pat.match(uri) for pat in self.to_ignore)
+358 
+359 
+360 class HyperlinkAvailabilityCheckWorker(Thread):
+361     """A worker class for checking the availability of hyperlinks."""
+362 
+363     def __init__(self, env: BuildEnvironment, config: Config, rqueue: Queue,
+364                  wqueue: Queue, rate_limits: Dict[str, RateLimit],
+365                  builder: CheckExternalLinksBuilder = None) -> None:
+366         # Warning: builder argument will be removed in the sphinx-5.0.
+367         # Don't use it from extensions.
+368         # tag: RemovedInSphinx50Warning
+369         self.config = config
+370         self.env = env
+371         self.rate_limits = rate_limits
+372         self.rqueue = rqueue
+373         self.wqueue = wqueue
+374 
+375         self.anchors_ignore = [re.compile(x)
+376                                for x in self.config.linkcheck_anchors_ignore]
+377         self.auth = [(re.compile(pattern), auth_info) for pattern, auth_info
+378                      in self.config.linkcheck_auth]
+379 
+380         if builder:
+381             # if given, fill the result of checks as cache
+382             self._good = builder._good
+383             self._broken = builder._broken
+384             self._redirected = builder._redirected
+385         else:
+386             # only for compatibility. Will be removed in Sphinx-5.0
+387             self._good = set()
+388             self._broken = {}
+389             self._redirected = {}
+390 
+391         super().__init__(daemon=True)
+392 
+393     def run(self) -> None:
+394         kwargs = {}
+395         if self.config.linkcheck_timeout:
+396             kwargs['timeout'] = self.config.linkcheck_timeout
+397 
+398         def get_request_headers() -> Dict:
+399             url = urlparse(uri)
+400             candidates = ["%s://%s" % (url.scheme, url.netloc),
+401                           "%s://%s/" % (url.scheme, url.netloc),
+402                           uri,
+403                           "*"]
+404 
+405             for u in candidates:
+406                 if u in self.config.linkcheck_request_headers:
+407                     headers = dict(DEFAULT_REQUEST_HEADERS)
+408                     headers.update(self.config.linkcheck_request_headers[u])
+409                     return headers
+410 
+411             return {}
+412 
+413         def check_uri() -> Tuple[str, str, int]:
+414             # split off anchor
+415             if '#' in uri:
+416                 req_url, anchor = uri.split('#', 1)
+417                 for rex in self.anchors_ignore:
+418                     if rex.match(anchor):
+419                         anchor = None
+420                         break
+421             else:
+422                 req_url = uri
+423                 anchor = None
+424 
+425             # handle non-ASCII URIs
+426             try:
+427                 req_url.encode('ascii')
+428             except UnicodeError:
+429                 req_url = encode_uri(req_url)
+430 
+431             # Get auth info, if any
+432             for pattern, auth_info in self.auth:
+433                 if pattern.match(uri):
+434                     break
+435             else:
+436                 auth_info = None
+437 
+438             # update request headers for the URL
+439             kwargs['headers'] = get_request_headers()
+440 
+441             try:
+442                 if anchor and self.config.linkcheck_anchors:
+443                     # Read the whole document and see if #anchor exists
+444                     response = requests.get(req_url, stream=True, config=self.config,
+445                                             auth=auth_info, **kwargs)
+446                     response.raise_for_status()
+447                     found = check_anchor(response, unquote(anchor))
+448 
+449                     if not found:
+450                         raise Exception(__("Anchor '%s' not found") % anchor)
+451                 else:
+452                     try:
+453                         # try a HEAD request first, which should be easier on
+454                         # the server and the network
+455                         response = requests.head(req_url, allow_redirects=True,
+456                                                  config=self.config, auth=auth_info,
+457                                                  **kwargs)
+458                         response.raise_for_status()
+459                     except (HTTPError, TooManyRedirects) as err:
+460                         if isinstance(err, HTTPError) and err.response.status_code == 429:
+461                             raise
+462                         # retry with GET request if that fails, some servers
+463                         # don't like HEAD requests.
+464                         response = requests.get(req_url, stream=True,
+465                                                 config=self.config,
+466                                                 auth=auth_info, **kwargs)
+467                         response.raise_for_status()
+468             except HTTPError as err:
+469                 if err.response.status_code == 401:
+470                     # We'll take "Unauthorized" as working.
+471                     return 'working', ' - unauthorized', 0
+472                 elif err.response.status_code == 429:
+473                     next_check = self.limit_rate(err.response)
+474                     if next_check is not None:
+475                         self.wqueue.put(CheckRequest(next_check, hyperlink), False)
+476                         return 'rate-limited', '', 0
+477                     return 'broken', str(err), 0
+478                 elif err.response.status_code == 503:
+479                     # We'll take "Service Unavailable" as ignored.
+480                     return 'ignored', str(err), 0
+481                 else:
+482                     return 'broken', str(err), 0
+483             except Exception as err:
+484                 return 'broken', str(err), 0
+485             else:
+486                 netloc = urlparse(req_url).netloc
+487                 try:
+488                     del self.rate_limits[netloc]
+489                 except KeyError:
+490                     pass
+491             if response.url.rstrip('/') == req_url.rstrip('/'):
+492                 return 'working', '', 0
+493             else:
+494                 new_url = response.url
+495                 if anchor:
+496                     new_url += '#' + anchor
+497                 # history contains any redirects, get last
+498                 if response.history:
+499                     code = response.history[-1].status_code
+500                     return 'redirected', new_url, code
+501                 else:
+502                     return 'redirected', new_url, 0
+503 
+504         def check(docname: str) -> Tuple[str, str, int]:
+505             # check for various conditions without bothering the network
+506             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'tel:')):
+507                 return 'unchecked', '', 0
+508             elif not uri.startswith(('http:', 'https:')):
+509                 if uri_re.match(uri):
+510                     # non supported URI schemes (ex. ftp)
+511                     return 'unchecked', '', 0
+512                 else:
+513                     srcdir = path.dirname(self.env.doc2path(docname))
+514                     if path.exists(path.join(srcdir, uri)):
+515                         return 'working', '', 0
+516                     else:
+517                         self._broken[uri] = ''
+518                         return 'broken', '', 0
+519             elif uri in self._good:
+520                 return 'working', 'old', 0
+521             elif uri in self._broken:
+522                 return 'broken', self._broken[uri], 0
+523             elif uri in self._redirected:
+524                 return 'redirected', self._redirected[uri][0], self._redirected[uri][1]
+525 
+526             # need to actually check the URI
+527             for _ in range(self.config.linkcheck_retries):
+528                 status, info, code = check_uri()
+529                 if status != "broken":
+530                     break
+531 
+532             if status == "working":
+533                 self._good.add(uri)
+534             elif status == "broken":
+535                 self._broken[uri] = info
+536             elif status == "redirected":
+537                 self._redirected[uri] = (info, code)
+538 
+539             return (status, info, code)
+540 
+541         while True:
+542             check_request = self.wqueue.get()
+543             try:
+544                 next_check, hyperlink = check_request
+545                 if hyperlink is None:
+546                     break
+547 
+548                 uri, docname, lineno = hyperlink
+549             except ValueError:
+550                 # old styled check_request (will be deprecated in Sphinx-5.0)
+551                 next_check, uri, docname, lineno = check_request
+552 
+553             if uri is None:
+554                 break
+555             netloc = urlparse(uri).netloc
+556             try:
+557                 # Refresh rate limit.
+558                 # When there are many links in the queue, workers are all stuck waiting
+559                 # for responses, but the builder keeps queuing. Links in the queue may
+560                 # have been queued before rate limits were discovered.
+561                 next_check = self.rate_limits[netloc].next_check
+562             except KeyError:
+563                 pass
+564             if next_check > time.time():
+565                 # Sleep before putting message back in the queue to avoid
+566                 # waking up other threads.
+567                 time.sleep(QUEUE_POLL_SECS)
+568                 self.wqueue.put(CheckRequest(next_check, hyperlink), False)
+569                 self.wqueue.task_done()
+570                 continue
+571             status, info, code = check(docname)
+572             if status == 'rate-limited':
+573                 logger.info(darkgray('-rate limited-   ') + uri + darkgray(' | sleeping...'))
+574             else:
+575                 self.rqueue.put(CheckResult(uri, docname, lineno, status, info, code))
+576             self.wqueue.task_done()
+577 
+578     def limit_rate(self, response: Response) -> Optional[float]:
+579         next_check = None
+580         retry_after = response.headers.get("Retry-After")
+581         if retry_after:
+582             try:
+583                 # Integer: time to wait before next attempt.
+584                 delay = float(retry_after)
+585             except ValueError:
+586                 try:
+587                     # An HTTP-date: time of next attempt.
+588                     until = parsedate_to_datetime(retry_after)
+589                 except (TypeError, ValueError):
+590                     # TypeError: Invalid date format.
+591                     # ValueError: Invalid date, e.g. Oct 52th.
+592                     pass
+593                 else:
+594                     next_check = datetime.timestamp(until)
+595                     delay = (until - datetime.now(timezone.utc)).total_seconds()
+596             else:
+597                 next_check = time.time() + delay
+598         netloc = urlparse(response.url).netloc
+599         if next_check is None:
+600             max_delay = self.config.linkcheck_rate_limit_timeout
+601             try:
+602                 rate_limit = self.rate_limits[netloc]
+603             except KeyError:
+604                 delay = DEFAULT_DELAY
+605             else:
+606                 last_wait_time = rate_limit.delay
+607                 delay = 2.0 * last_wait_time
+608                 if delay > max_delay and last_wait_time < max_delay:
+609                     delay = max_delay
+610             if delay > max_delay:
+611                 return None
+612             next_check = time.time() + delay
+613         self.rate_limits[netloc] = RateLimit(delay, next_check)
+614         return next_check
+615 
+616 
+617 class HyperlinkCollector(SphinxPostTransform):
+618     builders = ('linkcheck',)
+619     default_priority = 800
+620 
+621     def run(self, **kwargs: Any) -> None:
+622         builder = cast(CheckExternalLinksBuilder, self.app.builder)
+623         hyperlinks = builder.hyperlinks
+624 
+625         # reference nodes
+626         for refnode in self.document.traverse(nodes.reference):
+627             if 'refuri' not in refnode:
+628                 continue
+629             uri = refnode['refuri']
+630             lineno = get_node_line(refnode)
+631             uri_info = Hyperlink(uri, self.env.docname, lineno)
+632             if uri not in hyperlinks:
+633                 hyperlinks[uri] = uri_info
+634 
+635         # image nodes
+636         for imgnode in self.document.traverse(nodes.image):
+637             uri = imgnode['candidates'].get('?')
+638             if uri and '://' in uri:
+639                 lineno = get_node_line(imgnode)
+640                 uri_info = Hyperlink(uri, self.env.docname, lineno)
+641                 if uri not in hyperlinks:
+642                     hyperlinks[uri] = uri_info
+643 
+644 
+645 def setup(app: Sphinx) -> Dict[str, Any]:
+646     app.add_builder(CheckExternalLinksBuilder)
+647     app.add_post_transform(HyperlinkCollector)
+648 
+649     app.add_config_value('linkcheck_ignore', [], None)
+650     app.add_config_value('linkcheck_auth', [], None)
+651     app.add_config_value('linkcheck_request_headers', {}, None)
+652     app.add_config_value('linkcheck_retries', 1, None)
+653     app.add_config_value('linkcheck_timeout', None, None, [int])
+654     app.add_config_value('linkcheck_workers', 5, None)
+655     app.add_config_value('linkcheck_anchors', True, None)
+656     # Anchors starting with ! are ignored since they are
+657     # commonly used for dynamic pages
+658     app.add_config_value('linkcheck_anchors_ignore', ["^!"], None)
+659     app.add_config_value('linkcheck_rate_limit_timeout', 300.0, None)
+660 
+661     return {
+662         'version': 'builtin',
+663         'parallel_read_safe': True,
+664         'parallel_write_safe': True,
+665     }
+
+</code><intended_behavior>The code within `linkcheck.py` should correctly handle anchor parsing and matching in a way that is compatible with both GitHub's way of rendering reStructuredText documents (adding `user-content-` prefix to anchors) and traditional anchor naming. This implies the linkchecker logic should be robust enough to recognize and validate anchors in URLs regardless of whether they include the `user-content-` prefix or not. The existing functionality of checking links and anchors for correctness should be preserved while expanding its capability to understand and validate GitHub-specific anchor transformations. This could involve adding a pre-validation step or a normalization process for anchors before attempting to match them with targets in the checked document, ensuring compatibility with GitHub's anchor naming conventions without affecting its ability to validate other types of links and anchors.</intended_behavior>]
+2025-10-15 12:33:45.888 | INFO     | Search completed. Bug locations: [<file>sphinx/builders/linkcheck.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.builders.linkcheck
+3     ~~~~~~~~~~~~~~~~~~~~~~~~~
+4 
+5     The CheckExternalLinksBuilder class.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import json
+12 import re
+13 import socket
+14 import time
+15 import warnings
+16 from datetime import datetime, timezone
+17 from email.utils import parsedate_to_datetime
+18 from html.parser import HTMLParser
+19 from os import path
+20 from queue import PriorityQueue, Queue
+21 from threading import Thread
+22 from typing import (Any, Dict, Generator, List, NamedTuple, Optional, Pattern, Set, Tuple,
+23                     Union, cast)
+24 from urllib.parse import unquote, urlparse
+25 
+26 from docutils import nodes
+27 from docutils.nodes import Element
+28 from requests import Response
+29 from requests.exceptions import HTTPError, TooManyRedirects
+30 
+31 from sphinx.application import Sphinx
+32 from sphinx.builders.dummy import DummyBuilder
+33 from sphinx.config import Config
+34 from sphinx.deprecation import RemovedInSphinx50Warning
+35 from sphinx.environment import BuildEnvironment
+36 from sphinx.locale import __
+37 from sphinx.transforms.post_transforms import SphinxPostTransform
+38 from sphinx.util import encode_uri, logging, requests
+39 from sphinx.util.console import darkgray, darkgreen, purple, red, turquoise  # type: ignore
+40 from sphinx.util.nodes import get_node_line
+41 
+42 logger = logging.getLogger(__name__)
+43 
+44 uri_re = re.compile('([a-z]+:)?//')  # matches to foo:// and // (a protocol relative URL)
+45 
+46 Hyperlink = NamedTuple('Hyperlink', (('uri', str),
+47                                      ('docname', str),
+48                                      ('lineno', Optional[int])))
+49 CheckRequest = NamedTuple('CheckRequest', (('next_check', float),
+50                                            ('hyperlink', Optional[Hyperlink])))
+51 CheckResult = NamedTuple('CheckResult', (('uri', str),
+52                                          ('docname', str),
+53                                          ('lineno', int),
+54                                          ('status', str),
+55                                          ('message', str),
+56                                          ('code', int)))
+57 RateLimit = NamedTuple('RateLimit', (('delay', float), ('next_check', float)))
+58 
+59 # Tuple is old styled CheckRequest
+60 CheckRequestType = Union[CheckRequest, Tuple[float, str, str, int]]
+61 
+62 DEFAULT_REQUEST_HEADERS = {
+63     'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+64 }
+65 CHECK_IMMEDIATELY = 0
+66 QUEUE_POLL_SECS = 1
+67 DEFAULT_DELAY = 60.0
+68 
+69 
+70 def node_line_or_0(node: Element) -> int:
+71     """
+72     PriorityQueue items must be comparable. The line number is part of the
+73     tuple used by the PriorityQueue, keep an homogeneous type for comparison.
+74     """
+75     warnings.warn('node_line_or_0() is deprecated.',
+76                   RemovedInSphinx50Warning, stacklevel=2)
+77     return get_node_line(node) or 0
+78 
+79 
+80 class AnchorCheckParser(HTMLParser):
+81     """Specialized HTML parser that looks for a specific anchor."""
+82 
+83     def __init__(self, search_anchor: str) -> None:
+84         super().__init__()
+85 
+86         self.search_anchor = search_anchor
+87         self.found = False
+88 
+89     def handle_starttag(self, tag: Any, attrs: Any) -> None:
+90         for key, value in attrs:
+91             if key in ('id', 'name') and value == self.search_anchor:
+92                 self.found = True
+93                 break
+94 
+95 
+96 def check_anchor(response: requests.requests.Response, anchor: str) -> bool:
+97     """Reads HTML data from a response object `response` searching for `anchor`.
+98     Returns True if anchor was found, False otherwise.
+99     """
+100     parser = AnchorCheckParser(anchor)
+101     # Read file in chunks. If we find a matching anchor, we break
+102     # the loop early in hopes not to have to download the whole thing.
+103     for chunk in response.iter_content(chunk_size=4096, decode_unicode=True):
+104         if isinstance(chunk, bytes):    # requests failed to decode
+105             chunk = chunk.decode()      # manually try to decode it
+106 
+107         parser.feed(chunk)
+108         if parser.found:
+109             break
+110     parser.close()
+111     return parser.found
+112 
+113 
+114 class CheckExternalLinksBuilder(DummyBuilder):
+115     """
+116     Checks for broken external links.
+117     """
+118     name = 'linkcheck'
+119     epilog = __('Look for any errors in the above output or in '
+120                 '%(outdir)s/output.txt')
+121 
+122     def init(self) -> None:
+123         self.hyperlinks: Dict[str, Hyperlink] = {}
+124         self._good: Set[str] = set()
+125         self._broken: Dict[str, str] = {}
+126         self._redirected: Dict[str, Tuple[str, int]] = {}
+127         # set a timeout for non-responding servers
+128         socket.setdefaulttimeout(5.0)
+129 
+130         # create queues and worker threads
+131         self._wqueue: PriorityQueue[CheckRequestType] = PriorityQueue()
+132         self._rqueue: Queue[CheckResult] = Queue()
+133 
+134     @property
+135     def anchors_ignore(self) -> List[Pattern]:
+136         warnings.warn(
+137             "%s.%s is deprecated." % (self.__class__.__name__, "anchors_ignore"),
+138             RemovedInSphinx50Warning,
+139             stacklevel=2,
+140         )
+141         return [re.compile(x) for x in self.config.linkcheck_anchors_ignore]
+142 
+143     @property
+144     def auth(self) -> List[Tuple[Pattern, Any]]:
+145         warnings.warn(
+146             "%s.%s is deprecated." % (self.__class__.__name__, "auth"),
+147             RemovedInSphinx50Warning,
+148             stacklevel=2,
+149         )
+150         return [(re.compile(pattern), auth_info) for pattern, auth_info
+151                 in self.config.linkcheck_auth]
+152 
+153     @property
+154     def to_ignore(self) -> List[Pattern]:
+155         warnings.warn(
+156             "%s.%s is deprecated." % (self.__class__.__name__, "to_ignore"),
+157             RemovedInSphinx50Warning,
+158             stacklevel=2,
+159         )
+160         return [re.compile(x) for x in self.config.linkcheck_ignore]
+161 
+162     @property
+163     def good(self) -> Set[str]:
+164         warnings.warn(
+165             "%s.%s is deprecated." % (self.__class__.__name__, "good"),
+166             RemovedInSphinx50Warning,
+167             stacklevel=2,
+168         )
+169         return self._good
+170 
+171     @property
+172     def broken(self) -> Dict[str, str]:
+173         warnings.warn(
+174             "%s.%s is deprecated." % (self.__class__.__name__, "broken"),
+175             RemovedInSphinx50Warning,
+176             stacklevel=2,
+177         )
+178         return self._broken
+179 
+180     @property
+181     def redirected(self) -> Dict[str, Tuple[str, int]]:
+182         warnings.warn(
+183             "%s.%s is deprecated." % (self.__class__.__name__, "redirected"),
+184             RemovedInSphinx50Warning,
+185             stacklevel=2,
+186         )
+187         return self._redirected
+188 
+189     def check_thread(self) -> None:
+190         warnings.warn(
+191             "%s.%s is deprecated." % (self.__class__.__name__, "check_thread"),
+192             RemovedInSphinx50Warning,
+193             stacklevel=2,
+194         )
+195         # do nothing.
+196 
+197     def limit_rate(self, response: Response) -> Optional[float]:
+198         warnings.warn(
+199             "%s.%s is deprecated." % (self.__class__.__name__, "limit_rate"),
+200             RemovedInSphinx50Warning,
+201             stacklevel=2,
+202         )
+203         worker = HyperlinkAvailabilityCheckWorker(self.env, self.config,
+204                                                   None, None, {})
+205         return worker.limit_rate(response)
+206 
+207     def rqueue(self, response: Response) -> Queue:
+208         warnings.warn(
+209             "%s.%s is deprecated." % (self.__class__.__name__, "rqueue"),
+210             RemovedInSphinx50Warning,
+211             stacklevel=2,
+212         )
+213         return self._rqueue
+214 
+215     def workers(self, response: Response) -> List[Thread]:
+216         warnings.warn(
+217             "%s.%s is deprecated." % (self.__class__.__name__, "workers"),
+218             RemovedInSphinx50Warning,
+219             stacklevel=2,
+220         )
+221         return []
+222 
+223     def wqueue(self, response: Response) -> Queue:
+224         warnings.warn(
+225             "%s.%s is deprecated." % (self.__class__.__name__, "wqueue"),
+226             RemovedInSphinx50Warning,
+227             stacklevel=2,
+228         )
+229         return self._wqueue
+230 
+231     def process_result(self, result: CheckResult) -> None:
+232         filename = self.env.doc2path(result.docname, None)
+233 
+234         linkstat = dict(filename=filename, lineno=result.lineno,
+235                         status=result.status, code=result.code, uri=result.uri,
+236                         info=result.message)
+237         self.write_linkstat(linkstat)
+238 
+239         if result.status == 'unchecked':
+240             return
+241         if result.status == 'working' and result.message == 'old':
+242             return
+243         if result.lineno:
+244             logger.info('(%16s: line %4d) ', result.docname, result.lineno, nonl=True)
+245         if result.status == 'ignored':
+246             if result.message:
+247                 logger.info(darkgray('-ignored- ') + result.uri + ': ' + result.message)
+248             else:
+249                 logger.info(darkgray('-ignored- ') + result.uri)
+250         elif result.status == 'local':
+251             logger.info(darkgray('-local-   ') + result.uri)
+252             self.write_entry('local', result.docname, filename, result.lineno, result.uri)
+253         elif result.status == 'working':
+254             logger.info(darkgreen('ok        ') + result.uri + result.message)
+255         elif result.status == 'broken':
+256             if self.app.quiet or self.app.warningiserror:
+257                 logger.warning(__('broken link: %s (%s)'), result.uri, result.message,
+258                                location=(filename, result.lineno))
+259             else:
+260                 logger.info(red('broken    ') + result.uri + red(' - ' + result.message))
+261             self.write_entry('broken', result.docname, filename, result.lineno,
+262                              result.uri + ': ' + result.message)
+263         elif result.status == 'redirected':
+264             try:
+265                 text, color = {
+266                     301: ('permanently', purple),
+267                     302: ('with Found', purple),
+268                     303: ('with See Other', purple),
+269                     307: ('temporarily', turquoise),
+270                     308: ('permanently', purple),
+271                 }[result.code]
+272             except KeyError:
+273                 text, color = ('with unknown code', purple)
+274             linkstat['text'] = text
+275             logger.info(color('redirect  ') + result.uri +
+276                         color(' - ' + text + ' to ' + result.message))
+277             self.write_entry('redirected ' + text, result.docname, filename,
+278                              result.lineno, result.uri + ' to ' + result.message)
+279         else:
+280             raise ValueError("Unknown status %s." % result.status)
+281 
+282     def write_entry(self, what: str, docname: str, filename: str, line: int,
+283                     uri: str) -> None:
+284         self.txt_outfile.write("%s:%s: [%s] %s\n" % (filename, line, what, uri))
+285 
+286     def write_linkstat(self, data: dict) -> None:
+287         self.json_outfile.write(json.dumps(data))
+288         self.json_outfile.write('\n')
+289 
+290     def finish(self) -> None:
+291         checker = HyperlinkAvailabilityChecker(self.env, self.config, self)
+292         logger.info('')
+293 
+294         with open(path.join(self.outdir, 'output.txt'), 'w') as self.txt_outfile,\
+295              open(path.join(self.outdir, 'output.json'), 'w') as self.json_outfile:
+296             for result in checker.check(self.hyperlinks):
+297                 self.process_result(result)
+298 
+299         if self._broken:
+300             self.app.statuscode = 1
+301 
+302 
+303 class HyperlinkAvailabilityChecker:
+304     def __init__(self, env: BuildEnvironment, config: Config,
+305                  builder: CheckExternalLinksBuilder = None) -> None:
+306         # Warning: builder argument will be removed in the sphinx-5.0.
+307         # Don't use it from extensions.
+308         # tag: RemovedInSphinx50Warning
+309         self.builder = builder
+310         self.config = config
+311         self.env = env
+312         self.rate_limits: Dict[str, RateLimit] = {}
+313         self.workers: List[Thread] = []
+314 
+315         self.to_ignore = [re.compile(x) for x in self.config.linkcheck_ignore]
+316 
+317         if builder:
+318             self.rqueue = builder._rqueue
+319             self.wqueue = builder._wqueue
+320         else:
+321             self.rqueue = Queue()
+322             self.wqueue = PriorityQueue()
+323 
+324     def invoke_threads(self) -> None:
+325         for i in range(self.config.linkcheck_workers):
+326             thread = HyperlinkAvailabilityCheckWorker(self.env, self.config,
+327                                                       self.rqueue, self.wqueue,
+328                                                       self.rate_limits, self.builder)
+329             thread.start()
+330             self.workers.append(thread)
+331 
+332     def shutdown_threads(self) -> None:
+333         self.wqueue.join()
+334         for worker in self.workers:
+335             self.wqueue.put(CheckRequest(CHECK_IMMEDIATELY, None), False)
+336 
+337     def check(self, hyperlinks: Dict[str, Hyperlink]) -> Generator[CheckResult, None, None]:
+338         self.invoke_threads()
+339 
+340         total_links = 0
+341         for hyperlink in hyperlinks.values():
+342             if self.is_ignored_uri(hyperlink.uri):
+343                 yield CheckResult(hyperlink.uri, hyperlink.docname, hyperlink.lineno,
+344                                   'ignored', '', 0)
+345             else:
+346                 self.wqueue.put(CheckRequest(CHECK_IMMEDIATELY, hyperlink), False)
+347                 total_links += 1
+348 
+349         done = 0
+350         while done < total_links:
+351             yield self.rqueue.get()
+352             done += 1
+353 
+354         self.shutdown_threads()
+355 
+356     def is_ignored_uri(self, uri: str) -> bool:
+357         return any(pat.match(uri) for pat in self.to_ignore)
+358 
+359 
+360 class HyperlinkAvailabilityCheckWorker(Thread):
+361     """A worker class for checking the availability of hyperlinks."""
+362 
+363     def __init__(self, env: BuildEnvironment, config: Config, rqueue: Queue,
+364                  wqueue: Queue, rate_limits: Dict[str, RateLimit],
+365                  builder: CheckExternalLinksBuilder = None) -> None:
+366         # Warning: builder argument will be removed in the sphinx-5.0.
+367         # Don't use it from extensions.
+368         # tag: RemovedInSphinx50Warning
+369         self.config = config
+370         self.env = env
+371         self.rate_limits = rate_limits
+372         self.rqueue = rqueue
+373         self.wqueue = wqueue
+374 
+375         self.anchors_ignore = [re.compile(x)
+376                                for x in self.config.linkcheck_anchors_ignore]
+377         self.auth = [(re.compile(pattern), auth_info) for pattern, auth_info
+378                      in self.config.linkcheck_auth]
+379 
+380         if builder:
+381             # if given, fill the result of checks as cache
+382             self._good = builder._good
+383             self._broken = builder._broken
+384             self._redirected = builder._redirected
+385         else:
+386             # only for compatibility. Will be removed in Sphinx-5.0
+387             self._good = set()
+388             self._broken = {}
+389             self._redirected = {}
+390 
+391         super().__init__(daemon=True)
+392 
+393     def run(self) -> None:
+394         kwargs = {}
+395         if self.config.linkcheck_timeout:
+396             kwargs['timeout'] = self.config.linkcheck_timeout
+397 
+398         def get_request_headers() -> Dict:
+399             url = urlparse(uri)
+400             candidates = ["%s://%s" % (url.scheme, url.netloc),
+401                           "%s://%s/" % (url.scheme, url.netloc),
+402                           uri,
+403                           "*"]
+404 
+405             for u in candidates:
+406                 if u in self.config.linkcheck_request_headers:
+407                     headers = dict(DEFAULT_REQUEST_HEADERS)
+408                     headers.update(self.config.linkcheck_request_headers[u])
+409                     return headers
+410 
+411             return {}
+412 
+413         def check_uri() -> Tuple[str, str, int]:
+414             # split off anchor
+415             if '#' in uri:
+416                 req_url, anchor = uri.split('#', 1)
+417                 for rex in self.anchors_ignore:
+418                     if rex.match(anchor):
+419                         anchor = None
+420                         break
+421             else:
+422                 req_url = uri
+423                 anchor = None
+424 
+425             # handle non-ASCII URIs
+426             try:
+427                 req_url.encode('ascii')
+428             except UnicodeError:
+429                 req_url = encode_uri(req_url)
+430 
+431             # Get auth info, if any
+432             for pattern, auth_info in self.auth:
+433                 if pattern.match(uri):
+434                     break
+435             else:
+436                 auth_info = None
+437 
+438             # update request headers for the URL
+439             kwargs['headers'] = get_request_headers()
+440 
+441             try:
+442                 if anchor and self.config.linkcheck_anchors:
+443                     # Read the whole document and see if #anchor exists
+444                     response = requests.get(req_url, stream=True, config=self.config,
+445                                             auth=auth_info, **kwargs)
+446                     response.raise_for_status()
+447                     found = check_anchor(response, unquote(anchor))
+448 
+449                     if not found:
+450                         raise Exception(__("Anchor '%s' not found") % anchor)
+451                 else:
+452                     try:
+453                         # try a HEAD request first, which should be easier on
+454                         # the server and the network
+455                         response = requests.head(req_url, allow_redirects=True,
+456                                                  config=self.config, auth=auth_info,
+457                                                  **kwargs)
+458                         response.raise_for_status()
+459                     except (HTTPError, TooManyRedirects) as err:
+460                         if isinstance(err, HTTPError) and err.response.status_code == 429:
+461                             raise
+462                         # retry with GET request if that fails, some servers
+463                         # don't like HEAD requests.
+464                         response = requests.get(req_url, stream=True,
+465                                                 config=self.config,
+466                                                 auth=auth_info, **kwargs)
+467                         response.raise_for_status()
+468             except HTTPError as err:
+469                 if err.response.status_code == 401:
+470                     # We'll take "Unauthorized" as working.
+471                     return 'working', ' - unauthorized', 0
+472                 elif err.response.status_code == 429:
+473                     next_check = self.limit_rate(err.response)
+474                     if next_check is not None:
+475                         self.wqueue.put(CheckRequest(next_check, hyperlink), False)
+476                         return 'rate-limited', '', 0
+477                     return 'broken', str(err), 0
+478                 elif err.response.status_code == 503:
+479                     # We'll take "Service Unavailable" as ignored.
+480                     return 'ignored', str(err), 0
+481                 else:
+482                     return 'broken', str(err), 0
+483             except Exception as err:
+484                 return 'broken', str(err), 0
+485             else:
+486                 netloc = urlparse(req_url).netloc
+487                 try:
+488                     del self.rate_limits[netloc]
+489                 except KeyError:
+490                     pass
+491             if response.url.rstrip('/') == req_url.rstrip('/'):
+492                 return 'working', '', 0
+493             else:
+494                 new_url = response.url
+495                 if anchor:
+496                     new_url += '#' + anchor
+497                 # history contains any redirects, get last
+498                 if response.history:
+499                     code = response.history[-1].status_code
+500                     return 'redirected', new_url, code
+501                 else:
+502                     return 'redirected', new_url, 0
+503 
+504         def check(docname: str) -> Tuple[str, str, int]:
+505             # check for various conditions without bothering the network
+506             if len(uri) == 0 or uri.startswith(('#', 'mailto:', 'tel:')):
+507                 return 'unchecked', '', 0
+508             elif not uri.startswith(('http:', 'https:')):
+509                 if uri_re.match(uri):
+510                     # non supported URI schemes (ex. ftp)
+511                     return 'unchecked', '', 0
+512                 else:
+513                     srcdir = path.dirname(self.env.doc2path(docname))
+514                     if path.exists(path.join(srcdir, uri)):
+515                         return 'working', '', 0
+516                     else:
+517                         self._broken[uri] = ''
+518                         return 'broken', '', 0
+519             elif uri in self._good:
+520                 return 'working', 'old', 0
+521             elif uri in self._broken:
+522                 return 'broken', self._broken[uri], 0
+523             elif uri in self._redirected:
+524                 return 'redirected', self._redirected[uri][0], self._redirected[uri][1]
+525 
+526             # need to actually check the URI
+527             for _ in range(self.config.linkcheck_retries):
+528                 status, info, code = check_uri()
+529                 if status != "broken":
+530                     break
+531 
+532             if status == "working":
+533                 self._good.add(uri)
+534             elif status == "broken":
+535                 self._broken[uri] = info
+536             elif status == "redirected":
+537                 self._redirected[uri] = (info, code)
+538 
+539             return (status, info, code)
+540 
+541         while True:
+542             check_request = self.wqueue.get()
+543             try:
+544                 next_check, hyperlink = check_request
+545                 if hyperlink is None:
+546                     break
+547 
+548                 uri, docname, lineno = hyperlink
+549             except ValueError:
+550                 # old styled check_request (will be deprecated in Sphinx-5.0)
+551                 next_check, uri, docname, lineno = check_request
+552 
+553             if uri is None:
+554                 break
+555             netloc = urlparse(uri).netloc
+556             try:
+557                 # Refresh rate limit.
+558                 # When there are many links in the queue, workers are all stuck waiting
+559                 # for responses, but the builder keeps queuing. Links in the queue may
+560                 # have been queued before rate limits were discovered.
+561                 next_check = self.rate_limits[netloc].next_check
+562             except KeyError:
+563                 pass
+564             if next_check > time.time():
+565                 # Sleep before putting message back in the queue to avoid
+566                 # waking up other threads.
+567                 time.sleep(QUEUE_POLL_SECS)
+568                 self.wqueue.put(CheckRequest(next_check, hyperlink), False)
+569                 self.wqueue.task_done()
+570                 continue
+571             status, info, code = check(docname)
+572             if status == 'rate-limited':
+573                 logger.info(darkgray('-rate limited-   ') + uri + darkgray(' | sleeping...'))
+574             else:
+575                 self.rqueue.put(CheckResult(uri, docname, lineno, status, info, code))
+576             self.wqueue.task_done()
+577 
+578     def limit_rate(self, response: Response) -> Optional[float]:
+579         next_check = None
+580         retry_after = response.headers.get("Retry-After")
+581         if retry_after:
+582             try:
+583                 # Integer: time to wait before next attempt.
+584                 delay = float(retry_after)
+585             except ValueError:
+586                 try:
+587                     # An HTTP-date: time of next attempt.
+588                     until = parsedate_to_datetime(retry_after)
+589                 except (TypeError, ValueError):
+590                     # TypeError: Invalid date format.
+591                     # ValueError: Invalid date, e.g. Oct 52th.
+592                     pass
+593                 else:
+594                     next_check = datetime.timestamp(until)
+595                     delay = (until - datetime.now(timezone.utc)).total_seconds()
+596             else:
+597                 next_check = time.time() + delay
+598         netloc = urlparse(response.url).netloc
+599         if next_check is None:
+600             max_delay = self.config.linkcheck_rate_limit_timeout
+601             try:
+602                 rate_limit = self.rate_limits[netloc]
+603             except KeyError:
+604                 delay = DEFAULT_DELAY
+605             else:
+606                 last_wait_time = rate_limit.delay
+607                 delay = 2.0 * last_wait_time
+608                 if delay > max_delay and last_wait_time < max_delay:
+609                     delay = max_delay
+610             if delay > max_delay:
+611                 return None
+612             next_check = time.time() + delay
+613         self.rate_limits[netloc] = RateLimit(delay, next_check)
+614         return next_check
+615 
+616 
+617 class HyperlinkCollector(SphinxPostTransform):
+618     builders = ('linkcheck',)
+619     default_priority = 800
+620 
+621     def run(self, **kwargs: Any) -> None:
+622         builder = cast(CheckExternalLinksBuilder, self.app.builder)
+623         hyperlinks = builder.hyperlinks
+624 
+625         # reference nodes
+626         for refnode in self.document.traverse(nodes.reference):
+627             if 'refuri' not in refnode:
+628                 continue
+629             uri = refnode['refuri']
+630             lineno = get_node_line(refnode)
+631             uri_info = Hyperlink(uri, self.env.docname, lineno)
+632             if uri not in hyperlinks:
+633                 hyperlinks[uri] = uri_info
+634 
+635         # image nodes
+636         for imgnode in self.document.traverse(nodes.image):
+637             uri = imgnode['candidates'].get('?')
+638             if uri and '://' in uri:
+639                 lineno = get_node_line(imgnode)
+640                 uri_info = Hyperlink(uri, self.env.docname, lineno)
+641                 if uri not in hyperlinks:
+642                     hyperlinks[uri] = uri_info
+643 
+644 
+645 def setup(app: Sphinx) -> Dict[str, Any]:
+646     app.add_builder(CheckExternalLinksBuilder)
+647     app.add_post_transform(HyperlinkCollector)
+648 
+649     app.add_config_value('linkcheck_ignore', [], None)
+650     app.add_config_value('linkcheck_auth', [], None)
+651     app.add_config_value('linkcheck_request_headers', {}, None)
+652     app.add_config_value('linkcheck_retries', 1, None)
+653     app.add_config_value('linkcheck_timeout', None, None, [int])
+654     app.add_config_value('linkcheck_workers', 5, None)
+655     app.add_config_value('linkcheck_anchors', True, None)
+656     # Anchors starting with ! are ignored since they are
+657     # commonly used for dynamic pages
+658     app.add_config_value('linkcheck_anchors_ignore', ["^!"], None)
+659     app.add_config_value('linkcheck_rate_limit_timeout', 300.0, None)
+660 
+661     return {
+662         'version': 'builtin',
+663         'parallel_read_safe': True,
+664         'parallel_write_safe': True,
+665     }
+
+</code><intended_behavior>The code within `linkcheck.py` should correctly handle anchor parsing and matching in a way that is compatible with both GitHub's way of rendering reStructuredText documents (adding `user-content-` prefix to anchors) and traditional anchor naming. This implies the linkchecker logic should be robust enough to recognize and validate anchors in URLs regardless of whether they include the `user-content-` prefix or not. The existing functionality of checking links and anchors for correctness should be preserved while expanding its capability to understand and validate GitHub-specific anchor transformations. This could involve adding a pre-validation step or a normalization process for anchors before attempting to match them with targets in the checked document, ensuring compatibility with GitHub's anchor naming conventions without affecting its ability to validate other types of links and anchors.</intended_behavior>]
+2025-10-15 12:33:45.888 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-15 12:33:45.888 | INFO     | Search-only: skipping patch selection
+2025-10-15 12:33:46.009 | INFO     | Task sphinx-doc__sphinx-9260 completed successfully.
+2025-10-15 12:33:46.010 | INFO     | No patch generated. You can try running ACR again.
