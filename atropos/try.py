@@ -1,26 +1,25 @@
-def run_with_retries(text: str, retries=5) -> tuple[str | None, list[MessageThread]]:
-    msg_threads = []
-    for idx in range(1, retries + 1):
-        logger.debug(
-            "Trying to convert API calls/bug locations into json. Try {} of {}.",
-            idx,
-            retries,
-        )
+import os, json
 
-        res_text, new_thread = run(text)
-        msg_threads.append(new_thread)
+def search_instance_with_two_fl(result_dir): # search in the applicable_patch dir in result_dir
+    instance_list = os.listdir(os.path.join(result_dir, 'applicable_patch'))
+    for instance_dir in instance_list:
+        file_list = os.listdir(os.path.join(result_dir, "applicable_patch", instance_dir))
 
-        extract_status, data = is_valid_json(res_text)
+        max_idx = -1
+        for file in file_list:
+            if file.startswith('conversation_round_'):
+                idx = int(file.split('_')[-1].removesuffix('.json'))
+                if idx > max_idx:
+                    max_idx = idx
+        
+        if max_idx >= 0:
+            last_conversation_file = os.path.join(result_dir, 'applicable_patch', instance_dir, f'conversation_round_{max_idx}.json')
+            with open(last_conversation_file, 'r') as f:
+                last_conversation = json.load(f)
+        
+        final_fl_response = last_conversation[-1]["content"]
+        if "Found 2 methods with name " in final_fl_response:
+            print(instance_dir)
 
-        if extract_status != ExtractStatus.IS_VALID_JSON:
-            logger.debug("Invalid json. Will retry.")
-            continue
+search_instance_with_two_fl('../results/acr-run-1')
 
-        valid, diagnosis = is_valid_response(data)
-        if not valid:
-            logger.debug(f"{diagnosis}. Will retry.")
-            continue
-
-        logger.debug("Extracted a valid json.")
-        return res_text, msg_threads
-    return None, msg_threads

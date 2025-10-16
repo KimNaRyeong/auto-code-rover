@@ -1,6 +1,7 @@
 import json
 import re
 import os
+from typing import List, Dict, Optional
 
 def extract_hunks_from_diff(diff_file_path):
     hunk_dict = dict()
@@ -81,19 +82,103 @@ def extract_modificaiton_from_hunk(hunk_dict):
     return modif_dict
 
 
+import re
+
+def extract_search_results(text: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Extract 'Search result N:' blocks and pull out <file>, <class>, and <func>/<function>.
+    If <class> or <func> is missing, set it to None.
+    """
+    # 찾을 블록의 시작 위치들
+    header_pat = re.compile(r"Search result\s+\d+:\s*", re.IGNORECASE)
+    matches = list(header_pat.finditer(text))
+
+    # 블록 경계 계산
+    blocks = []
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        blocks.append(text[start:end])
+
+    results: List[Dict[str, Optional[str]]] = []
+    for block in blocks:
+        # 각 태그는 선택적으로 존재 → 없으면 None
+        file_m = re.search(r"<file>(.*?)</file>", block, flags=re.DOTALL | re.IGNORECASE)
+        class_m = re.search(r"<class>(.*?)</class>", block, flags=re.DOTALL | re.IGNORECASE)
+        func_m  = re.search(r"<(?:func|function)>(.*?)</(?:func|function)>",
+                            block, flags=re.DOTALL | re.IGNORECASE)
+
+        file_val  = file_m.group(1).strip()  if file_m  else None
+        class_val = class_m.group(1).strip() if class_m else None
+        func_val  = func_m.group(1).strip()  if func_m  else None
+
+        results.append({
+            "file": file_val,
+            "class": class_val,
+            "func": func_val,
+        })
+
+    return results
+
+def save_bug_locations():
+    with open('./sampled_tasks.txt', 'r') as f:
+        sampled_tasks = f.read().splitlines()
+    # sampled_tasks = ['astropy__astropy-14413']
+
+    exists_result_dirs = ['acr-run-1', 'acr-run-2', 'acr-run-3']
+    sub_dirs = ['applicable_patch', 'matched_but_empty_diff', 'matched_but_empty_origin', 'raw_patch_but_unmatched', 'raw_patch_but_unparsed']
+
+    for result_dir in exists_result_dirs:
+        matched_task = []
+        for task in sampled_tasks:
+            # print(task)
+            num_match = 0
+            for sub_dir in sub_dirs:
+                dir_path = os.path.join('../results', result_dir, sub_dir)
+                # print(dir_path)
+                if os.path.exists(dir_path):
+                    results_list = os.listdir(dir_path)
+                    for instance_result in results_list:
+                        if instance_result.startswith(task):
+                            num_match += 1
             
-# def evaluate_fl_result(diff_path):
+            if num_match == 1:
+                matched_task.append(task)
+        print('----------------')
+        print(result_dir)
+        print(len(matched_task))
+        print(matched_task)
+    
+    for result_dir in exists_result_dirs:
+        instances = []
+        for sub_dir in sub_dirs:
+            dir_path = os.path.join('../results', result_dir, sub_dir)
+            # print(dir_path)
+            if os.path.exists(dir_path):
+                results_list = os.listdir(dir_path)
+                instances.extend(results_list)
+        
+        print(len(instances))
+            
+
+
+
+# --- example usage ---
+if __name__ == "__main__":
+    save_bug_locations()
+    
+
 
             
 
 
-hunk_dict = extract_hunks_from_diff('/home/kimnal0/auto-code-rover/only_fl_output/django__django-11991_2025-10-15_04-38-30/developer_patch.diff')
-modif_dict = extract_modificaiton_from_hunk(hunk_dict)
+    # hunk_dict = extract_hunks_from_diff('/home/kimnal0/auto-code-rover/only_fl_output/django__django-11991_2025-10-15_04-38-30/developer_patch.diff')
+    # modif_dict = extract_modificaiton_from_hunk(hunk_dict)
 
 
 
-# output_dir = '../only_fl_output'
-# instances_dir = os.listdir(output_dir)
-# for instance in instances_dir:
-#     diff_path = os.path.join(output_dir, instance, 'developer_patch.diff')
-#     fault_location = extract_gt_fl_from_diff(diff_path)
+    # output_dir = '../only_fl_output'
+    # instances_dir = os.listdir(output_dir)
+    # for instance in instances_dir:
+    #     diff_path = os.path.join(output_dir, instance, 'developer_patch.diff')
+    #     fault_location = extract_gt_fl_from_diff(diff_path)
