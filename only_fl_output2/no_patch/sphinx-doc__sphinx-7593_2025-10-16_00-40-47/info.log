@@ -1,0 +1,2843 @@
+2025-10-16 00:40:47.289 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-16 00:40:50.044 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=438, output_tokens=12, cost=0.004740
+2025-10-16 00:40:50.045 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-16 00:40:50.049 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-16 00:40:55.893 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=742, output_tokens=223, cost=0.014110
+2025-10-16 00:40:55.896 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-16 00:40:57.622 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=577, output_tokens=34, cost=0.006790
+2025-10-16 00:40:57.623 | DEBUG    | Extracted a valid json.
+2025-10-16 00:40:57.623 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\":kbd:`\")", "search_code(\"roles.html#role-kbd\")"],
+    "bug_locations": []
+}
+2025-10-16 00:40:57.635 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-16 00:40:57.635 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-16 00:41:03.204 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1125, output_tokens=227, cost=0.018060
+2025-10-16 00:41:03.208 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-16 00:41:15.423 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1568, output_tokens=478, cost=0.030020
+2025-10-16 00:41:15.428 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-16 00:41:20.949 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=832, output_tokens=233, cost=0.015310
+2025-10-16 00:41:20.949 | DEBUG    | Extracted a valid json.
+2025-10-16 00:41:20.949 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "roles.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Modify the existing parsing logic to detect the ':kbd:' role and split its content on spaces or specific delimiters (like '-' for key combinations). Then, for each part of the split content, generate individual '<kbd>' HTML elements or nest them within a parent '<kbd>' element, depending on the intended structure. The modification should ensure it does not affect the handling of other roles or elements negatively."
+        },
+        {
+            "file": "html_translator.py",
+            "class": "HTMLTranslator",
+            "method": "",
+            "intended_behavior": "Enhance or add a method to convert the parsed ':kbd:' content (now possibly as a list of keys or commands) into the desired HTML structure. This may involve either appending multiple '<kbd>' tags together for individual keys or wrapping them in a single '<kbd>' tag for nested representation. The approach should be configurable or determined based on best practices or user preference."
+        }
+    ]
+}
+2025-10-16 00:41:20.953 | DEBUG    | Bug location extracted successfully: [<file>sphinx/roles.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.roles
+3     ~~~~~~~~~~~~
+4 
+5     Handlers for additional ReST roles.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import warnings
+13 from typing import Any, Dict, List, Tuple
+14 
+15 from docutils import nodes, utils
+16 from docutils.nodes import Element, Node, TextElement, system_message
+17 from docutils.parsers.rst.states import Inliner
+18 
+19 from sphinx import addnodes
+20 from sphinx.deprecation import RemovedInSphinx40Warning
+21 from sphinx.locale import _
+22 from sphinx.util import ws_re
+23 from sphinx.util.docutils import ReferenceRole, SphinxRole
+24 from sphinx.util.nodes import (
+25     split_explicit_title, process_index_entry, set_role_source_info
+26 )
+27 from sphinx.util.typing import RoleFunction
+28 
+29 if False:
+30     # For type annotation
+31     from typing import Type  # for python3.5.1
+32     from sphinx.application import Sphinx
+33     from sphinx.environment import BuildEnvironment
+34 
+35 
+36 generic_docroles = {
+37     'command': addnodes.literal_strong,
+38     'dfn': nodes.emphasis,
+39     'kbd': nodes.literal,
+40     'mailheader': addnodes.literal_emphasis,
+41     'makevar': addnodes.literal_strong,
+42     'manpage': addnodes.manpage,
+43     'mimetype': addnodes.literal_emphasis,
+44     'newsgroup': addnodes.literal_emphasis,
+45     'program': addnodes.literal_strong,  # XXX should be an x-ref
+46     'regexp': nodes.literal,
+47 }
+48 
+49 
+50 # -- generic cross-reference role ----------------------------------------------
+51 
+52 class XRefRole(ReferenceRole):
+53     """
+54     A generic cross-referencing role.  To create a callable that can be used as
+55     a role function, create an instance of this class.
+56 
+57     The general features of this role are:
+58 
+59     * Automatic creation of a reference and a content node.
+60     * Optional separation of title and target with `title <target>`.
+61     * The implementation is a class rather than a function to make
+62       customization easier.
+63 
+64     Customization can be done in two ways:
+65 
+66     * Supplying constructor parameters:
+67       * `fix_parens` to normalize parentheses (strip from target, and add to
+68         title if configured)
+69       * `lowercase` to lowercase the target
+70       * `nodeclass` and `innernodeclass` select the node classes for
+71         the reference and the content node
+72 
+73     * Subclassing and overwriting `process_link()` and/or `result_nodes()`.
+74     """
+75 
+76     nodeclass = addnodes.pending_xref   # type: Type[Element]
+77     innernodeclass = nodes.literal      # type: Type[TextElement]
+78 
+79     def __init__(self, fix_parens: bool = False, lowercase: bool = False,
+80                  nodeclass: "Type[Element]" = None, innernodeclass: "Type[TextElement]" = None,
+81                  warn_dangling: bool = False) -> None:
+82         self.fix_parens = fix_parens
+83         self.lowercase = lowercase
+84         self.warn_dangling = warn_dangling
+85         if nodeclass is not None:
+86             self.nodeclass = nodeclass
+87         if innernodeclass is not None:
+88             self.innernodeclass = innernodeclass
+89 
+90         super().__init__()
+91 
+92     def _fix_parens(self, env: "BuildEnvironment", has_explicit_title: bool, title: str,
+93                     target: str) -> Tuple[str, str]:
+94         warnings.warn('XRefRole._fix_parens() is deprecated.',
+95                       RemovedInSphinx40Warning, stacklevel=2)
+96         if not has_explicit_title:
+97             if title.endswith('()'):
+98                 # remove parentheses
+99                 title = title[:-2]
+100             if env.config.add_function_parentheses:
+101                 # add them back to all occurrences if configured
+102                 title += '()'
+103         # remove parentheses from the target too
+104         if target.endswith('()'):
+105             target = target[:-2]
+106         return title, target
+107 
+108     def update_title_and_target(self, title: str, target: str) -> Tuple[str, str]:
+109         if not self.has_explicit_title:
+110             if title.endswith('()'):
+111                 # remove parentheses
+112                 title = title[:-2]
+113             if self.config.add_function_parentheses:
+114                 # add them back to all occurrences if configured
+115                 title += '()'
+116         # remove parentheses from the target too
+117         if target.endswith('()'):
+118             target = target[:-2]
+119         return title, target
+120 
+121     def run(self) -> Tuple[List[Node], List[system_message]]:
+122         if ':' not in self.name:
+123             self.refdomain, self.reftype = '', self.name
+124             self.classes = ['xref', self.reftype]
+125         else:
+126             self.refdomain, self.reftype = self.name.split(':', 1)
+127             self.classes = ['xref', self.refdomain, '%s-%s' % (self.refdomain, self.reftype)]
+128 
+129         if self.disabled:
+130             return self.create_non_xref_node()
+131         else:
+132             return self.create_xref_node()
+133 
+134     def create_non_xref_node(self) -> Tuple[List[Node], List[system_message]]:
+135         text = utils.unescape(self.text[1:])
+136         if self.fix_parens:
+137             self.has_explicit_title = False  # treat as implicit
+138             text, target = self.update_title_and_target(text, "")
+139 
+140         node = self.innernodeclass(self.rawtext, text, classes=self.classes)
+141         return self.result_nodes(self.inliner.document, self.env, node, is_ref=False)
+142 
+143     def create_xref_node(self) -> Tuple[List[Node], List[system_message]]:
+144         target = self.target
+145         title = self.title
+146         if self.lowercase:
+147             target = target.lower()
+148         if self.fix_parens:
+149             title, target = self.update_title_and_target(title, target)
+150 
+151         # create the reference node
+152         options = {'refdoc': self.env.docname,
+153                    'refdomain': self.refdomain,
+154                    'reftype': self.reftype,
+155                    'refexplicit': self.has_explicit_title,
+156                    'refwarn': self.warn_dangling}
+157         refnode = self.nodeclass(self.rawtext, **options)
+158         self.set_source_info(refnode)
+159 
+160         # determine the target and title for the class
+161         title, target = self.process_link(self.env, refnode, self.has_explicit_title,
+162                                           title, target)
+163         refnode['reftarget'] = target
+164         refnode += self.innernodeclass(self.rawtext, title, classes=self.classes)
+165 
+166         return self.result_nodes(self.inliner.document, self.env, refnode, is_ref=True)
+167 
+168     # methods that can be overwritten
+169 
+170     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+171                      title: str, target: str) -> Tuple[str, str]:
+172         """Called after parsing title and target text, and creating the
+173         reference node (given in *refnode*).  This method can alter the
+174         reference node and must return a new (or the same) ``(title, target)``
+175         tuple.
+176         """
+177         return title, ws_re.sub(' ', target)
+178 
+179     def result_nodes(self, document: nodes.document, env: "BuildEnvironment", node: Element,
+180                      is_ref: bool) -> Tuple[List[Node], List[system_message]]:
+181         """Called before returning the finished nodes.  *node* is the reference
+182         node if one was created (*is_ref* is then true), else the content node.
+183         This method can add other nodes and must return a ``(nodes, messages)``
+184         tuple (the usual return value of a role function).
+185         """
+186         return [node], []
+187 
+188 
+189 class AnyXRefRole(XRefRole):
+190     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+191                      title: str, target: str) -> Tuple[str, str]:
+192         result = super().process_link(env, refnode, has_explicit_title, title, target)
+193         # add all possible context info (i.e. std:program, py:module etc.)
+194         refnode.attributes.update(env.ref_context)
+195         return result
+196 
+197 
+198 def indexmarkup_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+199                      options: Dict = {}, content: List[str] = []
+200                      ) -> Tuple[List[Node], List[system_message]]:
+201     """Role for PEP/RFC references that generate an index entry."""
+202     warnings.warn('indexmarkup_role() is deprecated.  Please use PEP or RFC class instead.',
+203                   RemovedInSphinx40Warning, stacklevel=2)
+204     env = inliner.document.settings.env
+205     if not typ:
+206         assert env.temp_data['default_role']
+207         typ = env.temp_data['default_role'].lower()
+208     else:
+209         typ = typ.lower()
+210 
+211     has_explicit_title, title, target = split_explicit_title(text)
+212     title = utils.unescape(title)
+213     target = utils.unescape(target)
+214     targetid = 'index-%s' % env.new_serialno('index')
+215     indexnode = addnodes.index()
+216     targetnode = nodes.target('', '', ids=[targetid])
+217     inliner.document.note_explicit_target(targetnode)
+218     if typ == 'pep':
+219         indexnode['entries'] = [
+220             ('single', _('Python Enhancement Proposals; PEP %s') % target,
+221              targetid, '', None)]
+222         anchor = ''
+223         anchorindex = target.find('#')
+224         if anchorindex > 0:
+225             target, anchor = target[:anchorindex], target[anchorindex:]
+226         if not has_explicit_title:
+227             title = "PEP " + utils.unescape(title)
+228         try:
+229             pepnum = int(target)
+230         except ValueError:
+231             msg = inliner.reporter.error('invalid PEP number %s' % target,
+232                                          line=lineno)
+233             prb = inliner.problematic(rawtext, rawtext, msg)
+234             return [prb], [msg]
+235         ref = inliner.document.settings.pep_base_url + 'pep-%04d' % pepnum
+236         sn = nodes.strong(title, title)
+237         rn = nodes.reference('', '', internal=False, refuri=ref + anchor,
+238                              classes=[typ])
+239         rn += sn
+240         return [indexnode, targetnode, rn], []
+241     elif typ == 'rfc':
+242         indexnode['entries'] = [
+243             ('single', 'RFC; RFC %s' % target, targetid, '', None)]
+244         anchor = ''
+245         anchorindex = target.find('#')
+246         if anchorindex > 0:
+247             target, anchor = target[:anchorindex], target[anchorindex:]
+248         if not has_explicit_title:
+249             title = "RFC " + utils.unescape(title)
+250         try:
+251             rfcnum = int(target)
+252         except ValueError:
+253             msg = inliner.reporter.error('invalid RFC number %s' % target,
+254                                          line=lineno)
+255             prb = inliner.problematic(rawtext, rawtext, msg)
+256             return [prb], [msg]
+257         ref = inliner.document.settings.rfc_base_url + inliner.rfc_url % rfcnum
+258         sn = nodes.strong(title, title)
+259         rn = nodes.reference('', '', internal=False, refuri=ref + anchor,
+260                              classes=[typ])
+261         rn += sn
+262         return [indexnode, targetnode, rn], []
+263     else:
+264         raise ValueError('unknown role type: %s' % typ)
+265 
+266 
+267 class PEP(ReferenceRole):
+268     def run(self) -> Tuple[List[Node], List[system_message]]:
+269         target_id = 'index-%s' % self.env.new_serialno('index')
+270         entries = [('single', _('Python Enhancement Proposals; PEP %s') % self.target,
+271                     target_id, '', None)]
+272 
+273         index = addnodes.index(entries=entries)
+274         target = nodes.target('', '', ids=[target_id])
+275         self.inliner.document.note_explicit_target(target)
+276 
+277         try:
+278             refuri = self.build_uri()
+279             reference = nodes.reference('', '', internal=False, refuri=refuri, classes=['pep'])
+280             if self.has_explicit_title:
+281                 reference += nodes.strong(self.title, self.title)
+282             else:
+283                 title = "PEP " + self.title
+284                 reference += nodes.strong(title, title)
+285         except ValueError:
+286             msg = self.inliner.reporter.error('invalid PEP number %s' % self.target,
+287                                               line=self.lineno)
+288             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
+289             return [prb], [msg]
+290 
+291         return [index, target, reference], []
+292 
+293     def build_uri(self) -> str:
+294         base_url = self.inliner.document.settings.pep_base_url
+295         ret = self.target.split('#', 1)
+296         if len(ret) == 2:
+297             return base_url + 'pep-%04d#%s' % (int(ret[0]), ret[1])
+298         else:
+299             return base_url + 'pep-%04d' % int(ret[0])
+300 
+301 
+302 class RFC(ReferenceRole):
+303     def run(self) -> Tuple[List[Node], List[system_message]]:
+304         target_id = 'index-%s' % self.env.new_serialno('index')
+305         entries = [('single', 'RFC; RFC %s' % self.target, target_id, '', None)]
+306 
+307         index = addnodes.index(entries=entries)
+308         target = nodes.target('', '', ids=[target_id])
+309         self.inliner.document.note_explicit_target(target)
+310 
+311         try:
+312             refuri = self.build_uri()
+313             reference = nodes.reference('', '', internal=False, refuri=refuri, classes=['rfc'])
+314             if self.has_explicit_title:
+315                 reference += nodes.strong(self.title, self.title)
+316             else:
+317                 title = "RFC " + self.title
+318                 reference += nodes.strong(title, title)
+319         except ValueError:
+320             msg = self.inliner.reporter.error('invalid RFC number %s' % self.target,
+321                                               line=self.lineno)
+322             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
+323             return [prb], [msg]
+324 
+325         return [index, target, reference], []
+326 
+327     def build_uri(self) -> str:
+328         base_url = self.inliner.document.settings.rfc_base_url
+329         ret = self.target.split('#', 1)
+330         if len(ret) == 2:
+331             return base_url + self.inliner.rfc_url % int(ret[0]) + '#' + ret[1]
+332         else:
+333             return base_url + self.inliner.rfc_url % int(ret[0])
+334 
+335 
+336 _amp_re = re.compile(r'(?<!&)&(?![&\s])')
+337 
+338 
+339 def menusel_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+340                  options: Dict = {}, content: List[str] = []
+341                  ) -> Tuple[List[Node], List[system_message]]:
+342     warnings.warn('menusel_role() is deprecated. '
+343                   'Please use MenuSelection or GUILabel class instead.',
+344                   RemovedInSphinx40Warning, stacklevel=2)
+345     env = inliner.document.settings.env
+346     if not typ:
+347         assert env.temp_data['default_role']
+348         typ = env.temp_data['default_role'].lower()
+349     else:
+350         typ = typ.lower()
+351 
+352     text = utils.unescape(text)
+353     if typ == 'menuselection':
+354         text = text.replace('-->', '\N{TRIANGULAR BULLET}')
+355     spans = _amp_re.split(text)
+356 
+357     node = nodes.inline(rawtext=rawtext)
+358     for i, span in enumerate(spans):
+359         span = span.replace('&&', '&')
+360         if i == 0:
+361             if len(span) > 0:
+362                 textnode = nodes.Text(span)
+363                 node += textnode
+364             continue
+365         accel_node = nodes.inline()
+366         letter_node = nodes.Text(span[0])
+367         accel_node += letter_node
+368         accel_node['classes'].append('accelerator')
+369         node += accel_node
+370         textnode = nodes.Text(span[1:])
+371         node += textnode
+372 
+373     node['classes'].append(typ)
+374     return [node], []
+375 
+376 
+377 class GUILabel(SphinxRole):
+378     amp_re = re.compile(r'(?<!&)&(?![&\s])')
+379 
+380     def run(self) -> Tuple[List[Node], List[system_message]]:
+381         node = nodes.inline(rawtext=self.rawtext, classes=[self.name])
+382         spans = self.amp_re.split(self.text)
+383         node += nodes.Text(spans.pop(0))
+384         for span in spans:
+385             span = span.replace('&&', '&')
+386 
+387             letter = nodes.Text(span[0])
+388             accelerator = nodes.inline('', '', letter, classes=['accelerator'])
+389             node += accelerator
+390             node += nodes.Text(span[1:])
+391 
+392         return [node], []
+393 
+394 
+395 class MenuSelection(GUILabel):
+396     BULLET_CHARACTER = '\N{TRIANGULAR BULLET}'
+397 
+398     def run(self) -> Tuple[List[Node], List[system_message]]:
+399         self.text = self.text.replace('-->', self.BULLET_CHARACTER)
+400         return super().run()
+401 
+402 
+403 _litvar_re = re.compile('{([^}]+)}')
+404 parens_re = re.compile(r'(\\*{|\\*})')
+405 
+406 
+407 def emph_literal_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+408                       options: Dict = {}, content: List[str] = []
+409                       ) -> Tuple[List[Node], List[system_message]]:
+410     warnings.warn('emph_literal_role() is deprecated. '
+411                   'Please use EmphasizedLiteral class instead.',
+412                   RemovedInSphinx40Warning, stacklevel=2)
+413     env = inliner.document.settings.env
+414     if not typ:
+415         assert env.temp_data['default_role']
+416         typ = env.temp_data['default_role'].lower()
+417     else:
+418         typ = typ.lower()
+419 
+420     retnode = nodes.literal(role=typ.lower(), classes=[typ])
+421     parts = list(parens_re.split(utils.unescape(text)))
+422     stack = ['']
+423     for part in parts:
+424         matched = parens_re.match(part)
+425         if matched:
+426             backslashes = len(part) - 1
+427             if backslashes % 2 == 1:    # escaped
+428                 stack[-1] += "\\" * int((backslashes - 1) / 2) + part[-1]
+429             elif part[-1] == '{':       # rparen
+430                 stack[-1] += "\\" * int(backslashes / 2)
+431                 if len(stack) >= 2 and stack[-2] == "{":
+432                     # nested
+433                     stack[-1] += "{"
+434                 else:
+435                     # start emphasis
+436                     stack.append('{')
+437                     stack.append('')
+438             else:                       # lparen
+439                 stack[-1] += "\\" * int(backslashes / 2)
+440                 if len(stack) == 3 and stack[1] == "{" and len(stack[2]) > 0:
+441                     # emphasized word found
+442                     if stack[0]:
+443                         retnode += nodes.Text(stack[0], stack[0])
+444                     retnode += nodes.emphasis(stack[2], stack[2])
+445                     stack = ['']
+446                 else:
+447                     # emphasized word not found; the rparen is not a special symbol
+448                     stack.append('}')
+449                     stack = [''.join(stack)]
+450         else:
+451             stack[-1] += part
+452     if ''.join(stack):
+453         # remaining is treated as Text
+454         text = ''.join(stack)
+455         retnode += nodes.Text(text, text)
+456 
+457     return [retnode], []
+458 
+459 
+460 class EmphasizedLiteral(SphinxRole):
+461     parens_re = re.compile(r'(\\\\|\\{|\\}|{|})')
+462 
+463     def run(self) -> Tuple[List[Node], List[system_message]]:
+464         children = self.parse(self.text)
+465         node = nodes.literal(self.rawtext, '', *children,
+466                              role=self.name.lower(), classes=[self.name])
+467 
+468         return [node], []
+469 
+470     def parse(self, text: str) -> List[Node]:
+471         result = []  # type: List[Node]
+472 
+473         stack = ['']
+474         for part in self.parens_re.split(text):
+475             if part == '\\\\':  # escaped backslash
+476                 stack[-1] += '\\'
+477             elif part == '{':
+478                 if len(stack) >= 2 and stack[-2] == "{":  # nested
+479                     stack[-1] += "{"
+480                 else:
+481                     # start emphasis
+482                     stack.append('{')
+483                     stack.append('')
+484             elif part == '}':
+485                 if len(stack) == 3 and stack[1] == "{" and len(stack[2]) > 0:
+486                     # emphasized word found
+487                     if stack[0]:
+488                         result.append(nodes.Text(stack[0], stack[0]))
+489                     result.append(nodes.emphasis(stack[2], stack[2]))
+490                     stack = ['']
+491                 else:
+492                     # emphasized word not found; the rparen is not a special symbol
+493                     stack.append('}')
+494                     stack = [''.join(stack)]
+495             elif part == '\\{':  # escaped left-brace
+496                 stack[-1] += '{'
+497             elif part == '\\}':  # escaped right-brace
+498                 stack[-1] += '}'
+499             else:  # others (containing escaped braces)
+500                 stack[-1] += part
+501 
+502         if ''.join(stack):
+503             # remaining is treated as Text
+504             text = ''.join(stack)
+505             result.append(nodes.Text(text, text))
+506 
+507         return result
+508 
+509 
+510 _abbr_re = re.compile(r'\((.*)\)$', re.S)
+511 
+512 
+513 def abbr_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+514               options: Dict = {}, content: List[str] = []
+515               ) -> Tuple[List[Node], List[system_message]]:
+516     warnings.warn('abbr_role() is deprecated.  Please use Abbrevation class instead.',
+517                   RemovedInSphinx40Warning, stacklevel=2)
+518     text = utils.unescape(text)
+519     m = _abbr_re.search(text)
+520     if m is None:
+521         return [nodes.abbreviation(text, text, **options)], []
+522     abbr = text[:m.start()].strip()
+523     expl = m.group(1)
+524     options = options.copy()
+525     options['explanation'] = expl
+526     return [nodes.abbreviation(abbr, abbr, **options)], []
+527 
+528 
+529 class Abbreviation(SphinxRole):
+530     abbr_re = re.compile(r'\((.*)\)$', re.S)
+531 
+532     def run(self) -> Tuple[List[Node], List[system_message]]:
+533         matched = self.abbr_re.search(self.text)
+534         if matched:
+535             text = self.text[:matched.start()].strip()
+536             self.options['explanation'] = matched.group(1)
+537         else:
+538             text = self.text
+539 
+540         return [nodes.abbreviation(self.rawtext, text, **self.options)], []
+541 
+542 
+543 def index_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+544                options: Dict = {}, content: List[str] = []
+545                ) -> Tuple[List[Node], List[system_message]]:
+546     warnings.warn('index_role() is deprecated.  Please use Index class instead.',
+547                   RemovedInSphinx40Warning, stacklevel=2)
+548     # create new reference target
+549     env = inliner.document.settings.env
+550     targetid = 'index-%s' % env.new_serialno('index')
+551     targetnode = nodes.target('', '', ids=[targetid])
+552     # split text and target in role content
+553     has_explicit_title, title, target = split_explicit_title(text)
+554     title = utils.unescape(title)
+555     target = utils.unescape(target)
+556     # if an explicit target is given, we can process it as a full entry
+557     if has_explicit_title:
+558         entries = process_index_entry(target, targetid)
+559     # otherwise we just create a "single" entry
+560     else:
+561         # but allow giving main entry
+562         main = ''
+563         if target.startswith('!'):
+564             target = target[1:]
+565             title = title[1:]
+566             main = 'main'
+567         entries = [('single', target, targetid, main, None)]
+568     indexnode = addnodes.index()
+569     indexnode['entries'] = entries
+570     set_role_source_info(inliner, lineno, indexnode)
+571     textnode = nodes.Text(title, title)
+572     return [indexnode, targetnode, textnode], []
+573 
+574 
+575 class Index(ReferenceRole):
+576     def run(self) -> Tuple[List[Node], List[system_message]]:
+577         warnings.warn('Index role is deprecated.', RemovedInSphinx40Warning)
+578         target_id = 'index-%s' % self.env.new_serialno('index')
+579         if self.has_explicit_title:
+580             # if an explicit target is given, process it as a full entry
+581             title = self.title
+582             entries = process_index_entry(self.target, target_id)
+583         else:
+584             # otherwise we just create a single entry
+585             if self.target.startswith('!'):
+586                 title = self.title[1:]
+587                 entries = [('single', self.target[1:], target_id, 'main', None)]
+588             else:
+589                 title = self.title
+590                 entries = [('single', self.target, target_id, '', None)]
+591 
+592         index = addnodes.index(entries=entries)
+593         target = nodes.target('', '', ids=[target_id])
+594         text = nodes.Text(title, title)
+595         self.set_source_info(index)
+596         return [index, target, text], []
+597 
+598 
+599 specific_docroles = {
+600     # links to download references
+601     'download': XRefRole(nodeclass=addnodes.download_reference),
+602     # links to anything
+603     'any': AnyXRefRole(warn_dangling=True),
+604 
+605     'pep': PEP(),
+606     'rfc': RFC(),
+607     'guilabel': GUILabel(),
+608     'menuselection': MenuSelection(),
+609     'file': EmphasizedLiteral(),
+610     'samp': EmphasizedLiteral(),
+611     'abbr': Abbreviation(),
+612 }  # type: Dict[str, RoleFunction]
+613 
+614 
+615 def setup(app: "Sphinx") -> Dict[str, Any]:
+616     from docutils.parsers.rst import roles
+617 
+618     for rolename, nodeclass in generic_docroles.items():
+619         generic = roles.GenericRole(rolename, nodeclass)
+620         role = roles.CustomRole(rolename, generic, {'classes': [rolename]})
+621         roles.register_local_role(rolename, role)
+622 
+623     for rolename, func in specific_docroles.items():
+624         roles.register_local_role(rolename, func)
+625 
+626     return {
+627         'version': 'builtin',
+628         'parallel_read_safe': True,
+629         'parallel_write_safe': True,
+630     }
+
+</code><intended_behavior>Modify the existing parsing logic to detect the ':kbd:' role and split its content on spaces or specific delimiters (like '-' for key combinations). Then, for each part of the split content, generate individual '<kbd>' HTML elements or nest them within a parent '<kbd>' element, depending on the intended structure. The modification should ensure it does not affect the handling of other roles or elements negatively.</intended_behavior>, <file>sphinx/writers/html.py</file>
+<class>HTMLTranslator</class>
+<method>None</method>
+<code>
+82 class HTMLTranslator(SphinxTranslator, BaseTranslator):
+83     """
+84     Our custom HTML translator.
+85     """
+86 
+87     builder = None  # type: StandaloneHTMLBuilder
+88 
+89     def __init__(self, *args: Any) -> None:
+90         if isinstance(args[0], nodes.document) and isinstance(args[1], Builder):
+91             document, builder = args
+92         else:
+93             warnings.warn('The order of arguments for HTMLTranslator has been changed. '
+94                           'Please give "document" as 1st and "builder" as 2nd.',
+95                           RemovedInSphinx40Warning, stacklevel=2)
+96             builder, document = args
+97         super().__init__(document, builder)
+98 
+99         self.highlighter = self.builder.highlighter
+100         self.docnames = [self.builder.current_docname]  # for singlehtml builder
+101         self.manpages_url = self.config.manpages_url
+102         self.protect_literal_text = 0
+103         self.permalink_text = self.config.html_add_permalinks
+104         # support backwards-compatible setting to a bool
+105         if not isinstance(self.permalink_text, str):
+106             self.permalink_text = '¶' if self.permalink_text else ''
+107         self.permalink_text = self.encode(self.permalink_text)
+108         self.secnumber_suffix = self.config.html_secnumber_suffix
+109         self.param_separator = ''
+110         self.optional_param_level = 0
+111         self._table_row_index = 0
+112         self._fieldlist_row_index = 0
+113         self.required_params_left = 0
+114 
+115     def visit_start_of_file(self, node: Element) -> None:
+116         # only occurs in the single-file builder
+117         self.docnames.append(node['docname'])
+118         self.body.append('<span id="document-%s"></span>' % node['docname'])
+119 
+120     def depart_start_of_file(self, node: Element) -> None:
+121         self.docnames.pop()
+122 
+123     def visit_desc(self, node: Element) -> None:
+124         self.body.append(self.starttag(node, 'dl', CLASS=node['objtype']))
+125 
+126     def depart_desc(self, node: Element) -> None:
+127         self.body.append('</dl>\n\n')
+128 
+129     def visit_desc_signature(self, node: Element) -> None:
+130         # the id is set automatically
+131         self.body.append(self.starttag(node, 'dt'))
+132 
+133     def depart_desc_signature(self, node: Element) -> None:
+134         if not node.get('is_multiline'):
+135             self.add_permalink_ref(node, _('Permalink to this definition'))
+136         self.body.append('</dt>\n')
+137 
+138     def visit_desc_signature_line(self, node: Element) -> None:
+139         pass
+140 
+141     def depart_desc_signature_line(self, node: Element) -> None:
+142         if node.get('add_permalink'):
+143             # the permalink info is on the parent desc_signature node
+144             self.add_permalink_ref(node.parent, _('Permalink to this definition'))
+145         self.body.append('<br />')
+146 
+147     def visit_desc_addname(self, node: Element) -> None:
+148         self.body.append(self.starttag(node, 'code', '', CLASS='descclassname'))
+149 
+150     def depart_desc_addname(self, node: Element) -> None:
+151         self.body.append('</code>')
+152 
+153     def visit_desc_type(self, node: Element) -> None:
+154         pass
+155 
+156     def depart_desc_type(self, node: Element) -> None:
+157         pass
+158 
+159     def visit_desc_returns(self, node: Element) -> None:
+160         self.body.append(' &#x2192; ')
+161 
+162     def depart_desc_returns(self, node: Element) -> None:
+163         pass
+164 
+165     def visit_desc_name(self, node: Element) -> None:
+166         self.body.append(self.starttag(node, 'code', '', CLASS='descname'))
+167 
+168     def depart_desc_name(self, node: Element) -> None:
+169         self.body.append('</code>')
+170 
+171     def visit_desc_parameterlist(self, node: Element) -> None:
+172         self.body.append('<span class="sig-paren">(</span>')
+173         self.first_param = 1
+174         self.optional_param_level = 0
+175         # How many required parameters are left.
+176         self.required_params_left = sum([isinstance(c, addnodes.desc_parameter)
+177                                          for c in node.children])
+178         self.param_separator = node.child_text_separator
+179 
+180     def depart_desc_parameterlist(self, node: Element) -> None:
+181         self.body.append('<span class="sig-paren">)</span>')
+182 
+183     # If required parameters are still to come, then put the comma after
+184     # the parameter.  Otherwise, put the comma before.  This ensures that
+185     # signatures like the following render correctly (see issue #1001):
+186     #
+187     #     foo([a, ]b, c[, d])
+188     #
+189     def visit_desc_parameter(self, node: Element) -> None:
+190         if self.first_param:
+191             self.first_param = 0
+192         elif not self.required_params_left:
+193             self.body.append(self.param_separator)
+194         if self.optional_param_level == 0:
+195             self.required_params_left -= 1
+196         if not node.hasattr('noemph'):
+197             self.body.append('<em>')
+198 
+199     def depart_desc_parameter(self, node: Element) -> None:
+200         if not node.hasattr('noemph'):
+201             self.body.append('</em>')
+202         if self.required_params_left:
+203             self.body.append(self.param_separator)
+204 
+205     def visit_desc_optional(self, node: Element) -> None:
+206         self.optional_param_level += 1
+207         self.body.append('<span class="optional">[</span>')
+208 
+209     def depart_desc_optional(self, node: Element) -> None:
+210         self.optional_param_level -= 1
+211         self.body.append('<span class="optional">]</span>')
+212 
+213     def visit_desc_annotation(self, node: Element) -> None:
+214         self.body.append(self.starttag(node, 'em', '', CLASS='property'))
+215 
+216     def depart_desc_annotation(self, node: Element) -> None:
+217         self.body.append('</em>')
+218 
+219     def visit_desc_content(self, node: Element) -> None:
+220         self.body.append(self.starttag(node, 'dd', ''))
+221 
+222     def depart_desc_content(self, node: Element) -> None:
+223         self.body.append('</dd>')
+224 
+225     def visit_versionmodified(self, node: Element) -> None:
+226         self.body.append(self.starttag(node, 'div', CLASS=node['type']))
+227 
+228     def depart_versionmodified(self, node: Element) -> None:
+229         self.body.append('</div>\n')
+230 
+231     # overwritten
+232     def visit_reference(self, node: Element) -> None:
+233         atts = {'class': 'reference'}
+234         if node.get('internal') or 'refuri' not in node:
+235             atts['class'] += ' internal'
+236         else:
+237             atts['class'] += ' external'
+238         if 'refuri' in node:
+239             atts['href'] = node['refuri'] or '#'
+240             if self.settings.cloak_email_addresses and atts['href'].startswith('mailto:'):
+241                 atts['href'] = self.cloak_mailto(atts['href'])
+242                 self.in_mailto = True
+243         else:
+244             assert 'refid' in node, \
+245                    'References must have "refuri" or "refid" attribute.'
+246             atts['href'] = '#' + node['refid']
+247         if not isinstance(node.parent, nodes.TextElement):
+248             assert len(node) == 1 and isinstance(node[0], nodes.image)
+249             atts['class'] += ' image-reference'
+250         if 'reftitle' in node:
+251             atts['title'] = node['reftitle']
+252         if 'target' in node:
+253             atts['target'] = node['target']
+254         self.body.append(self.starttag(node, 'a', '', **atts))
+255 
+256         if node.get('secnumber'):
+257             self.body.append(('%s' + self.secnumber_suffix) %
+258                              '.'.join(map(str, node['secnumber'])))
+259 
+260     def visit_number_reference(self, node: Element) -> None:
+261         self.visit_reference(node)
+262 
+263     def depart_number_reference(self, node: Element) -> None:
+264         self.depart_reference(node)
+265 
+266     # overwritten -- we don't want source comments to show up in the HTML
+267     def visit_comment(self, node: Element) -> None:  # type: ignore
+268         raise nodes.SkipNode
+269 
+270     # overwritten
+271     def visit_admonition(self, node: Element, name: str = '') -> None:
+272         self.body.append(self.starttag(
+273             node, 'div', CLASS=('admonition ' + name)))
+274         if name:
+275             node.insert(0, nodes.title(name, admonitionlabels[name]))
+276         self.set_first_last(node)
+277 
+278     def visit_seealso(self, node: Element) -> None:
+279         self.visit_admonition(node, 'seealso')
+280 
+281     def depart_seealso(self, node: Element) -> None:
+282         self.depart_admonition(node)
+283 
+284     def get_secnumber(self, node: Element) -> Tuple[int, ...]:
+285         if node.get('secnumber'):
+286             return node['secnumber']
+287         elif isinstance(node.parent, nodes.section):
+288             if self.builder.name == 'singlehtml':
+289                 docname = self.docnames[-1]
+290                 anchorname = "%s/#%s" % (docname, node.parent['ids'][0])
+291                 if anchorname not in self.builder.secnumbers:
+292                     anchorname = "%s/" % docname  # try first heading which has no anchor
+293             else:
+294                 anchorname = '#' + node.parent['ids'][0]
+295                 if anchorname not in self.builder.secnumbers:
+296                     anchorname = ''  # try first heading which has no anchor
+297 
+298             if self.builder.secnumbers.get(anchorname):
+299                 return self.builder.secnumbers[anchorname]
+300 
+301         return None
+302 
+303     def add_secnumber(self, node: Element) -> None:
+304         secnumber = self.get_secnumber(node)
+305         if secnumber:
+306             self.body.append('<span class="section-number">%s</span>' %
+307                              ('.'.join(map(str, secnumber)) + self.secnumber_suffix))
+308 
+309     def add_fignumber(self, node: Element) -> None:
+310         def append_fignumber(figtype: str, figure_id: str) -> None:
+311             if self.builder.name == 'singlehtml':
+312                 key = "%s/%s" % (self.docnames[-1], figtype)
+313             else:
+314                 key = figtype
+315 
+316             if figure_id in self.builder.fignumbers.get(key, {}):
+317                 self.body.append('<span class="caption-number">')
+318                 prefix = self.builder.config.numfig_format.get(figtype)
+319                 if prefix is None:
+320                     msg = __('numfig_format is not defined for %s') % figtype
+321                     logger.warning(msg)
+322                 else:
+323                     numbers = self.builder.fignumbers[key][figure_id]
+324                     self.body.append(prefix % '.'.join(map(str, numbers)) + ' ')
+325                     self.body.append('</span>')
+326 
+327         figtype = self.builder.env.domains['std'].get_enumerable_node_type(node)
+328         if figtype:
+329             if len(node['ids']) == 0:
+330                 msg = __('Any IDs not assigned for %s node') % node.tagname
+331                 logger.warning(msg, location=node)
+332             else:
+333                 append_fignumber(figtype, node['ids'][0])
+334 
+335     def add_permalink_ref(self, node: Element, title: str) -> None:
+336         if node['ids'] and self.permalink_text and self.builder.add_permalinks:
+337             format = '<a class="headerlink" href="#%s" title="%s">%s</a>'
+338             self.body.append(format % (node['ids'][0], title, self.permalink_text))
+339 
+340     def generate_targets_for_listing(self, node: Element) -> None:
+341         """Generate hyperlink targets for listings.
+342 
+343         Original visit_bullet_list(), visit_definition_list() and visit_enumerated_list()
+344         generates hyperlink targets inside listing tags (<ul>, <ol> and <dl>) if multiple
+345         IDs are assigned to listings.  That is invalid DOM structure.
+346         (This is a bug of docutils <= 0.12)
+347 
+348         This exports hyperlink targets before listings to make valid DOM structure.
+349         """
+350         for id in node['ids'][1:]:
+351             self.body.append('<span id="%s"></span>' % id)
+352             node['ids'].remove(id)
+353 
+354     # overwritten
+355     def visit_bullet_list(self, node: Element) -> None:
+356         if len(node) == 1 and isinstance(node[0], addnodes.toctree):
+357             # avoid emitting empty <ul></ul>
+358             raise nodes.SkipNode
+359         self.generate_targets_for_listing(node)
+360         super().visit_bullet_list(node)
+361 
+362     # overwritten
+363     def visit_enumerated_list(self, node: Element) -> None:
+364         self.generate_targets_for_listing(node)
+365         super().visit_enumerated_list(node)
+366 
+367     # overwritten
+368     def visit_definition(self, node: Element) -> None:
+369         # don't insert </dt> here.
+370         self.body.append(self.starttag(node, 'dd', ''))
+371 
+372     # overwritten
+373     def depart_definition(self, node: Element) -> None:
+374         self.body.append('</dd>\n')
+375 
+376     # overwritten
+377     def visit_classifier(self, node: Element) -> None:
+378         self.body.append(self.starttag(node, 'span', '', CLASS='classifier'))
+379 
+380     # overwritten
+381     def depart_classifier(self, node: Element) -> None:
+382         self.body.append('</span>')
+383 
+384         next_node = node.next_node(descend=False, siblings=True)  # type: Node
+385         if not isinstance(next_node, nodes.classifier):
+386             # close `<dt>` tag at the tail of classifiers
+387             self.body.append('</dt>')
+388 
+389     # overwritten
+390     def visit_term(self, node: Element) -> None:
+391         self.body.append(self.starttag(node, 'dt', ''))
+392 
+393     # overwritten
+394     def depart_term(self, node: Element) -> None:
+395         next_node = node.next_node(descend=False, siblings=True)  # type: Node
+396         if isinstance(next_node, nodes.classifier):
+397             # Leave the end tag to `self.depart_classifier()`, in case
+398             # there's a classifier.
+399             pass
+400         else:
+401             self.body.append('</dt>')
+402 
+403     # overwritten
+404     def visit_title(self, node: Element) -> None:
+405         super().visit_title(node)
+406         self.add_secnumber(node)
+407         self.add_fignumber(node.parent)
+408         if isinstance(node.parent, nodes.table):
+409             self.body.append('<span class="caption-text">')
+410 
+411     def depart_title(self, node: Element) -> None:
+412         close_tag = self.context[-1]
+413         if (self.permalink_text and self.builder.add_permalinks and
+414            node.parent.hasattr('ids') and node.parent['ids']):
+415             # add permalink anchor
+416             if close_tag.startswith('</h'):
+417                 self.add_permalink_ref(node.parent, _('Permalink to this headline'))
+418             elif close_tag.startswith('</a></h'):
+419                 self.body.append('</a><a class="headerlink" href="#%s" ' %
+420                                  node.parent['ids'][0] +
+421                                  'title="%s">%s' % (
+422                                      _('Permalink to this headline'),
+423                                      self.permalink_text))
+424             elif isinstance(node.parent, nodes.table):
+425                 self.body.append('</span>')
+426                 self.add_permalink_ref(node.parent, _('Permalink to this table'))
+427         elif isinstance(node.parent, nodes.table):
+428             self.body.append('</span>')
+429 
+430         super().depart_title(node)
+431 
+432     # overwritten
+433     def visit_literal_block(self, node: Element) -> None:
+434         if node.rawsource != node.astext():
+435             # most probably a parsed-literal block -- don't highlight
+436             return super().visit_literal_block(node)
+437 
+438         lang = node.get('language', 'default')
+439         linenos = node.get('linenos', False)
+440         highlight_args = node.get('highlight_args', {})
+441         highlight_args['force'] = node.get('force', False)
+442         if lang is self.builder.config.highlight_language:
+443             # only pass highlighter options for original language
+444             opts = self.builder.config.highlight_options
+445         else:
+446             opts = {}
+447 
+448         highlighted = self.highlighter.highlight_block(
+449             node.rawsource, lang, opts=opts, linenos=linenos,
+450             location=(self.builder.current_docname, node.line), **highlight_args
+451         )
+452         starttag = self.starttag(node, 'div', suffix='',
+453                                  CLASS='highlight-%s notranslate' % lang)
+454         self.body.append(starttag + highlighted + '</div>\n')
+455         raise nodes.SkipNode
+456 
+457     def visit_caption(self, node: Element) -> None:
+458         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+459             self.body.append('<div class="code-block-caption">')
+460         else:
+461             super().visit_caption(node)
+462         self.add_fignumber(node.parent)
+463         self.body.append(self.starttag(node, 'span', '', CLASS='caption-text'))
+464 
+465     def depart_caption(self, node: Element) -> None:
+466         self.body.append('</span>')
+467 
+468         # append permalink if available
+469         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+470             self.add_permalink_ref(node.parent, _('Permalink to this code'))
+471         elif isinstance(node.parent, nodes.figure):
+472             self.add_permalink_ref(node.parent, _('Permalink to this image'))
+473         elif node.parent.get('toctree'):
+474             self.add_permalink_ref(node.parent.parent, _('Permalink to this toctree'))
+475 
+476         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+477             self.body.append('</div>\n')
+478         else:
+479             super().depart_caption(node)
+480 
+481     def visit_doctest_block(self, node: Element) -> None:
+482         self.visit_literal_block(node)
+483 
+484     # overwritten to add the <div> (for XHTML compliance)
+485     def visit_block_quote(self, node: Element) -> None:
+486         self.body.append(self.starttag(node, 'blockquote') + '<div>')
+487 
+488     def depart_block_quote(self, node: Element) -> None:
+489         self.body.append('</div></blockquote>\n')
+490 
+491     # overwritten
+492     def visit_literal(self, node: Element) -> None:
+493         if 'kbd' in node['classes']:
+494             self.body.append(self.starttag(node, 'kbd', '',
+495                                            CLASS='docutils literal notranslate'))
+496         else:
+497             self.body.append(self.starttag(node, 'code', '',
+498                                            CLASS='docutils literal notranslate'))
+499             self.protect_literal_text += 1
+500 
+501     def depart_literal(self, node: Element) -> None:
+502         if 'kbd' in node['classes']:
+503             self.body.append('</kbd>')
+504         else:
+505             self.protect_literal_text -= 1
+506             self.body.append('</code>')
+507 
+508     def visit_productionlist(self, node: Element) -> None:
+509         self.body.append(self.starttag(node, 'pre'))
+510         names = []
+511         productionlist = cast(Iterable[addnodes.production], node)
+512         for production in productionlist:
+513             names.append(production['tokenname'])
+514         maxlen = max(len(name) for name in names)
+515         lastname = None
+516         for production in productionlist:
+517             if production['tokenname']:
+518                 lastname = production['tokenname'].ljust(maxlen)
+519                 self.body.append(self.starttag(production, 'strong', ''))
+520                 self.body.append(lastname + '</strong> ::= ')
+521             elif lastname is not None:
+522                 self.body.append('%s     ' % (' ' * len(lastname)))
+523             production.walkabout(self)
+524             self.body.append('\n')
+525         self.body.append('</pre>\n')
+526         raise nodes.SkipNode
+527 
+528     def depart_productionlist(self, node: Element) -> None:
+529         pass
+530 
+531     def visit_production(self, node: Element) -> None:
+532         pass
+533 
+534     def depart_production(self, node: Element) -> None:
+535         pass
+536 
+537     def visit_centered(self, node: Element) -> None:
+538         self.body.append(self.starttag(node, 'p', CLASS="centered") +
+539                          '<strong>')
+540 
+541     def depart_centered(self, node: Element) -> None:
+542         self.body.append('</strong></p>')
+543 
+544     # overwritten
+545     def should_be_compact_paragraph(self, node: Node) -> bool:
+546         """Determine if the <p> tags around paragraph can be omitted."""
+547         if isinstance(node.parent, addnodes.desc_content):
+548             # Never compact desc_content items.
+549             return False
+550         if isinstance(node.parent, addnodes.versionmodified):
+551             # Never compact versionmodified nodes.
+552             return False
+553         return super().should_be_compact_paragraph(node)
+554 
+555     def visit_compact_paragraph(self, node: Element) -> None:
+556         pass
+557 
+558     def depart_compact_paragraph(self, node: Element) -> None:
+559         pass
+560 
+561     def visit_download_reference(self, node: Element) -> None:
+562         atts = {'class': 'reference download',
+563                 'download': ''}
+564 
+565         if not self.builder.download_support:
+566             self.context.append('')
+567         elif 'refuri' in node:
+568             atts['class'] += ' external'
+569             atts['href'] = node['refuri']
+570             self.body.append(self.starttag(node, 'a', '', **atts))
+571             self.context.append('</a>')
+572         elif 'filename' in node:
+573             atts['class'] += ' internal'
+574             atts['href'] = posixpath.join(self.builder.dlpath, node['filename'])
+575             self.body.append(self.starttag(node, 'a', '', **atts))
+576             self.context.append('</a>')
+577         else:
+578             self.context.append('')
+579 
+580     def depart_download_reference(self, node: Element) -> None:
+581         self.body.append(self.context.pop())
+582 
+583     # overwritten
+584     def visit_image(self, node: Element) -> None:
+585         olduri = node['uri']
+586         # rewrite the URI if the environment knows about it
+587         if olduri in self.builder.images:
+588             node['uri'] = posixpath.join(self.builder.imgpath,
+589                                          self.builder.images[olduri])
+590 
+591         if 'scale' in node:
+592             # Try to figure out image height and width.  Docutils does that too,
+593             # but it tries the final file name, which does not necessarily exist
+594             # yet at the time the HTML file is written.
+595             if not ('width' in node and 'height' in node):
+596                 size = get_image_size(os.path.join(self.builder.srcdir, olduri))
+597                 if size is None:
+598                     logger.warning(__('Could not obtain image size. :scale: option is ignored.'),  # NOQA
+599                                    location=node)
+600                 else:
+601                     if 'width' not in node:
+602                         node['width'] = str(size[0])
+603                     if 'height' not in node:
+604                         node['height'] = str(size[1])
+605 
+606         uri = node['uri']
+607         if uri.lower().endswith(('svg', 'svgz')):
+608             atts = {'src': uri}
+609             if 'width' in node:
+610                 atts['width'] = node['width']
+611             if 'height' in node:
+612                 atts['height'] = node['height']
+613             if 'scale' in node:
+614                 if 'width' in atts:
+615                     atts['width'] = multiply_length(atts['width'], node['scale'])
+616                 if 'height' in atts:
+617                     atts['height'] = multiply_length(atts['height'], node['scale'])
+618             atts['alt'] = node.get('alt', uri)
+619             if 'align' in node:
+620                 atts['class'] = 'align-%s' % node['align']
+621             self.body.append(self.emptytag(node, 'img', '', **atts))
+622             return
+623 
+624         super().visit_image(node)
+625 
+626     # overwritten
+627     def depart_image(self, node: Element) -> None:
+628         if node['uri'].lower().endswith(('svg', 'svgz')):
+629             pass
+630         else:
+631             super().depart_image(node)
+632 
+633     def visit_toctree(self, node: Element) -> None:
+634         # this only happens when formatting a toc from env.tocs -- in this
+635         # case we don't want to include the subtree
+636         raise nodes.SkipNode
+637 
+638     def visit_index(self, node: Element) -> None:
+639         raise nodes.SkipNode
+640 
+641     def visit_tabular_col_spec(self, node: Element) -> None:
+642         raise nodes.SkipNode
+643 
+644     def visit_glossary(self, node: Element) -> None:
+645         pass
+646 
+647     def depart_glossary(self, node: Element) -> None:
+648         pass
+649 
+650     def visit_acks(self, node: Element) -> None:
+651         pass
+652 
+653     def depart_acks(self, node: Element) -> None:
+654         pass
+655 
+656     def visit_hlist(self, node: Element) -> None:
+657         self.body.append('<table class="hlist"><tr>')
+658 
+659     def depart_hlist(self, node: Element) -> None:
+660         self.body.append('</tr></table>\n')
+661 
+662     def visit_hlistcol(self, node: Element) -> None:
+663         self.body.append('<td>')
+664 
+665     def depart_hlistcol(self, node: Element) -> None:
+666         self.body.append('</td>')
+667 
+668     def visit_option_group(self, node: Element) -> None:
+669         super().visit_option_group(node)
+670         self.context[-2] = self.context[-2].replace('&nbsp;', '&#160;')
+671 
+672     # overwritten
+673     def visit_Text(self, node: Text) -> None:
+674         text = node.astext()
+675         encoded = self.encode(text)
+676         if self.protect_literal_text:
+677             # moved here from base class's visit_literal to support
+678             # more formatting in literal nodes
+679             for token in self.words_and_spaces.findall(encoded):
+680                 if token.strip():
+681                     # protect literal text from line wrapping
+682                     self.body.append('<span class="pre">%s</span>' % token)
+683                 elif token in ' \n':
+684                     # allow breaks at whitespace
+685                     self.body.append(token)
+686                 else:
+687                     # protect runs of multiple spaces; the last one can wrap
+688                     self.body.append('&#160;' * (len(token) - 1) + ' ')
+689         else:
+690             if self.in_mailto and self.settings.cloak_email_addresses:
+691                 encoded = self.cloak_email(encoded)
+692             self.body.append(encoded)
+693 
+694     def visit_note(self, node: Element) -> None:
+695         self.visit_admonition(node, 'note')
+696 
+697     def depart_note(self, node: Element) -> None:
+698         self.depart_admonition(node)
+699 
+700     def visit_warning(self, node: Element) -> None:
+701         self.visit_admonition(node, 'warning')
+702 
+703     def depart_warning(self, node: Element) -> None:
+704         self.depart_admonition(node)
+705 
+706     def visit_attention(self, node: Element) -> None:
+707         self.visit_admonition(node, 'attention')
+708 
+709     def depart_attention(self, node: Element) -> None:
+710         self.depart_admonition(node)
+711 
+712     def visit_caution(self, node: Element) -> None:
+713         self.visit_admonition(node, 'caution')
+714 
+715     def depart_caution(self, node: Element) -> None:
+716         self.depart_admonition(node)
+717 
+718     def visit_danger(self, node: Element) -> None:
+719         self.visit_admonition(node, 'danger')
+720 
+721     def depart_danger(self, node: Element) -> None:
+722         self.depart_admonition(node)
+723 
+724     def visit_error(self, node: Element) -> None:
+725         self.visit_admonition(node, 'error')
+726 
+727     def depart_error(self, node: Element) -> None:
+728         self.depart_admonition(node)
+729 
+730     def visit_hint(self, node: Element) -> None:
+731         self.visit_admonition(node, 'hint')
+732 
+733     def depart_hint(self, node: Element) -> None:
+734         self.depart_admonition(node)
+735 
+736     def visit_important(self, node: Element) -> None:
+737         self.visit_admonition(node, 'important')
+738 
+739     def depart_important(self, node: Element) -> None:
+740         self.depart_admonition(node)
+741 
+742     def visit_tip(self, node: Element) -> None:
+743         self.visit_admonition(node, 'tip')
+744 
+745     def depart_tip(self, node: Element) -> None:
+746         self.depart_admonition(node)
+747 
+748     def visit_literal_emphasis(self, node: Element) -> None:
+749         return self.visit_emphasis(node)
+750 
+751     def depart_literal_emphasis(self, node: Element) -> None:
+752         return self.depart_emphasis(node)
+753 
+754     def visit_literal_strong(self, node: Element) -> None:
+755         return self.visit_strong(node)
+756 
+757     def depart_literal_strong(self, node: Element) -> None:
+758         return self.depart_strong(node)
+759 
+760     def visit_abbreviation(self, node: Element) -> None:
+761         attrs = {}
+762         if node.hasattr('explanation'):
+763             attrs['title'] = node['explanation']
+764         self.body.append(self.starttag(node, 'abbr', '', **attrs))
+765 
+766     def depart_abbreviation(self, node: Element) -> None:
+767         self.body.append('</abbr>')
+768 
+769     def visit_manpage(self, node: Element) -> None:
+770         self.visit_literal_emphasis(node)
+771         if self.manpages_url:
+772             node['refuri'] = self.manpages_url.format(**node.attributes)
+773             self.visit_reference(node)
+774 
+775     def depart_manpage(self, node: Element) -> None:
+776         if self.manpages_url:
+777             self.depart_reference(node)
+778         self.depart_literal_emphasis(node)
+779 
+780     # overwritten to add even/odd classes
+781 
+782     def visit_table(self, node: Element) -> None:
+783         self._table_row_index = 0
+784         return super().visit_table(node)
+785 
+786     def visit_row(self, node: Element) -> None:
+787         self._table_row_index += 1
+788         if self._table_row_index % 2 == 0:
+789             node['classes'].append('row-even')
+790         else:
+791             node['classes'].append('row-odd')
+792         self.body.append(self.starttag(node, 'tr', ''))
+793         node.column = 0  # type: ignore
+794 
+795     def visit_entry(self, node: Element) -> None:
+796         super().visit_entry(node)
+797         if self.body[-1] == '&nbsp;':
+798             self.body[-1] = '&#160;'
+799 
+800     def visit_field_list(self, node: Element) -> None:
+801         self._fieldlist_row_index = 0
+802         return super().visit_field_list(node)
+803 
+804     def visit_field(self, node: Element) -> None:
+805         self._fieldlist_row_index += 1
+806         if self._fieldlist_row_index % 2 == 0:
+807             node['classes'].append('field-even')
+808         else:
+809             node['classes'].append('field-odd')
+810         self.body.append(self.starttag(node, 'tr', '', CLASS='field'))
+811 
+812     def visit_field_name(self, node: Element) -> None:
+813         context_count = len(self.context)
+814         super().visit_field_name(node)
+815         if context_count != len(self.context):
+816             self.context[-1] = self.context[-1].replace('&nbsp;', '&#160;')
+817 
+818     def visit_math(self, node: Element, math_env: str = '') -> None:
+819         name = self.builder.math_renderer_name
+820         visit, _ = self.builder.app.registry.html_inline_math_renderers[name]
+821         visit(self, node)
+822 
+823     def depart_math(self, node: Element, math_env: str = '') -> None:
+824         name = self.builder.math_renderer_name
+825         _, depart = self.builder.app.registry.html_inline_math_renderers[name]
+826         if depart:
+827             depart(self, node)
+828 
+829     def visit_math_block(self, node: Element, math_env: str = '') -> None:
+830         name = self.builder.math_renderer_name
+831         visit, _ = self.builder.app.registry.html_block_math_renderers[name]
+832         visit(self, node)
+833 
+834     def depart_math_block(self, node: Element, math_env: str = '') -> None:
+835         name = self.builder.math_renderer_name
+836         _, depart = self.builder.app.registry.html_block_math_renderers[name]
+837         if depart:
+838             depart(self, node)
+839 
+840     def unknown_visit(self, node: Node) -> None:
+841         raise NotImplementedError('Unknown node: ' + node.__class__.__name__)
+
+</code><intended_behavior>Enhance or add a method to convert the parsed ':kbd:' content (now possibly as a list of keys or commands) into the desired HTML structure. This may involve either appending multiple '<kbd>' tags together for individual keys or wrapping them in a single '<kbd>' tag for nested representation. The approach should be configurable or determined based on best practices or user preference.</intended_behavior>]
+2025-10-16 00:41:20.953 | INFO     | Search completed. Bug locations: [<file>sphinx/roles.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.roles
+3     ~~~~~~~~~~~~
+4 
+5     Handlers for additional ReST roles.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import warnings
+13 from typing import Any, Dict, List, Tuple
+14 
+15 from docutils import nodes, utils
+16 from docutils.nodes import Element, Node, TextElement, system_message
+17 from docutils.parsers.rst.states import Inliner
+18 
+19 from sphinx import addnodes
+20 from sphinx.deprecation import RemovedInSphinx40Warning
+21 from sphinx.locale import _
+22 from sphinx.util import ws_re
+23 from sphinx.util.docutils import ReferenceRole, SphinxRole
+24 from sphinx.util.nodes import (
+25     split_explicit_title, process_index_entry, set_role_source_info
+26 )
+27 from sphinx.util.typing import RoleFunction
+28 
+29 if False:
+30     # For type annotation
+31     from typing import Type  # for python3.5.1
+32     from sphinx.application import Sphinx
+33     from sphinx.environment import BuildEnvironment
+34 
+35 
+36 generic_docroles = {
+37     'command': addnodes.literal_strong,
+38     'dfn': nodes.emphasis,
+39     'kbd': nodes.literal,
+40     'mailheader': addnodes.literal_emphasis,
+41     'makevar': addnodes.literal_strong,
+42     'manpage': addnodes.manpage,
+43     'mimetype': addnodes.literal_emphasis,
+44     'newsgroup': addnodes.literal_emphasis,
+45     'program': addnodes.literal_strong,  # XXX should be an x-ref
+46     'regexp': nodes.literal,
+47 }
+48 
+49 
+50 # -- generic cross-reference role ----------------------------------------------
+51 
+52 class XRefRole(ReferenceRole):
+53     """
+54     A generic cross-referencing role.  To create a callable that can be used as
+55     a role function, create an instance of this class.
+56 
+57     The general features of this role are:
+58 
+59     * Automatic creation of a reference and a content node.
+60     * Optional separation of title and target with `title <target>`.
+61     * The implementation is a class rather than a function to make
+62       customization easier.
+63 
+64     Customization can be done in two ways:
+65 
+66     * Supplying constructor parameters:
+67       * `fix_parens` to normalize parentheses (strip from target, and add to
+68         title if configured)
+69       * `lowercase` to lowercase the target
+70       * `nodeclass` and `innernodeclass` select the node classes for
+71         the reference and the content node
+72 
+73     * Subclassing and overwriting `process_link()` and/or `result_nodes()`.
+74     """
+75 
+76     nodeclass = addnodes.pending_xref   # type: Type[Element]
+77     innernodeclass = nodes.literal      # type: Type[TextElement]
+78 
+79     def __init__(self, fix_parens: bool = False, lowercase: bool = False,
+80                  nodeclass: "Type[Element]" = None, innernodeclass: "Type[TextElement]" = None,
+81                  warn_dangling: bool = False) -> None:
+82         self.fix_parens = fix_parens
+83         self.lowercase = lowercase
+84         self.warn_dangling = warn_dangling
+85         if nodeclass is not None:
+86             self.nodeclass = nodeclass
+87         if innernodeclass is not None:
+88             self.innernodeclass = innernodeclass
+89 
+90         super().__init__()
+91 
+92     def _fix_parens(self, env: "BuildEnvironment", has_explicit_title: bool, title: str,
+93                     target: str) -> Tuple[str, str]:
+94         warnings.warn('XRefRole._fix_parens() is deprecated.',
+95                       RemovedInSphinx40Warning, stacklevel=2)
+96         if not has_explicit_title:
+97             if title.endswith('()'):
+98                 # remove parentheses
+99                 title = title[:-2]
+100             if env.config.add_function_parentheses:
+101                 # add them back to all occurrences if configured
+102                 title += '()'
+103         # remove parentheses from the target too
+104         if target.endswith('()'):
+105             target = target[:-2]
+106         return title, target
+107 
+108     def update_title_and_target(self, title: str, target: str) -> Tuple[str, str]:
+109         if not self.has_explicit_title:
+110             if title.endswith('()'):
+111                 # remove parentheses
+112                 title = title[:-2]
+113             if self.config.add_function_parentheses:
+114                 # add them back to all occurrences if configured
+115                 title += '()'
+116         # remove parentheses from the target too
+117         if target.endswith('()'):
+118             target = target[:-2]
+119         return title, target
+120 
+121     def run(self) -> Tuple[List[Node], List[system_message]]:
+122         if ':' not in self.name:
+123             self.refdomain, self.reftype = '', self.name
+124             self.classes = ['xref', self.reftype]
+125         else:
+126             self.refdomain, self.reftype = self.name.split(':', 1)
+127             self.classes = ['xref', self.refdomain, '%s-%s' % (self.refdomain, self.reftype)]
+128 
+129         if self.disabled:
+130             return self.create_non_xref_node()
+131         else:
+132             return self.create_xref_node()
+133 
+134     def create_non_xref_node(self) -> Tuple[List[Node], List[system_message]]:
+135         text = utils.unescape(self.text[1:])
+136         if self.fix_parens:
+137             self.has_explicit_title = False  # treat as implicit
+138             text, target = self.update_title_and_target(text, "")
+139 
+140         node = self.innernodeclass(self.rawtext, text, classes=self.classes)
+141         return self.result_nodes(self.inliner.document, self.env, node, is_ref=False)
+142 
+143     def create_xref_node(self) -> Tuple[List[Node], List[system_message]]:
+144         target = self.target
+145         title = self.title
+146         if self.lowercase:
+147             target = target.lower()
+148         if self.fix_parens:
+149             title, target = self.update_title_and_target(title, target)
+150 
+151         # create the reference node
+152         options = {'refdoc': self.env.docname,
+153                    'refdomain': self.refdomain,
+154                    'reftype': self.reftype,
+155                    'refexplicit': self.has_explicit_title,
+156                    'refwarn': self.warn_dangling}
+157         refnode = self.nodeclass(self.rawtext, **options)
+158         self.set_source_info(refnode)
+159 
+160         # determine the target and title for the class
+161         title, target = self.process_link(self.env, refnode, self.has_explicit_title,
+162                                           title, target)
+163         refnode['reftarget'] = target
+164         refnode += self.innernodeclass(self.rawtext, title, classes=self.classes)
+165 
+166         return self.result_nodes(self.inliner.document, self.env, refnode, is_ref=True)
+167 
+168     # methods that can be overwritten
+169 
+170     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+171                      title: str, target: str) -> Tuple[str, str]:
+172         """Called after parsing title and target text, and creating the
+173         reference node (given in *refnode*).  This method can alter the
+174         reference node and must return a new (or the same) ``(title, target)``
+175         tuple.
+176         """
+177         return title, ws_re.sub(' ', target)
+178 
+179     def result_nodes(self, document: nodes.document, env: "BuildEnvironment", node: Element,
+180                      is_ref: bool) -> Tuple[List[Node], List[system_message]]:
+181         """Called before returning the finished nodes.  *node* is the reference
+182         node if one was created (*is_ref* is then true), else the content node.
+183         This method can add other nodes and must return a ``(nodes, messages)``
+184         tuple (the usual return value of a role function).
+185         """
+186         return [node], []
+187 
+188 
+189 class AnyXRefRole(XRefRole):
+190     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+191                      title: str, target: str) -> Tuple[str, str]:
+192         result = super().process_link(env, refnode, has_explicit_title, title, target)
+193         # add all possible context info (i.e. std:program, py:module etc.)
+194         refnode.attributes.update(env.ref_context)
+195         return result
+196 
+197 
+198 def indexmarkup_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+199                      options: Dict = {}, content: List[str] = []
+200                      ) -> Tuple[List[Node], List[system_message]]:
+201     """Role for PEP/RFC references that generate an index entry."""
+202     warnings.warn('indexmarkup_role() is deprecated.  Please use PEP or RFC class instead.',
+203                   RemovedInSphinx40Warning, stacklevel=2)
+204     env = inliner.document.settings.env
+205     if not typ:
+206         assert env.temp_data['default_role']
+207         typ = env.temp_data['default_role'].lower()
+208     else:
+209         typ = typ.lower()
+210 
+211     has_explicit_title, title, target = split_explicit_title(text)
+212     title = utils.unescape(title)
+213     target = utils.unescape(target)
+214     targetid = 'index-%s' % env.new_serialno('index')
+215     indexnode = addnodes.index()
+216     targetnode = nodes.target('', '', ids=[targetid])
+217     inliner.document.note_explicit_target(targetnode)
+218     if typ == 'pep':
+219         indexnode['entries'] = [
+220             ('single', _('Python Enhancement Proposals; PEP %s') % target,
+221              targetid, '', None)]
+222         anchor = ''
+223         anchorindex = target.find('#')
+224         if anchorindex > 0:
+225             target, anchor = target[:anchorindex], target[anchorindex:]
+226         if not has_explicit_title:
+227             title = "PEP " + utils.unescape(title)
+228         try:
+229             pepnum = int(target)
+230         except ValueError:
+231             msg = inliner.reporter.error('invalid PEP number %s' % target,
+232                                          line=lineno)
+233             prb = inliner.problematic(rawtext, rawtext, msg)
+234             return [prb], [msg]
+235         ref = inliner.document.settings.pep_base_url + 'pep-%04d' % pepnum
+236         sn = nodes.strong(title, title)
+237         rn = nodes.reference('', '', internal=False, refuri=ref + anchor,
+238                              classes=[typ])
+239         rn += sn
+240         return [indexnode, targetnode, rn], []
+241     elif typ == 'rfc':
+242         indexnode['entries'] = [
+243             ('single', 'RFC; RFC %s' % target, targetid, '', None)]
+244         anchor = ''
+245         anchorindex = target.find('#')
+246         if anchorindex > 0:
+247             target, anchor = target[:anchorindex], target[anchorindex:]
+248         if not has_explicit_title:
+249             title = "RFC " + utils.unescape(title)
+250         try:
+251             rfcnum = int(target)
+252         except ValueError:
+253             msg = inliner.reporter.error('invalid RFC number %s' % target,
+254                                          line=lineno)
+255             prb = inliner.problematic(rawtext, rawtext, msg)
+256             return [prb], [msg]
+257         ref = inliner.document.settings.rfc_base_url + inliner.rfc_url % rfcnum
+258         sn = nodes.strong(title, title)
+259         rn = nodes.reference('', '', internal=False, refuri=ref + anchor,
+260                              classes=[typ])
+261         rn += sn
+262         return [indexnode, targetnode, rn], []
+263     else:
+264         raise ValueError('unknown role type: %s' % typ)
+265 
+266 
+267 class PEP(ReferenceRole):
+268     def run(self) -> Tuple[List[Node], List[system_message]]:
+269         target_id = 'index-%s' % self.env.new_serialno('index')
+270         entries = [('single', _('Python Enhancement Proposals; PEP %s') % self.target,
+271                     target_id, '', None)]
+272 
+273         index = addnodes.index(entries=entries)
+274         target = nodes.target('', '', ids=[target_id])
+275         self.inliner.document.note_explicit_target(target)
+276 
+277         try:
+278             refuri = self.build_uri()
+279             reference = nodes.reference('', '', internal=False, refuri=refuri, classes=['pep'])
+280             if self.has_explicit_title:
+281                 reference += nodes.strong(self.title, self.title)
+282             else:
+283                 title = "PEP " + self.title
+284                 reference += nodes.strong(title, title)
+285         except ValueError:
+286             msg = self.inliner.reporter.error('invalid PEP number %s' % self.target,
+287                                               line=self.lineno)
+288             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
+289             return [prb], [msg]
+290 
+291         return [index, target, reference], []
+292 
+293     def build_uri(self) -> str:
+294         base_url = self.inliner.document.settings.pep_base_url
+295         ret = self.target.split('#', 1)
+296         if len(ret) == 2:
+297             return base_url + 'pep-%04d#%s' % (int(ret[0]), ret[1])
+298         else:
+299             return base_url + 'pep-%04d' % int(ret[0])
+300 
+301 
+302 class RFC(ReferenceRole):
+303     def run(self) -> Tuple[List[Node], List[system_message]]:
+304         target_id = 'index-%s' % self.env.new_serialno('index')
+305         entries = [('single', 'RFC; RFC %s' % self.target, target_id, '', None)]
+306 
+307         index = addnodes.index(entries=entries)
+308         target = nodes.target('', '', ids=[target_id])
+309         self.inliner.document.note_explicit_target(target)
+310 
+311         try:
+312             refuri = self.build_uri()
+313             reference = nodes.reference('', '', internal=False, refuri=refuri, classes=['rfc'])
+314             if self.has_explicit_title:
+315                 reference += nodes.strong(self.title, self.title)
+316             else:
+317                 title = "RFC " + self.title
+318                 reference += nodes.strong(title, title)
+319         except ValueError:
+320             msg = self.inliner.reporter.error('invalid RFC number %s' % self.target,
+321                                               line=self.lineno)
+322             prb = self.inliner.problematic(self.rawtext, self.rawtext, msg)
+323             return [prb], [msg]
+324 
+325         return [index, target, reference], []
+326 
+327     def build_uri(self) -> str:
+328         base_url = self.inliner.document.settings.rfc_base_url
+329         ret = self.target.split('#', 1)
+330         if len(ret) == 2:
+331             return base_url + self.inliner.rfc_url % int(ret[0]) + '#' + ret[1]
+332         else:
+333             return base_url + self.inliner.rfc_url % int(ret[0])
+334 
+335 
+336 _amp_re = re.compile(r'(?<!&)&(?![&\s])')
+337 
+338 
+339 def menusel_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+340                  options: Dict = {}, content: List[str] = []
+341                  ) -> Tuple[List[Node], List[system_message]]:
+342     warnings.warn('menusel_role() is deprecated. '
+343                   'Please use MenuSelection or GUILabel class instead.',
+344                   RemovedInSphinx40Warning, stacklevel=2)
+345     env = inliner.document.settings.env
+346     if not typ:
+347         assert env.temp_data['default_role']
+348         typ = env.temp_data['default_role'].lower()
+349     else:
+350         typ = typ.lower()
+351 
+352     text = utils.unescape(text)
+353     if typ == 'menuselection':
+354         text = text.replace('-->', '\N{TRIANGULAR BULLET}')
+355     spans = _amp_re.split(text)
+356 
+357     node = nodes.inline(rawtext=rawtext)
+358     for i, span in enumerate(spans):
+359         span = span.replace('&&', '&')
+360         if i == 0:
+361             if len(span) > 0:
+362                 textnode = nodes.Text(span)
+363                 node += textnode
+364             continue
+365         accel_node = nodes.inline()
+366         letter_node = nodes.Text(span[0])
+367         accel_node += letter_node
+368         accel_node['classes'].append('accelerator')
+369         node += accel_node
+370         textnode = nodes.Text(span[1:])
+371         node += textnode
+372 
+373     node['classes'].append(typ)
+374     return [node], []
+375 
+376 
+377 class GUILabel(SphinxRole):
+378     amp_re = re.compile(r'(?<!&)&(?![&\s])')
+379 
+380     def run(self) -> Tuple[List[Node], List[system_message]]:
+381         node = nodes.inline(rawtext=self.rawtext, classes=[self.name])
+382         spans = self.amp_re.split(self.text)
+383         node += nodes.Text(spans.pop(0))
+384         for span in spans:
+385             span = span.replace('&&', '&')
+386 
+387             letter = nodes.Text(span[0])
+388             accelerator = nodes.inline('', '', letter, classes=['accelerator'])
+389             node += accelerator
+390             node += nodes.Text(span[1:])
+391 
+392         return [node], []
+393 
+394 
+395 class MenuSelection(GUILabel):
+396     BULLET_CHARACTER = '\N{TRIANGULAR BULLET}'
+397 
+398     def run(self) -> Tuple[List[Node], List[system_message]]:
+399         self.text = self.text.replace('-->', self.BULLET_CHARACTER)
+400         return super().run()
+401 
+402 
+403 _litvar_re = re.compile('{([^}]+)}')
+404 parens_re = re.compile(r'(\\*{|\\*})')
+405 
+406 
+407 def emph_literal_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+408                       options: Dict = {}, content: List[str] = []
+409                       ) -> Tuple[List[Node], List[system_message]]:
+410     warnings.warn('emph_literal_role() is deprecated. '
+411                   'Please use EmphasizedLiteral class instead.',
+412                   RemovedInSphinx40Warning, stacklevel=2)
+413     env = inliner.document.settings.env
+414     if not typ:
+415         assert env.temp_data['default_role']
+416         typ = env.temp_data['default_role'].lower()
+417     else:
+418         typ = typ.lower()
+419 
+420     retnode = nodes.literal(role=typ.lower(), classes=[typ])
+421     parts = list(parens_re.split(utils.unescape(text)))
+422     stack = ['']
+423     for part in parts:
+424         matched = parens_re.match(part)
+425         if matched:
+426             backslashes = len(part) - 1
+427             if backslashes % 2 == 1:    # escaped
+428                 stack[-1] += "\\" * int((backslashes - 1) / 2) + part[-1]
+429             elif part[-1] == '{':       # rparen
+430                 stack[-1] += "\\" * int(backslashes / 2)
+431                 if len(stack) >= 2 and stack[-2] == "{":
+432                     # nested
+433                     stack[-1] += "{"
+434                 else:
+435                     # start emphasis
+436                     stack.append('{')
+437                     stack.append('')
+438             else:                       # lparen
+439                 stack[-1] += "\\" * int(backslashes / 2)
+440                 if len(stack) == 3 and stack[1] == "{" and len(stack[2]) > 0:
+441                     # emphasized word found
+442                     if stack[0]:
+443                         retnode += nodes.Text(stack[0], stack[0])
+444                     retnode += nodes.emphasis(stack[2], stack[2])
+445                     stack = ['']
+446                 else:
+447                     # emphasized word not found; the rparen is not a special symbol
+448                     stack.append('}')
+449                     stack = [''.join(stack)]
+450         else:
+451             stack[-1] += part
+452     if ''.join(stack):
+453         # remaining is treated as Text
+454         text = ''.join(stack)
+455         retnode += nodes.Text(text, text)
+456 
+457     return [retnode], []
+458 
+459 
+460 class EmphasizedLiteral(SphinxRole):
+461     parens_re = re.compile(r'(\\\\|\\{|\\}|{|})')
+462 
+463     def run(self) -> Tuple[List[Node], List[system_message]]:
+464         children = self.parse(self.text)
+465         node = nodes.literal(self.rawtext, '', *children,
+466                              role=self.name.lower(), classes=[self.name])
+467 
+468         return [node], []
+469 
+470     def parse(self, text: str) -> List[Node]:
+471         result = []  # type: List[Node]
+472 
+473         stack = ['']
+474         for part in self.parens_re.split(text):
+475             if part == '\\\\':  # escaped backslash
+476                 stack[-1] += '\\'
+477             elif part == '{':
+478                 if len(stack) >= 2 and stack[-2] == "{":  # nested
+479                     stack[-1] += "{"
+480                 else:
+481                     # start emphasis
+482                     stack.append('{')
+483                     stack.append('')
+484             elif part == '}':
+485                 if len(stack) == 3 and stack[1] == "{" and len(stack[2]) > 0:
+486                     # emphasized word found
+487                     if stack[0]:
+488                         result.append(nodes.Text(stack[0], stack[0]))
+489                     result.append(nodes.emphasis(stack[2], stack[2]))
+490                     stack = ['']
+491                 else:
+492                     # emphasized word not found; the rparen is not a special symbol
+493                     stack.append('}')
+494                     stack = [''.join(stack)]
+495             elif part == '\\{':  # escaped left-brace
+496                 stack[-1] += '{'
+497             elif part == '\\}':  # escaped right-brace
+498                 stack[-1] += '}'
+499             else:  # others (containing escaped braces)
+500                 stack[-1] += part
+501 
+502         if ''.join(stack):
+503             # remaining is treated as Text
+504             text = ''.join(stack)
+505             result.append(nodes.Text(text, text))
+506 
+507         return result
+508 
+509 
+510 _abbr_re = re.compile(r'\((.*)\)$', re.S)
+511 
+512 
+513 def abbr_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+514               options: Dict = {}, content: List[str] = []
+515               ) -> Tuple[List[Node], List[system_message]]:
+516     warnings.warn('abbr_role() is deprecated.  Please use Abbrevation class instead.',
+517                   RemovedInSphinx40Warning, stacklevel=2)
+518     text = utils.unescape(text)
+519     m = _abbr_re.search(text)
+520     if m is None:
+521         return [nodes.abbreviation(text, text, **options)], []
+522     abbr = text[:m.start()].strip()
+523     expl = m.group(1)
+524     options = options.copy()
+525     options['explanation'] = expl
+526     return [nodes.abbreviation(abbr, abbr, **options)], []
+527 
+528 
+529 class Abbreviation(SphinxRole):
+530     abbr_re = re.compile(r'\((.*)\)$', re.S)
+531 
+532     def run(self) -> Tuple[List[Node], List[system_message]]:
+533         matched = self.abbr_re.search(self.text)
+534         if matched:
+535             text = self.text[:matched.start()].strip()
+536             self.options['explanation'] = matched.group(1)
+537         else:
+538             text = self.text
+539 
+540         return [nodes.abbreviation(self.rawtext, text, **self.options)], []
+541 
+542 
+543 def index_role(typ: str, rawtext: str, text: str, lineno: int, inliner: Inliner,
+544                options: Dict = {}, content: List[str] = []
+545                ) -> Tuple[List[Node], List[system_message]]:
+546     warnings.warn('index_role() is deprecated.  Please use Index class instead.',
+547                   RemovedInSphinx40Warning, stacklevel=2)
+548     # create new reference target
+549     env = inliner.document.settings.env
+550     targetid = 'index-%s' % env.new_serialno('index')
+551     targetnode = nodes.target('', '', ids=[targetid])
+552     # split text and target in role content
+553     has_explicit_title, title, target = split_explicit_title(text)
+554     title = utils.unescape(title)
+555     target = utils.unescape(target)
+556     # if an explicit target is given, we can process it as a full entry
+557     if has_explicit_title:
+558         entries = process_index_entry(target, targetid)
+559     # otherwise we just create a "single" entry
+560     else:
+561         # but allow giving main entry
+562         main = ''
+563         if target.startswith('!'):
+564             target = target[1:]
+565             title = title[1:]
+566             main = 'main'
+567         entries = [('single', target, targetid, main, None)]
+568     indexnode = addnodes.index()
+569     indexnode['entries'] = entries
+570     set_role_source_info(inliner, lineno, indexnode)
+571     textnode = nodes.Text(title, title)
+572     return [indexnode, targetnode, textnode], []
+573 
+574 
+575 class Index(ReferenceRole):
+576     def run(self) -> Tuple[List[Node], List[system_message]]:
+577         warnings.warn('Index role is deprecated.', RemovedInSphinx40Warning)
+578         target_id = 'index-%s' % self.env.new_serialno('index')
+579         if self.has_explicit_title:
+580             # if an explicit target is given, process it as a full entry
+581             title = self.title
+582             entries = process_index_entry(self.target, target_id)
+583         else:
+584             # otherwise we just create a single entry
+585             if self.target.startswith('!'):
+586                 title = self.title[1:]
+587                 entries = [('single', self.target[1:], target_id, 'main', None)]
+588             else:
+589                 title = self.title
+590                 entries = [('single', self.target, target_id, '', None)]
+591 
+592         index = addnodes.index(entries=entries)
+593         target = nodes.target('', '', ids=[target_id])
+594         text = nodes.Text(title, title)
+595         self.set_source_info(index)
+596         return [index, target, text], []
+597 
+598 
+599 specific_docroles = {
+600     # links to download references
+601     'download': XRefRole(nodeclass=addnodes.download_reference),
+602     # links to anything
+603     'any': AnyXRefRole(warn_dangling=True),
+604 
+605     'pep': PEP(),
+606     'rfc': RFC(),
+607     'guilabel': GUILabel(),
+608     'menuselection': MenuSelection(),
+609     'file': EmphasizedLiteral(),
+610     'samp': EmphasizedLiteral(),
+611     'abbr': Abbreviation(),
+612 }  # type: Dict[str, RoleFunction]
+613 
+614 
+615 def setup(app: "Sphinx") -> Dict[str, Any]:
+616     from docutils.parsers.rst import roles
+617 
+618     for rolename, nodeclass in generic_docroles.items():
+619         generic = roles.GenericRole(rolename, nodeclass)
+620         role = roles.CustomRole(rolename, generic, {'classes': [rolename]})
+621         roles.register_local_role(rolename, role)
+622 
+623     for rolename, func in specific_docroles.items():
+624         roles.register_local_role(rolename, func)
+625 
+626     return {
+627         'version': 'builtin',
+628         'parallel_read_safe': True,
+629         'parallel_write_safe': True,
+630     }
+
+</code><intended_behavior>Modify the existing parsing logic to detect the ':kbd:' role and split its content on spaces or specific delimiters (like '-' for key combinations). Then, for each part of the split content, generate individual '<kbd>' HTML elements or nest them within a parent '<kbd>' element, depending on the intended structure. The modification should ensure it does not affect the handling of other roles or elements negatively.</intended_behavior>, <file>sphinx/writers/html.py</file>
+<class>HTMLTranslator</class>
+<method>None</method>
+<code>
+82 class HTMLTranslator(SphinxTranslator, BaseTranslator):
+83     """
+84     Our custom HTML translator.
+85     """
+86 
+87     builder = None  # type: StandaloneHTMLBuilder
+88 
+89     def __init__(self, *args: Any) -> None:
+90         if isinstance(args[0], nodes.document) and isinstance(args[1], Builder):
+91             document, builder = args
+92         else:
+93             warnings.warn('The order of arguments for HTMLTranslator has been changed. '
+94                           'Please give "document" as 1st and "builder" as 2nd.',
+95                           RemovedInSphinx40Warning, stacklevel=2)
+96             builder, document = args
+97         super().__init__(document, builder)
+98 
+99         self.highlighter = self.builder.highlighter
+100         self.docnames = [self.builder.current_docname]  # for singlehtml builder
+101         self.manpages_url = self.config.manpages_url
+102         self.protect_literal_text = 0
+103         self.permalink_text = self.config.html_add_permalinks
+104         # support backwards-compatible setting to a bool
+105         if not isinstance(self.permalink_text, str):
+106             self.permalink_text = '¶' if self.permalink_text else ''
+107         self.permalink_text = self.encode(self.permalink_text)
+108         self.secnumber_suffix = self.config.html_secnumber_suffix
+109         self.param_separator = ''
+110         self.optional_param_level = 0
+111         self._table_row_index = 0
+112         self._fieldlist_row_index = 0
+113         self.required_params_left = 0
+114 
+115     def visit_start_of_file(self, node: Element) -> None:
+116         # only occurs in the single-file builder
+117         self.docnames.append(node['docname'])
+118         self.body.append('<span id="document-%s"></span>' % node['docname'])
+119 
+120     def depart_start_of_file(self, node: Element) -> None:
+121         self.docnames.pop()
+122 
+123     def visit_desc(self, node: Element) -> None:
+124         self.body.append(self.starttag(node, 'dl', CLASS=node['objtype']))
+125 
+126     def depart_desc(self, node: Element) -> None:
+127         self.body.append('</dl>\n\n')
+128 
+129     def visit_desc_signature(self, node: Element) -> None:
+130         # the id is set automatically
+131         self.body.append(self.starttag(node, 'dt'))
+132 
+133     def depart_desc_signature(self, node: Element) -> None:
+134         if not node.get('is_multiline'):
+135             self.add_permalink_ref(node, _('Permalink to this definition'))
+136         self.body.append('</dt>\n')
+137 
+138     def visit_desc_signature_line(self, node: Element) -> None:
+139         pass
+140 
+141     def depart_desc_signature_line(self, node: Element) -> None:
+142         if node.get('add_permalink'):
+143             # the permalink info is on the parent desc_signature node
+144             self.add_permalink_ref(node.parent, _('Permalink to this definition'))
+145         self.body.append('<br />')
+146 
+147     def visit_desc_addname(self, node: Element) -> None:
+148         self.body.append(self.starttag(node, 'code', '', CLASS='descclassname'))
+149 
+150     def depart_desc_addname(self, node: Element) -> None:
+151         self.body.append('</code>')
+152 
+153     def visit_desc_type(self, node: Element) -> None:
+154         pass
+155 
+156     def depart_desc_type(self, node: Element) -> None:
+157         pass
+158 
+159     def visit_desc_returns(self, node: Element) -> None:
+160         self.body.append(' &#x2192; ')
+161 
+162     def depart_desc_returns(self, node: Element) -> None:
+163         pass
+164 
+165     def visit_desc_name(self, node: Element) -> None:
+166         self.body.append(self.starttag(node, 'code', '', CLASS='descname'))
+167 
+168     def depart_desc_name(self, node: Element) -> None:
+169         self.body.append('</code>')
+170 
+171     def visit_desc_parameterlist(self, node: Element) -> None:
+172         self.body.append('<span class="sig-paren">(</span>')
+173         self.first_param = 1
+174         self.optional_param_level = 0
+175         # How many required parameters are left.
+176         self.required_params_left = sum([isinstance(c, addnodes.desc_parameter)
+177                                          for c in node.children])
+178         self.param_separator = node.child_text_separator
+179 
+180     def depart_desc_parameterlist(self, node: Element) -> None:
+181         self.body.append('<span class="sig-paren">)</span>')
+182 
+183     # If required parameters are still to come, then put the comma after
+184     # the parameter.  Otherwise, put the comma before.  This ensures that
+185     # signatures like the following render correctly (see issue #1001):
+186     #
+187     #     foo([a, ]b, c[, d])
+188     #
+189     def visit_desc_parameter(self, node: Element) -> None:
+190         if self.first_param:
+191             self.first_param = 0
+192         elif not self.required_params_left:
+193             self.body.append(self.param_separator)
+194         if self.optional_param_level == 0:
+195             self.required_params_left -= 1
+196         if not node.hasattr('noemph'):
+197             self.body.append('<em>')
+198 
+199     def depart_desc_parameter(self, node: Element) -> None:
+200         if not node.hasattr('noemph'):
+201             self.body.append('</em>')
+202         if self.required_params_left:
+203             self.body.append(self.param_separator)
+204 
+205     def visit_desc_optional(self, node: Element) -> None:
+206         self.optional_param_level += 1
+207         self.body.append('<span class="optional">[</span>')
+208 
+209     def depart_desc_optional(self, node: Element) -> None:
+210         self.optional_param_level -= 1
+211         self.body.append('<span class="optional">]</span>')
+212 
+213     def visit_desc_annotation(self, node: Element) -> None:
+214         self.body.append(self.starttag(node, 'em', '', CLASS='property'))
+215 
+216     def depart_desc_annotation(self, node: Element) -> None:
+217         self.body.append('</em>')
+218 
+219     def visit_desc_content(self, node: Element) -> None:
+220         self.body.append(self.starttag(node, 'dd', ''))
+221 
+222     def depart_desc_content(self, node: Element) -> None:
+223         self.body.append('</dd>')
+224 
+225     def visit_versionmodified(self, node: Element) -> None:
+226         self.body.append(self.starttag(node, 'div', CLASS=node['type']))
+227 
+228     def depart_versionmodified(self, node: Element) -> None:
+229         self.body.append('</div>\n')
+230 
+231     # overwritten
+232     def visit_reference(self, node: Element) -> None:
+233         atts = {'class': 'reference'}
+234         if node.get('internal') or 'refuri' not in node:
+235             atts['class'] += ' internal'
+236         else:
+237             atts['class'] += ' external'
+238         if 'refuri' in node:
+239             atts['href'] = node['refuri'] or '#'
+240             if self.settings.cloak_email_addresses and atts['href'].startswith('mailto:'):
+241                 atts['href'] = self.cloak_mailto(atts['href'])
+242                 self.in_mailto = True
+243         else:
+244             assert 'refid' in node, \
+245                    'References must have "refuri" or "refid" attribute.'
+246             atts['href'] = '#' + node['refid']
+247         if not isinstance(node.parent, nodes.TextElement):
+248             assert len(node) == 1 and isinstance(node[0], nodes.image)
+249             atts['class'] += ' image-reference'
+250         if 'reftitle' in node:
+251             atts['title'] = node['reftitle']
+252         if 'target' in node:
+253             atts['target'] = node['target']
+254         self.body.append(self.starttag(node, 'a', '', **atts))
+255 
+256         if node.get('secnumber'):
+257             self.body.append(('%s' + self.secnumber_suffix) %
+258                              '.'.join(map(str, node['secnumber'])))
+259 
+260     def visit_number_reference(self, node: Element) -> None:
+261         self.visit_reference(node)
+262 
+263     def depart_number_reference(self, node: Element) -> None:
+264         self.depart_reference(node)
+265 
+266     # overwritten -- we don't want source comments to show up in the HTML
+267     def visit_comment(self, node: Element) -> None:  # type: ignore
+268         raise nodes.SkipNode
+269 
+270     # overwritten
+271     def visit_admonition(self, node: Element, name: str = '') -> None:
+272         self.body.append(self.starttag(
+273             node, 'div', CLASS=('admonition ' + name)))
+274         if name:
+275             node.insert(0, nodes.title(name, admonitionlabels[name]))
+276         self.set_first_last(node)
+277 
+278     def visit_seealso(self, node: Element) -> None:
+279         self.visit_admonition(node, 'seealso')
+280 
+281     def depart_seealso(self, node: Element) -> None:
+282         self.depart_admonition(node)
+283 
+284     def get_secnumber(self, node: Element) -> Tuple[int, ...]:
+285         if node.get('secnumber'):
+286             return node['secnumber']
+287         elif isinstance(node.parent, nodes.section):
+288             if self.builder.name == 'singlehtml':
+289                 docname = self.docnames[-1]
+290                 anchorname = "%s/#%s" % (docname, node.parent['ids'][0])
+291                 if anchorname not in self.builder.secnumbers:
+292                     anchorname = "%s/" % docname  # try first heading which has no anchor
+293             else:
+294                 anchorname = '#' + node.parent['ids'][0]
+295                 if anchorname not in self.builder.secnumbers:
+296                     anchorname = ''  # try first heading which has no anchor
+297 
+298             if self.builder.secnumbers.get(anchorname):
+299                 return self.builder.secnumbers[anchorname]
+300 
+301         return None
+302 
+303     def add_secnumber(self, node: Element) -> None:
+304         secnumber = self.get_secnumber(node)
+305         if secnumber:
+306             self.body.append('<span class="section-number">%s</span>' %
+307                              ('.'.join(map(str, secnumber)) + self.secnumber_suffix))
+308 
+309     def add_fignumber(self, node: Element) -> None:
+310         def append_fignumber(figtype: str, figure_id: str) -> None:
+311             if self.builder.name == 'singlehtml':
+312                 key = "%s/%s" % (self.docnames[-1], figtype)
+313             else:
+314                 key = figtype
+315 
+316             if figure_id in self.builder.fignumbers.get(key, {}):
+317                 self.body.append('<span class="caption-number">')
+318                 prefix = self.builder.config.numfig_format.get(figtype)
+319                 if prefix is None:
+320                     msg = __('numfig_format is not defined for %s') % figtype
+321                     logger.warning(msg)
+322                 else:
+323                     numbers = self.builder.fignumbers[key][figure_id]
+324                     self.body.append(prefix % '.'.join(map(str, numbers)) + ' ')
+325                     self.body.append('</span>')
+326 
+327         figtype = self.builder.env.domains['std'].get_enumerable_node_type(node)
+328         if figtype:
+329             if len(node['ids']) == 0:
+330                 msg = __('Any IDs not assigned for %s node') % node.tagname
+331                 logger.warning(msg, location=node)
+332             else:
+333                 append_fignumber(figtype, node['ids'][0])
+334 
+335     def add_permalink_ref(self, node: Element, title: str) -> None:
+336         if node['ids'] and self.permalink_text and self.builder.add_permalinks:
+337             format = '<a class="headerlink" href="#%s" title="%s">%s</a>'
+338             self.body.append(format % (node['ids'][0], title, self.permalink_text))
+339 
+340     def generate_targets_for_listing(self, node: Element) -> None:
+341         """Generate hyperlink targets for listings.
+342 
+343         Original visit_bullet_list(), visit_definition_list() and visit_enumerated_list()
+344         generates hyperlink targets inside listing tags (<ul>, <ol> and <dl>) if multiple
+345         IDs are assigned to listings.  That is invalid DOM structure.
+346         (This is a bug of docutils <= 0.12)
+347 
+348         This exports hyperlink targets before listings to make valid DOM structure.
+349         """
+350         for id in node['ids'][1:]:
+351             self.body.append('<span id="%s"></span>' % id)
+352             node['ids'].remove(id)
+353 
+354     # overwritten
+355     def visit_bullet_list(self, node: Element) -> None:
+356         if len(node) == 1 and isinstance(node[0], addnodes.toctree):
+357             # avoid emitting empty <ul></ul>
+358             raise nodes.SkipNode
+359         self.generate_targets_for_listing(node)
+360         super().visit_bullet_list(node)
+361 
+362     # overwritten
+363     def visit_enumerated_list(self, node: Element) -> None:
+364         self.generate_targets_for_listing(node)
+365         super().visit_enumerated_list(node)
+366 
+367     # overwritten
+368     def visit_definition(self, node: Element) -> None:
+369         # don't insert </dt> here.
+370         self.body.append(self.starttag(node, 'dd', ''))
+371 
+372     # overwritten
+373     def depart_definition(self, node: Element) -> None:
+374         self.body.append('</dd>\n')
+375 
+376     # overwritten
+377     def visit_classifier(self, node: Element) -> None:
+378         self.body.append(self.starttag(node, 'span', '', CLASS='classifier'))
+379 
+380     # overwritten
+381     def depart_classifier(self, node: Element) -> None:
+382         self.body.append('</span>')
+383 
+384         next_node = node.next_node(descend=False, siblings=True)  # type: Node
+385         if not isinstance(next_node, nodes.classifier):
+386             # close `<dt>` tag at the tail of classifiers
+387             self.body.append('</dt>')
+388 
+389     # overwritten
+390     def visit_term(self, node: Element) -> None:
+391         self.body.append(self.starttag(node, 'dt', ''))
+392 
+393     # overwritten
+394     def depart_term(self, node: Element) -> None:
+395         next_node = node.next_node(descend=False, siblings=True)  # type: Node
+396         if isinstance(next_node, nodes.classifier):
+397             # Leave the end tag to `self.depart_classifier()`, in case
+398             # there's a classifier.
+399             pass
+400         else:
+401             self.body.append('</dt>')
+402 
+403     # overwritten
+404     def visit_title(self, node: Element) -> None:
+405         super().visit_title(node)
+406         self.add_secnumber(node)
+407         self.add_fignumber(node.parent)
+408         if isinstance(node.parent, nodes.table):
+409             self.body.append('<span class="caption-text">')
+410 
+411     def depart_title(self, node: Element) -> None:
+412         close_tag = self.context[-1]
+413         if (self.permalink_text and self.builder.add_permalinks and
+414            node.parent.hasattr('ids') and node.parent['ids']):
+415             # add permalink anchor
+416             if close_tag.startswith('</h'):
+417                 self.add_permalink_ref(node.parent, _('Permalink to this headline'))
+418             elif close_tag.startswith('</a></h'):
+419                 self.body.append('</a><a class="headerlink" href="#%s" ' %
+420                                  node.parent['ids'][0] +
+421                                  'title="%s">%s' % (
+422                                      _('Permalink to this headline'),
+423                                      self.permalink_text))
+424             elif isinstance(node.parent, nodes.table):
+425                 self.body.append('</span>')
+426                 self.add_permalink_ref(node.parent, _('Permalink to this table'))
+427         elif isinstance(node.parent, nodes.table):
+428             self.body.append('</span>')
+429 
+430         super().depart_title(node)
+431 
+432     # overwritten
+433     def visit_literal_block(self, node: Element) -> None:
+434         if node.rawsource != node.astext():
+435             # most probably a parsed-literal block -- don't highlight
+436             return super().visit_literal_block(node)
+437 
+438         lang = node.get('language', 'default')
+439         linenos = node.get('linenos', False)
+440         highlight_args = node.get('highlight_args', {})
+441         highlight_args['force'] = node.get('force', False)
+442         if lang is self.builder.config.highlight_language:
+443             # only pass highlighter options for original language
+444             opts = self.builder.config.highlight_options
+445         else:
+446             opts = {}
+447 
+448         highlighted = self.highlighter.highlight_block(
+449             node.rawsource, lang, opts=opts, linenos=linenos,
+450             location=(self.builder.current_docname, node.line), **highlight_args
+451         )
+452         starttag = self.starttag(node, 'div', suffix='',
+453                                  CLASS='highlight-%s notranslate' % lang)
+454         self.body.append(starttag + highlighted + '</div>\n')
+455         raise nodes.SkipNode
+456 
+457     def visit_caption(self, node: Element) -> None:
+458         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+459             self.body.append('<div class="code-block-caption">')
+460         else:
+461             super().visit_caption(node)
+462         self.add_fignumber(node.parent)
+463         self.body.append(self.starttag(node, 'span', '', CLASS='caption-text'))
+464 
+465     def depart_caption(self, node: Element) -> None:
+466         self.body.append('</span>')
+467 
+468         # append permalink if available
+469         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+470             self.add_permalink_ref(node.parent, _('Permalink to this code'))
+471         elif isinstance(node.parent, nodes.figure):
+472             self.add_permalink_ref(node.parent, _('Permalink to this image'))
+473         elif node.parent.get('toctree'):
+474             self.add_permalink_ref(node.parent.parent, _('Permalink to this toctree'))
+475 
+476         if isinstance(node.parent, nodes.container) and node.parent.get('literal_block'):
+477             self.body.append('</div>\n')
+478         else:
+479             super().depart_caption(node)
+480 
+481     def visit_doctest_block(self, node: Element) -> None:
+482         self.visit_literal_block(node)
+483 
+484     # overwritten to add the <div> (for XHTML compliance)
+485     def visit_block_quote(self, node: Element) -> None:
+486         self.body.append(self.starttag(node, 'blockquote') + '<div>')
+487 
+488     def depart_block_quote(self, node: Element) -> None:
+489         self.body.append('</div></blockquote>\n')
+490 
+491     # overwritten
+492     def visit_literal(self, node: Element) -> None:
+493         if 'kbd' in node['classes']:
+494             self.body.append(self.starttag(node, 'kbd', '',
+495                                            CLASS='docutils literal notranslate'))
+496         else:
+497             self.body.append(self.starttag(node, 'code', '',
+498                                            CLASS='docutils literal notranslate'))
+499             self.protect_literal_text += 1
+500 
+501     def depart_literal(self, node: Element) -> None:
+502         if 'kbd' in node['classes']:
+503             self.body.append('</kbd>')
+504         else:
+505             self.protect_literal_text -= 1
+506             self.body.append('</code>')
+507 
+508     def visit_productionlist(self, node: Element) -> None:
+509         self.body.append(self.starttag(node, 'pre'))
+510         names = []
+511         productionlist = cast(Iterable[addnodes.production], node)
+512         for production in productionlist:
+513             names.append(production['tokenname'])
+514         maxlen = max(len(name) for name in names)
+515         lastname = None
+516         for production in productionlist:
+517             if production['tokenname']:
+518                 lastname = production['tokenname'].ljust(maxlen)
+519                 self.body.append(self.starttag(production, 'strong', ''))
+520                 self.body.append(lastname + '</strong> ::= ')
+521             elif lastname is not None:
+522                 self.body.append('%s     ' % (' ' * len(lastname)))
+523             production.walkabout(self)
+524             self.body.append('\n')
+525         self.body.append('</pre>\n')
+526         raise nodes.SkipNode
+527 
+528     def depart_productionlist(self, node: Element) -> None:
+529         pass
+530 
+531     def visit_production(self, node: Element) -> None:
+532         pass
+533 
+534     def depart_production(self, node: Element) -> None:
+535         pass
+536 
+537     def visit_centered(self, node: Element) -> None:
+538         self.body.append(self.starttag(node, 'p', CLASS="centered") +
+539                          '<strong>')
+540 
+541     def depart_centered(self, node: Element) -> None:
+542         self.body.append('</strong></p>')
+543 
+544     # overwritten
+545     def should_be_compact_paragraph(self, node: Node) -> bool:
+546         """Determine if the <p> tags around paragraph can be omitted."""
+547         if isinstance(node.parent, addnodes.desc_content):
+548             # Never compact desc_content items.
+549             return False
+550         if isinstance(node.parent, addnodes.versionmodified):
+551             # Never compact versionmodified nodes.
+552             return False
+553         return super().should_be_compact_paragraph(node)
+554 
+555     def visit_compact_paragraph(self, node: Element) -> None:
+556         pass
+557 
+558     def depart_compact_paragraph(self, node: Element) -> None:
+559         pass
+560 
+561     def visit_download_reference(self, node: Element) -> None:
+562         atts = {'class': 'reference download',
+563                 'download': ''}
+564 
+565         if not self.builder.download_support:
+566             self.context.append('')
+567         elif 'refuri' in node:
+568             atts['class'] += ' external'
+569             atts['href'] = node['refuri']
+570             self.body.append(self.starttag(node, 'a', '', **atts))
+571             self.context.append('</a>')
+572         elif 'filename' in node:
+573             atts['class'] += ' internal'
+574             atts['href'] = posixpath.join(self.builder.dlpath, node['filename'])
+575             self.body.append(self.starttag(node, 'a', '', **atts))
+576             self.context.append('</a>')
+577         else:
+578             self.context.append('')
+579 
+580     def depart_download_reference(self, node: Element) -> None:
+581         self.body.append(self.context.pop())
+582 
+583     # overwritten
+584     def visit_image(self, node: Element) -> None:
+585         olduri = node['uri']
+586         # rewrite the URI if the environment knows about it
+587         if olduri in self.builder.images:
+588             node['uri'] = posixpath.join(self.builder.imgpath,
+589                                          self.builder.images[olduri])
+590 
+591         if 'scale' in node:
+592             # Try to figure out image height and width.  Docutils does that too,
+593             # but it tries the final file name, which does not necessarily exist
+594             # yet at the time the HTML file is written.
+595             if not ('width' in node and 'height' in node):
+596                 size = get_image_size(os.path.join(self.builder.srcdir, olduri))
+597                 if size is None:
+598                     logger.warning(__('Could not obtain image size. :scale: option is ignored.'),  # NOQA
+599                                    location=node)
+600                 else:
+601                     if 'width' not in node:
+602                         node['width'] = str(size[0])
+603                     if 'height' not in node:
+604                         node['height'] = str(size[1])
+605 
+606         uri = node['uri']
+607         if uri.lower().endswith(('svg', 'svgz')):
+608             atts = {'src': uri}
+609             if 'width' in node:
+610                 atts['width'] = node['width']
+611             if 'height' in node:
+612                 atts['height'] = node['height']
+613             if 'scale' in node:
+614                 if 'width' in atts:
+615                     atts['width'] = multiply_length(atts['width'], node['scale'])
+616                 if 'height' in atts:
+617                     atts['height'] = multiply_length(atts['height'], node['scale'])
+618             atts['alt'] = node.get('alt', uri)
+619             if 'align' in node:
+620                 atts['class'] = 'align-%s' % node['align']
+621             self.body.append(self.emptytag(node, 'img', '', **atts))
+622             return
+623 
+624         super().visit_image(node)
+625 
+626     # overwritten
+627     def depart_image(self, node: Element) -> None:
+628         if node['uri'].lower().endswith(('svg', 'svgz')):
+629             pass
+630         else:
+631             super().depart_image(node)
+632 
+633     def visit_toctree(self, node: Element) -> None:
+634         # this only happens when formatting a toc from env.tocs -- in this
+635         # case we don't want to include the subtree
+636         raise nodes.SkipNode
+637 
+638     def visit_index(self, node: Element) -> None:
+639         raise nodes.SkipNode
+640 
+641     def visit_tabular_col_spec(self, node: Element) -> None:
+642         raise nodes.SkipNode
+643 
+644     def visit_glossary(self, node: Element) -> None:
+645         pass
+646 
+647     def depart_glossary(self, node: Element) -> None:
+648         pass
+649 
+650     def visit_acks(self, node: Element) -> None:
+651         pass
+652 
+653     def depart_acks(self, node: Element) -> None:
+654         pass
+655 
+656     def visit_hlist(self, node: Element) -> None:
+657         self.body.append('<table class="hlist"><tr>')
+658 
+659     def depart_hlist(self, node: Element) -> None:
+660         self.body.append('</tr></table>\n')
+661 
+662     def visit_hlistcol(self, node: Element) -> None:
+663         self.body.append('<td>')
+664 
+665     def depart_hlistcol(self, node: Element) -> None:
+666         self.body.append('</td>')
+667 
+668     def visit_option_group(self, node: Element) -> None:
+669         super().visit_option_group(node)
+670         self.context[-2] = self.context[-2].replace('&nbsp;', '&#160;')
+671 
+672     # overwritten
+673     def visit_Text(self, node: Text) -> None:
+674         text = node.astext()
+675         encoded = self.encode(text)
+676         if self.protect_literal_text:
+677             # moved here from base class's visit_literal to support
+678             # more formatting in literal nodes
+679             for token in self.words_and_spaces.findall(encoded):
+680                 if token.strip():
+681                     # protect literal text from line wrapping
+682                     self.body.append('<span class="pre">%s</span>' % token)
+683                 elif token in ' \n':
+684                     # allow breaks at whitespace
+685                     self.body.append(token)
+686                 else:
+687                     # protect runs of multiple spaces; the last one can wrap
+688                     self.body.append('&#160;' * (len(token) - 1) + ' ')
+689         else:
+690             if self.in_mailto and self.settings.cloak_email_addresses:
+691                 encoded = self.cloak_email(encoded)
+692             self.body.append(encoded)
+693 
+694     def visit_note(self, node: Element) -> None:
+695         self.visit_admonition(node, 'note')
+696 
+697     def depart_note(self, node: Element) -> None:
+698         self.depart_admonition(node)
+699 
+700     def visit_warning(self, node: Element) -> None:
+701         self.visit_admonition(node, 'warning')
+702 
+703     def depart_warning(self, node: Element) -> None:
+704         self.depart_admonition(node)
+705 
+706     def visit_attention(self, node: Element) -> None:
+707         self.visit_admonition(node, 'attention')
+708 
+709     def depart_attention(self, node: Element) -> None:
+710         self.depart_admonition(node)
+711 
+712     def visit_caution(self, node: Element) -> None:
+713         self.visit_admonition(node, 'caution')
+714 
+715     def depart_caution(self, node: Element) -> None:
+716         self.depart_admonition(node)
+717 
+718     def visit_danger(self, node: Element) -> None:
+719         self.visit_admonition(node, 'danger')
+720 
+721     def depart_danger(self, node: Element) -> None:
+722         self.depart_admonition(node)
+723 
+724     def visit_error(self, node: Element) -> None:
+725         self.visit_admonition(node, 'error')
+726 
+727     def depart_error(self, node: Element) -> None:
+728         self.depart_admonition(node)
+729 
+730     def visit_hint(self, node: Element) -> None:
+731         self.visit_admonition(node, 'hint')
+732 
+733     def depart_hint(self, node: Element) -> None:
+734         self.depart_admonition(node)
+735 
+736     def visit_important(self, node: Element) -> None:
+737         self.visit_admonition(node, 'important')
+738 
+739     def depart_important(self, node: Element) -> None:
+740         self.depart_admonition(node)
+741 
+742     def visit_tip(self, node: Element) -> None:
+743         self.visit_admonition(node, 'tip')
+744 
+745     def depart_tip(self, node: Element) -> None:
+746         self.depart_admonition(node)
+747 
+748     def visit_literal_emphasis(self, node: Element) -> None:
+749         return self.visit_emphasis(node)
+750 
+751     def depart_literal_emphasis(self, node: Element) -> None:
+752         return self.depart_emphasis(node)
+753 
+754     def visit_literal_strong(self, node: Element) -> None:
+755         return self.visit_strong(node)
+756 
+757     def depart_literal_strong(self, node: Element) -> None:
+758         return self.depart_strong(node)
+759 
+760     def visit_abbreviation(self, node: Element) -> None:
+761         attrs = {}
+762         if node.hasattr('explanation'):
+763             attrs['title'] = node['explanation']
+764         self.body.append(self.starttag(node, 'abbr', '', **attrs))
+765 
+766     def depart_abbreviation(self, node: Element) -> None:
+767         self.body.append('</abbr>')
+768 
+769     def visit_manpage(self, node: Element) -> None:
+770         self.visit_literal_emphasis(node)
+771         if self.manpages_url:
+772             node['refuri'] = self.manpages_url.format(**node.attributes)
+773             self.visit_reference(node)
+774 
+775     def depart_manpage(self, node: Element) -> None:
+776         if self.manpages_url:
+777             self.depart_reference(node)
+778         self.depart_literal_emphasis(node)
+779 
+780     # overwritten to add even/odd classes
+781 
+782     def visit_table(self, node: Element) -> None:
+783         self._table_row_index = 0
+784         return super().visit_table(node)
+785 
+786     def visit_row(self, node: Element) -> None:
+787         self._table_row_index += 1
+788         if self._table_row_index % 2 == 0:
+789             node['classes'].append('row-even')
+790         else:
+791             node['classes'].append('row-odd')
+792         self.body.append(self.starttag(node, 'tr', ''))
+793         node.column = 0  # type: ignore
+794 
+795     def visit_entry(self, node: Element) -> None:
+796         super().visit_entry(node)
+797         if self.body[-1] == '&nbsp;':
+798             self.body[-1] = '&#160;'
+799 
+800     def visit_field_list(self, node: Element) -> None:
+801         self._fieldlist_row_index = 0
+802         return super().visit_field_list(node)
+803 
+804     def visit_field(self, node: Element) -> None:
+805         self._fieldlist_row_index += 1
+806         if self._fieldlist_row_index % 2 == 0:
+807             node['classes'].append('field-even')
+808         else:
+809             node['classes'].append('field-odd')
+810         self.body.append(self.starttag(node, 'tr', '', CLASS='field'))
+811 
+812     def visit_field_name(self, node: Element) -> None:
+813         context_count = len(self.context)
+814         super().visit_field_name(node)
+815         if context_count != len(self.context):
+816             self.context[-1] = self.context[-1].replace('&nbsp;', '&#160;')
+817 
+818     def visit_math(self, node: Element, math_env: str = '') -> None:
+819         name = self.builder.math_renderer_name
+820         visit, _ = self.builder.app.registry.html_inline_math_renderers[name]
+821         visit(self, node)
+822 
+823     def depart_math(self, node: Element, math_env: str = '') -> None:
+824         name = self.builder.math_renderer_name
+825         _, depart = self.builder.app.registry.html_inline_math_renderers[name]
+826         if depart:
+827             depart(self, node)
+828 
+829     def visit_math_block(self, node: Element, math_env: str = '') -> None:
+830         name = self.builder.math_renderer_name
+831         visit, _ = self.builder.app.registry.html_block_math_renderers[name]
+832         visit(self, node)
+833 
+834     def depart_math_block(self, node: Element, math_env: str = '') -> None:
+835         name = self.builder.math_renderer_name
+836         _, depart = self.builder.app.registry.html_block_math_renderers[name]
+837         if depart:
+838             depart(self, node)
+839 
+840     def unknown_visit(self, node: Node) -> None:
+841         raise NotImplementedError('Unknown node: ' + node.__class__.__name__)
+
+</code><intended_behavior>Enhance or add a method to convert the parsed ':kbd:' content (now possibly as a list of keys or commands) into the desired HTML structure. This may involve either appending multiple '<kbd>' tags together for individual keys or wrapping them in a single '<kbd>' tag for nested representation. The approach should be configurable or determined based on best practices or user preference.</intended_behavior>]
+2025-10-16 00:41:20.953 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-16 00:41:20.953 | INFO     | Search-only: skipping patch selection
+2025-10-16 00:41:21.039 | INFO     | Task sphinx-doc__sphinx-7593 completed successfully.
+2025-10-16 00:41:21.040 | INFO     | No patch generated. You can try running ACR again.

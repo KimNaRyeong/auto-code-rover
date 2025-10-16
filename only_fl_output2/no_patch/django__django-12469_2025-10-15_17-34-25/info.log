@@ -1,0 +1,1589 @@
+2025-10-15 17:34:25.763 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-15 17:34:29.121 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=158, output_tokens=12, cost=0.001940
+2025-10-15 17:34:29.122 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-15 17:34:29.129 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-15 17:34:39.589 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=463, output_tokens=381, cost=0.016060
+2025-10-15 17:34:39.597 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-15 17:34:42.205 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=735, output_tokens=67, cost=0.009360
+2025-10-15 17:34:42.207 | DEBUG    | Extracted a valid json.
+2025-10-15 17:34:42.207 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method(\"get_next_by_date\")",
+        "search_method(\"get_prev_by_date\")",
+        "search_class(\"DateHierarchyListFilter\")",
+        "search_code(\"tzinfo\")",
+        "search_code(\"date_hierarchy\")"
+    ],
+    "bug_locations": []
+}
+2025-10-15 17:34:42.356 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-15 17:34:42.356 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-15 17:34:55.562 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1469, output_tokens=593, cost=0.032480
+2025-10-15 17:34:55.569 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-15 17:35:06.061 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2278, output_tokens=415, cost=0.035230
+2025-10-15 17:35:06.066 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-15 17:35:13.919 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=769, output_tokens=316, cost=0.017170
+2025-10-15 17:35:13.920 | DEBUG    | Extracted a valid json.
+2025-10-15 17:35:13.921 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/contrib/admin/views/main.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The code in this file responsible for handling date hierarchies needs to be adjusted so that it accounts for user-specific timezones when determining the start and end of the month. This means ensuring that when filtering by month, the calculation of date boundaries (e.g., the first and last day of the month) should consider the user's timezone. Any logic that computes these boundaries must correctly translate dates to avoid including days from the adjacent month due to timezone offsets. Importantly, this fix must preserve existing functionality for users in the UTC timezone or when timezone support is disabled, ensuring backward compatibility."
+        },
+        {
+            "file": "django/utils/timezone.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Ensure that this utility file's functions, which are likely used across the admin interface for timezone adjustments, accurately handle the conversion of dates to and from the user's timezone in a way that does not inadvertently shift dates across month boundaries. As this file contains timezone utilities used throughout Django, the modifications here should be made cautiously to ensure that changes do not adversely affect other parts of the framework. It should offer a reliable way to perform date boundary calculations that are sensitive to the timezone, perhaps by providing utility functions specifically designed to calculate start and end dates of months within the correct timezone context."
+        }
+    ]
+}
+2025-10-15 17:35:13.927 | DEBUG    | Bug location extracted successfully: [<file>django/contrib/admin/views/main.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from datetime import datetime, timedelta
+2 
+3 from django import forms
+4 from django.conf import settings
+5 from django.contrib import messages
+6 from django.contrib.admin import FieldListFilter
+7 from django.contrib.admin.exceptions import (
+8     DisallowedModelAdminLookup, DisallowedModelAdminToField,
+9 )
+10 from django.contrib.admin.options import (
+11     IS_POPUP_VAR, TO_FIELD_VAR, IncorrectLookupParameters,
+12 )
+13 from django.contrib.admin.utils import (
+14     get_fields_from_path, lookup_needs_distinct, prepare_lookup_value, quote,
+15 )
+16 from django.core.exceptions import (
+17     FieldDoesNotExist, ImproperlyConfigured, SuspiciousOperation,
+18 )
+19 from django.core.paginator import InvalidPage
+20 from django.db.models import F, Field, ManyToOneRel, OrderBy
+21 from django.db.models.expressions import Combinable
+22 from django.urls import reverse
+23 from django.utils.http import urlencode
+24 from django.utils.timezone import make_aware
+25 from django.utils.translation import gettext
+26 
+27 # Changelist settings
+28 ALL_VAR = 'all'
+29 ORDER_VAR = 'o'
+30 ORDER_TYPE_VAR = 'ot'
+31 PAGE_VAR = 'p'
+32 SEARCH_VAR = 'q'
+33 ERROR_FLAG = 'e'
+34 
+35 IGNORED_PARAMS = (
+36     ALL_VAR, ORDER_VAR, ORDER_TYPE_VAR, SEARCH_VAR, IS_POPUP_VAR, TO_FIELD_VAR)
+37 
+38 
+39 class ChangeListSearchForm(forms.Form):
+40     def __init__(self, *args, **kwargs):
+41         super().__init__(*args, **kwargs)
+42         # Populate "fields" dynamically because SEARCH_VAR is a variable:
+43         self.fields = {
+44             SEARCH_VAR: forms.CharField(required=False, strip=False),
+45         }
+46 
+47 
+48 class ChangeList:
+49     search_form_class = ChangeListSearchForm
+50 
+51     def __init__(self, request, model, list_display, list_display_links,
+52                  list_filter, date_hierarchy, search_fields, list_select_related,
+53                  list_per_page, list_max_show_all, list_editable, model_admin, sortable_by):
+54         self.model = model
+55         self.opts = model._meta
+56         self.lookup_opts = self.opts
+57         self.root_queryset = model_admin.get_queryset(request)
+58         self.list_display = list_display
+59         self.list_display_links = list_display_links
+60         self.list_filter = list_filter
+61         self.has_filters = None
+62         self.date_hierarchy = date_hierarchy
+63         self.search_fields = search_fields
+64         self.list_select_related = list_select_related
+65         self.list_per_page = list_per_page
+66         self.list_max_show_all = list_max_show_all
+67         self.model_admin = model_admin
+68         self.preserved_filters = model_admin.get_preserved_filters(request)
+69         self.sortable_by = sortable_by
+70 
+71         # Get search parameters from the query string.
+72         _search_form = self.search_form_class(request.GET)
+73         if not _search_form.is_valid():
+74             for error in _search_form.errors.values():
+75                 messages.error(request, ', '.join(error))
+76         self.query = _search_form.cleaned_data.get(SEARCH_VAR) or ''
+77         try:
+78             self.page_num = int(request.GET.get(PAGE_VAR, 0))
+79         except ValueError:
+80             self.page_num = 0
+81         self.show_all = ALL_VAR in request.GET
+82         self.is_popup = IS_POPUP_VAR in request.GET
+83         to_field = request.GET.get(TO_FIELD_VAR)
+84         if to_field and not model_admin.to_field_allowed(request, to_field):
+85             raise DisallowedModelAdminToField("The field %s cannot be referenced." % to_field)
+86         self.to_field = to_field
+87         self.params = dict(request.GET.items())
+88         if PAGE_VAR in self.params:
+89             del self.params[PAGE_VAR]
+90         if ERROR_FLAG in self.params:
+91             del self.params[ERROR_FLAG]
+92 
+93         if self.is_popup:
+94             self.list_editable = ()
+95         else:
+96             self.list_editable = list_editable
+97         self.queryset = self.get_queryset(request)
+98         self.get_results(request)
+99         if self.is_popup:
+100             title = gettext('Select %s')
+101         elif self.model_admin.has_change_permission(request):
+102             title = gettext('Select %s to change')
+103         else:
+104             title = gettext('Select %s to view')
+105         self.title = title % self.opts.verbose_name
+106         self.pk_attname = self.lookup_opts.pk.attname
+107 
+108     def get_filters_params(self, params=None):
+109         """
+110         Return all params except IGNORED_PARAMS.
+111         """
+112         params = params or self.params
+113         lookup_params = params.copy()  # a dictionary of the query string
+114         # Remove all the parameters that are globally and systematically
+115         # ignored.
+116         for ignored in IGNORED_PARAMS:
+117             if ignored in lookup_params:
+118                 del lookup_params[ignored]
+119         return lookup_params
+120 
+121     def get_filters(self, request):
+122         lookup_params = self.get_filters_params()
+123         use_distinct = False
+124 
+125         for key, value in lookup_params.items():
+126             if not self.model_admin.lookup_allowed(key, value):
+127                 raise DisallowedModelAdminLookup("Filtering by %s not allowed" % key)
+128 
+129         filter_specs = []
+130         for list_filter in self.list_filter:
+131             if callable(list_filter):
+132                 # This is simply a custom list filter class.
+133                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+134             else:
+135                 field_path = None
+136                 if isinstance(list_filter, (tuple, list)):
+137                     # This is a custom FieldListFilter class for a given field.
+138                     field, field_list_filter_class = list_filter
+139                 else:
+140                     # This is simply a field name, so use the default
+141                     # FieldListFilter class that has been registered for the
+142                     # type of the given field.
+143                     field, field_list_filter_class = list_filter, FieldListFilter.create
+144                 if not isinstance(field, Field):
+145                     field_path = field
+146                     field = get_fields_from_path(self.model, field_path)[-1]
+147 
+148                 lookup_params_count = len(lookup_params)
+149                 spec = field_list_filter_class(
+150                     field, request, lookup_params,
+151                     self.model, self.model_admin, field_path=field_path,
+152                 )
+153                 # field_list_filter_class removes any lookup_params it
+154                 # processes. If that happened, check if distinct() is needed to
+155                 # remove duplicate results.
+156                 if lookup_params_count > len(lookup_params):
+157                     use_distinct = use_distinct or lookup_needs_distinct(self.lookup_opts, field_path)
+158             if spec and spec.has_output():
+159                 filter_specs.append(spec)
+160 
+161         if self.date_hierarchy:
+162             # Create bounded lookup parameters so that the query is more
+163             # efficient.
+164             year = lookup_params.pop('%s__year' % self.date_hierarchy, None)
+165             if year is not None:
+166                 month = lookup_params.pop('%s__month' % self.date_hierarchy, None)
+167                 day = lookup_params.pop('%s__day' % self.date_hierarchy, None)
+168                 try:
+169                     from_date = datetime(
+170                         int(year),
+171                         int(month if month is not None else 1),
+172                         int(day if day is not None else 1),
+173                     )
+174                 except ValueError as e:
+175                     raise IncorrectLookupParameters(e) from e
+176                 if day:
+177                     to_date = from_date + timedelta(days=1)
+178                 elif month:
+179                     # In this branch, from_date will always be the first of a
+180                     # month, so advancing 32 days gives the next month.
+181                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+182                 else:
+183                     to_date = from_date.replace(year=from_date.year + 1)
+184                 if settings.USE_TZ:
+185                     from_date = make_aware(from_date)
+186                     to_date = make_aware(to_date)
+187                 lookup_params.update({
+188                     '%s__gte' % self.date_hierarchy: from_date,
+189                     '%s__lt' % self.date_hierarchy: to_date,
+190                 })
+191 
+192         # At this point, all the parameters used by the various ListFilters
+193         # have been removed from lookup_params, which now only contains other
+194         # parameters passed via the query string. We now loop through the
+195         # remaining parameters both to ensure that all the parameters are valid
+196         # fields and to determine if at least one of them needs distinct(). If
+197         # the lookup parameters aren't real fields, then bail out.
+198         try:
+199             for key, value in lookup_params.items():
+200                 lookup_params[key] = prepare_lookup_value(key, value)
+201                 use_distinct = use_distinct or lookup_needs_distinct(self.lookup_opts, key)
+202             return filter_specs, bool(filter_specs), lookup_params, use_distinct
+203         except FieldDoesNotExist as e:
+204             raise IncorrectLookupParameters(e) from e
+205 
+206     def get_query_string(self, new_params=None, remove=None):
+207         if new_params is None:
+208             new_params = {}
+209         if remove is None:
+210             remove = []
+211         p = self.params.copy()
+212         for r in remove:
+213             for k in list(p):
+214                 if k.startswith(r):
+215                     del p[k]
+216         for k, v in new_params.items():
+217             if v is None:
+218                 if k in p:
+219                     del p[k]
+220             else:
+221                 p[k] = v
+222         return '?%s' % urlencode(sorted(p.items()))
+223 
+224     def get_results(self, request):
+225         paginator = self.model_admin.get_paginator(request, self.queryset, self.list_per_page)
+226         # Get the number of objects, with admin filters applied.
+227         result_count = paginator.count
+228 
+229         # Get the total number of objects, with no admin filters applied.
+230         if self.model_admin.show_full_result_count:
+231             full_result_count = self.root_queryset.count()
+232         else:
+233             full_result_count = None
+234         can_show_all = result_count <= self.list_max_show_all
+235         multi_page = result_count > self.list_per_page
+236 
+237         # Get the list of objects to display on this page.
+238         if (self.show_all and can_show_all) or not multi_page:
+239             result_list = self.queryset._clone()
+240         else:
+241             try:
+242                 result_list = paginator.page(self.page_num + 1).object_list
+243             except InvalidPage:
+244                 raise IncorrectLookupParameters
+245 
+246         self.result_count = result_count
+247         self.show_full_result_count = self.model_admin.show_full_result_count
+248         # Admin actions are shown if there is at least one entry
+249         # or if entries are not counted because show_full_result_count is disabled
+250         self.show_admin_actions = not self.show_full_result_count or bool(full_result_count)
+251         self.full_result_count = full_result_count
+252         self.result_list = result_list
+253         self.can_show_all = can_show_all
+254         self.multi_page = multi_page
+255         self.paginator = paginator
+256 
+257     def _get_default_ordering(self):
+258         ordering = []
+259         if self.model_admin.ordering:
+260             ordering = self.model_admin.ordering
+261         elif self.lookup_opts.ordering:
+262             ordering = self.lookup_opts.ordering
+263         return ordering
+264 
+265     def get_ordering_field(self, field_name):
+266         """
+267         Return the proper model field name corresponding to the given
+268         field_name to use for ordering. field_name may either be the name of a
+269         proper model field or the name of a method (on the admin or model) or a
+270         callable with the 'admin_order_field' attribute. Return None if no
+271         proper model field name can be matched.
+272         """
+273         try:
+274             field = self.lookup_opts.get_field(field_name)
+275             return field.name
+276         except FieldDoesNotExist:
+277             # See whether field_name is a name of a non-field
+278             # that allows sorting.
+279             if callable(field_name):
+280                 attr = field_name
+281             elif hasattr(self.model_admin, field_name):
+282                 attr = getattr(self.model_admin, field_name)
+283             else:
+284                 attr = getattr(self.model, field_name)
+285             if isinstance(attr, property) and hasattr(attr, 'fget'):
+286                 attr = attr.fget
+287             return getattr(attr, 'admin_order_field', None)
+288 
+289     def get_ordering(self, request, queryset):
+290         """
+291         Return the list of ordering fields for the change list.
+292         First check the get_ordering() method in model admin, then check
+293         the object's default ordering. Then, any manually-specified ordering
+294         from the query string overrides anything. Finally, a deterministic
+295         order is guaranteed by calling _get_deterministic_ordering() with the
+296         constructed ordering.
+297         """
+298         params = self.params
+299         ordering = list(self.model_admin.get_ordering(request) or self._get_default_ordering())
+300         if ORDER_VAR in params:
+301             # Clear ordering and used params
+302             ordering = []
+303             order_params = params[ORDER_VAR].split('.')
+304             for p in order_params:
+305                 try:
+306                     none, pfx, idx = p.rpartition('-')
+307                     field_name = self.list_display[int(idx)]
+308                     order_field = self.get_ordering_field(field_name)
+309                     if not order_field:
+310                         continue  # No 'admin_order_field', skip it
+311                     if isinstance(order_field, OrderBy):
+312                         if pfx == '-':
+313                             order_field = order_field.copy()
+314                             order_field.reverse_ordering()
+315                         ordering.append(order_field)
+316                     elif hasattr(order_field, 'resolve_expression'):
+317                         # order_field is an expression.
+318                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())
+319                     # reverse order if order_field has already "-" as prefix
+320                     elif order_field.startswith('-') and pfx == '-':
+321                         ordering.append(order_field[1:])
+322                     else:
+323                         ordering.append(pfx + order_field)
+324                 except (IndexError, ValueError):
+325                     continue  # Invalid ordering specified, skip it.
+326 
+327         # Add the given query's ordering fields, if any.
+328         ordering.extend(queryset.query.order_by)
+329 
+330         return self._get_deterministic_ordering(ordering)
+331 
+332     def _get_deterministic_ordering(self, ordering):
+333         """
+334         Ensure a deterministic order across all database backends. Search for a
+335         single field or unique together set of fields providing a total
+336         ordering. If these are missing, augment the ordering with a descendant
+337         primary key.
+338         """
+339         ordering = list(ordering)
+340         ordering_fields = set()
+341         total_ordering_fields = {'pk'} | {
+342             field.attname for field in self.lookup_opts.fields
+343             if field.unique and not field.null
+344         }
+345         for part in ordering:
+346             # Search for single field providing a total ordering.
+347             field_name = None
+348             if isinstance(part, str):
+349                 field_name = part.lstrip('-')
+350             elif isinstance(part, F):
+351                 field_name = part.name
+352             elif isinstance(part, OrderBy) and isinstance(part.expression, F):
+353                 field_name = part.expression.name
+354             if field_name:
+355                 # Normalize attname references by using get_field().
+356                 try:
+357                     field = self.lookup_opts.get_field(field_name)
+358                 except FieldDoesNotExist:
+359                     # Could be "?" for random ordering or a related field
+360                     # lookup. Skip this part of introspection for now.
+361                     continue
+362                 # Ordering by a related field name orders by the referenced
+363                 # model's ordering. Skip this part of introspection for now.
+364                 if field.remote_field and field_name == field.name:
+365                     continue
+366                 if field.attname in total_ordering_fields:
+367                     break
+368                 ordering_fields.add(field.attname)
+369         else:
+370             # No single total ordering field, try unique_together and total
+371             # unique constraints.
+372             constraint_field_names = (
+373                 *self.lookup_opts.unique_together,
+374                 *(
+375                     constraint.fields
+376                     for constraint in self.lookup_opts.total_unique_constraints
+377                 ),
+378             )
+379             for field_names in constraint_field_names:
+380                 # Normalize attname references by using get_field().
+381                 fields = [self.lookup_opts.get_field(field_name) for field_name in field_names]
+382                 # Composite unique constraints containing a nullable column
+383                 # cannot ensure total ordering.
+384                 if any(field.null for field in fields):
+385                     continue
+386                 if ordering_fields.issuperset(field.attname for field in fields):
+387                     break
+388             else:
+389                 # If no set of unique fields is present in the ordering, rely
+390                 # on the primary key to provide total ordering.
+391                 ordering.append('-pk')
+392         return ordering
+393 
+394     def get_ordering_field_columns(self):
+395         """
+396         Return a dictionary of ordering field column numbers and asc/desc.
+397         """
+398         # We must cope with more than one column having the same underlying sort
+399         # field, so we base things on column numbers.
+400         ordering = self._get_default_ordering()
+401         ordering_fields = {}
+402         if ORDER_VAR not in self.params:
+403             # for ordering specified on ModelAdmin or model Meta, we don't know
+404             # the right column numbers absolutely, because there might be more
+405             # than one column associated with that ordering, so we guess.
+406             for field in ordering:
+407                 if isinstance(field, (Combinable, OrderBy)):
+408                     if not isinstance(field, OrderBy):
+409                         field = field.asc()
+410                     if isinstance(field.expression, F):
+411                         order_type = 'desc' if field.descending else 'asc'
+412                         field = field.expression.name
+413                     else:
+414                         continue
+415                 elif field.startswith('-'):
+416                     field = field[1:]
+417                     order_type = 'desc'
+418                 else:
+419                     order_type = 'asc'
+420                 for index, attr in enumerate(self.list_display):
+421                     if self.get_ordering_field(attr) == field:
+422                         ordering_fields[index] = order_type
+423                         break
+424         else:
+425             for p in self.params[ORDER_VAR].split('.'):
+426                 none, pfx, idx = p.rpartition('-')
+427                 try:
+428                     idx = int(idx)
+429                 except ValueError:
+430                     continue  # skip it
+431                 ordering_fields[idx] = 'desc' if pfx == '-' else 'asc'
+432         return ordering_fields
+433 
+434     def get_queryset(self, request):
+435         # First, we collect all the declared list filters.
+436         (self.filter_specs, self.has_filters, remaining_lookup_params,
+437          filters_use_distinct) = self.get_filters(request)
+438 
+439         # Then, we let every list filter modify the queryset to its liking.
+440         qs = self.root_queryset
+441         for filter_spec in self.filter_specs:
+442             new_qs = filter_spec.queryset(request, qs)
+443             if new_qs is not None:
+444                 qs = new_qs
+445 
+446         try:
+447             # Finally, we apply the remaining lookup parameters from the query
+448             # string (i.e. those that haven't already been processed by the
+449             # filters).
+450             qs = qs.filter(**remaining_lookup_params)
+451         except (SuspiciousOperation, ImproperlyConfigured):
+452             # Allow certain types of errors to be re-raised as-is so that the
+453             # caller can treat them in a special way.
+454             raise
+455         except Exception as e:
+456             # Every other error is caught with a naked except, because we don't
+457             # have any other way of validating lookup parameters. They might be
+458             # invalid if the keyword arguments are incorrect, or if the values
+459             # are not in the correct type, so we might get FieldError,
+460             # ValueError, ValidationError, or ?.
+461             raise IncorrectLookupParameters(e)
+462 
+463         if not qs.query.select_related:
+464             qs = self.apply_select_related(qs)
+465 
+466         # Set ordering.
+467         ordering = self.get_ordering(request, qs)
+468         qs = qs.order_by(*ordering)
+469 
+470         # Apply search results
+471         qs, search_use_distinct = self.model_admin.get_search_results(request, qs, self.query)
+472 
+473         # Remove duplicates from results, if necessary
+474         if filters_use_distinct | search_use_distinct:
+475             return qs.distinct()
+476         else:
+477             return qs
+478 
+479     def apply_select_related(self, qs):
+480         if self.list_select_related is True:
+481             return qs.select_related()
+482 
+483         if self.list_select_related is False:
+484             if self.has_related_field_in_list_display():
+485                 return qs.select_related()
+486 
+487         if self.list_select_related:
+488             return qs.select_related(*self.list_select_related)
+489         return qs
+490 
+491     def has_related_field_in_list_display(self):
+492         for field_name in self.list_display:
+493             try:
+494                 field = self.lookup_opts.get_field(field_name)
+495             except FieldDoesNotExist:
+496                 pass
+497             else:
+498                 if isinstance(field.remote_field, ManyToOneRel):
+499                     # <FK>_id field names don't require a join.
+500                     if field_name != field.get_attname():
+501                         return True
+502         return False
+503 
+504     def url_for_result(self, result):
+505         pk = getattr(result, self.pk_attname)
+506         return reverse('admin:%s_%s_change' % (self.opts.app_label,
+507                                                self.opts.model_name),
+508                        args=(quote(pk),),
+509                        current_app=self.model_admin.admin_site.name)
+
+</code><intended_behavior>The code in this file responsible for handling date hierarchies needs to be adjusted so that it accounts for user-specific timezones when determining the start and end of the month. This means ensuring that when filtering by month, the calculation of date boundaries (e.g., the first and last day of the month) should consider the user's timezone. Any logic that computes these boundaries must correctly translate dates to avoid including days from the adjacent month due to timezone offsets. Importantly, this fix must preserve existing functionality for users in the UTC timezone or when timezone support is disabled, ensuring backward compatibility.</intended_behavior>, <file>django/utils/timezone.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 Timezone-related classes and functions.
+3 """
+4 
+5 import functools
+6 from contextlib import ContextDecorator
+7 from datetime import datetime, timedelta, timezone, tzinfo
+8 
+9 import pytz
+10 from asgiref.local import Local
+11 
+12 from django.conf import settings
+13 
+14 __all__ = [
+15     'utc', 'get_fixed_timezone',
+16     'get_default_timezone', 'get_default_timezone_name',
+17     'get_current_timezone', 'get_current_timezone_name',
+18     'activate', 'deactivate', 'override',
+19     'localtime', 'now',
+20     'is_aware', 'is_naive', 'make_aware', 'make_naive',
+21 ]
+22 
+23 
+24 # UTC time zone as a tzinfo instance.
+25 utc = pytz.utc
+26 
+27 
+28 def get_fixed_timezone(offset):
+29     """Return a tzinfo instance with a fixed offset from UTC."""
+30     if isinstance(offset, timedelta):
+31         offset = offset.total_seconds() // 60
+32     sign = '-' if offset < 0 else '+'
+33     hhmm = '%02d%02d' % divmod(abs(offset), 60)
+34     name = sign + hhmm
+35     return timezone(timedelta(minutes=offset), name)
+36 
+37 
+38 # In order to avoid accessing settings at compile time,
+39 # wrap the logic in a function and cache the result.
+40 @functools.lru_cache()
+41 def get_default_timezone():
+42     """
+43     Return the default time zone as a tzinfo instance.
+44 
+45     This is the time zone defined by settings.TIME_ZONE.
+46     """
+47     return pytz.timezone(settings.TIME_ZONE)
+48 
+49 
+50 # This function exists for consistency with get_current_timezone_name
+51 def get_default_timezone_name():
+52     """Return the name of the default time zone."""
+53     return _get_timezone_name(get_default_timezone())
+54 
+55 
+56 _active = Local()
+57 
+58 
+59 def get_current_timezone():
+60     """Return the currently active time zone as a tzinfo instance."""
+61     return getattr(_active, "value", get_default_timezone())
+62 
+63 
+64 def get_current_timezone_name():
+65     """Return the name of the currently active time zone."""
+66     return _get_timezone_name(get_current_timezone())
+67 
+68 
+69 def _get_timezone_name(timezone):
+70     """Return the name of ``timezone``."""
+71     return timezone.tzname(None)
+72 
+73 # Timezone selection functions.
+74 
+75 # These functions don't change os.environ['TZ'] and call time.tzset()
+76 # because it isn't thread safe.
+77 
+78 
+79 def activate(timezone):
+80     """
+81     Set the time zone for the current thread.
+82 
+83     The ``timezone`` argument must be an instance of a tzinfo subclass or a
+84     time zone name.
+85     """
+86     if isinstance(timezone, tzinfo):
+87         _active.value = timezone
+88     elif isinstance(timezone, str):
+89         _active.value = pytz.timezone(timezone)
+90     else:
+91         raise ValueError("Invalid timezone: %r" % timezone)
+92 
+93 
+94 def deactivate():
+95     """
+96     Unset the time zone for the current thread.
+97 
+98     Django will then use the time zone defined by settings.TIME_ZONE.
+99     """
+100     if hasattr(_active, "value"):
+101         del _active.value
+102 
+103 
+104 class override(ContextDecorator):
+105     """
+106     Temporarily set the time zone for the current thread.
+107 
+108     This is a context manager that uses django.utils.timezone.activate()
+109     to set the timezone on entry and restores the previously active timezone
+110     on exit.
+111 
+112     The ``timezone`` argument must be an instance of a ``tzinfo`` subclass, a
+113     time zone name, or ``None``. If it is ``None``, Django enables the default
+114     time zone.
+115     """
+116     def __init__(self, timezone):
+117         self.timezone = timezone
+118 
+119     def __enter__(self):
+120         self.old_timezone = getattr(_active, 'value', None)
+121         if self.timezone is None:
+122             deactivate()
+123         else:
+124             activate(self.timezone)
+125 
+126     def __exit__(self, exc_type, exc_value, traceback):
+127         if self.old_timezone is None:
+128             deactivate()
+129         else:
+130             _active.value = self.old_timezone
+131 
+132 
+133 # Templates
+134 
+135 def template_localtime(value, use_tz=None):
+136     """
+137     Check if value is a datetime and converts it to local time if necessary.
+138 
+139     If use_tz is provided and is not None, that will force the value to
+140     be converted (or not), overriding the value of settings.USE_TZ.
+141 
+142     This function is designed for use by the template engine.
+143     """
+144     should_convert = (
+145         isinstance(value, datetime) and
+146         (settings.USE_TZ if use_tz is None else use_tz) and
+147         not is_naive(value) and
+148         getattr(value, 'convert_to_local_time', True)
+149     )
+150     return localtime(value) if should_convert else value
+151 
+152 
+153 # Utilities
+154 
+155 def localtime(value=None, timezone=None):
+156     """
+157     Convert an aware datetime.datetime to local time.
+158 
+159     Only aware datetimes are allowed. When value is omitted, it defaults to
+160     now().
+161 
+162     Local time is defined by the current time zone, unless another time zone
+163     is specified.
+164     """
+165     if value is None:
+166         value = now()
+167     if timezone is None:
+168         timezone = get_current_timezone()
+169     # Emulate the behavior of astimezone() on Python < 3.6.
+170     if is_naive(value):
+171         raise ValueError("localtime() cannot be applied to a naive datetime")
+172     return value.astimezone(timezone)
+173 
+174 
+175 def localdate(value=None, timezone=None):
+176     """
+177     Convert an aware datetime to local time and return the value's date.
+178 
+179     Only aware datetimes are allowed. When value is omitted, it defaults to
+180     now().
+181 
+182     Local time is defined by the current time zone, unless another time zone is
+183     specified.
+184     """
+185     return localtime(value, timezone).date()
+186 
+187 
+188 def now():
+189     """
+190     Return an aware or naive datetime.datetime, depending on settings.USE_TZ.
+191     """
+192     if settings.USE_TZ:
+193         # timeit shows that datetime.now(tz=utc) is 24% slower
+194         return datetime.utcnow().replace(tzinfo=utc)
+195     else:
+196         return datetime.now()
+197 
+198 
+199 # By design, these four functions don't perform any checks on their arguments.
+200 # The caller should ensure that they don't receive an invalid value like None.
+201 
+202 def is_aware(value):
+203     """
+204     Determine if a given datetime.datetime is aware.
+205 
+206     The concept is defined in Python's docs:
+207     https://docs.python.org/library/datetime.html#datetime.tzinfo
+208 
+209     Assuming value.tzinfo is either None or a proper datetime.tzinfo,
+210     value.utcoffset() implements the appropriate logic.
+211     """
+212     return value.utcoffset() is not None
+213 
+214 
+215 def is_naive(value):
+216     """
+217     Determine if a given datetime.datetime is naive.
+218 
+219     The concept is defined in Python's docs:
+220     https://docs.python.org/library/datetime.html#datetime.tzinfo
+221 
+222     Assuming value.tzinfo is either None or a proper datetime.tzinfo,
+223     value.utcoffset() implements the appropriate logic.
+224     """
+225     return value.utcoffset() is None
+226 
+227 
+228 def make_aware(value, timezone=None, is_dst=None):
+229     """Make a naive datetime.datetime in a given time zone aware."""
+230     if timezone is None:
+231         timezone = get_current_timezone()
+232     if hasattr(timezone, 'localize'):
+233         # This method is available for pytz time zones.
+234         return timezone.localize(value, is_dst=is_dst)
+235     else:
+236         # Check that we won't overwrite the timezone of an aware datetime.
+237         if is_aware(value):
+238             raise ValueError(
+239                 "make_aware expects a naive datetime, got %s" % value)
+240         # This may be wrong around DST changes!
+241         return value.replace(tzinfo=timezone)
+242 
+243 
+244 def make_naive(value, timezone=None):
+245     """Make an aware datetime.datetime naive in a given time zone."""
+246     if timezone is None:
+247         timezone = get_current_timezone()
+248     # Emulate the behavior of astimezone() on Python < 3.6.
+249     if is_naive(value):
+250         raise ValueError("make_naive() cannot be applied to a naive datetime")
+251     return value.astimezone(timezone).replace(tzinfo=None)
+
+</code><intended_behavior>Ensure that this utility file's functions, which are likely used across the admin interface for timezone adjustments, accurately handle the conversion of dates to and from the user's timezone in a way that does not inadvertently shift dates across month boundaries. As this file contains timezone utilities used throughout Django, the modifications here should be made cautiously to ensure that changes do not adversely affect other parts of the framework. It should offer a reliable way to perform date boundary calculations that are sensitive to the timezone, perhaps by providing utility functions specifically designed to calculate start and end dates of months within the correct timezone context.</intended_behavior>]
+2025-10-15 17:35:13.927 | INFO     | Search completed. Bug locations: [<file>django/contrib/admin/views/main.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from datetime import datetime, timedelta
+2 
+3 from django import forms
+4 from django.conf import settings
+5 from django.contrib import messages
+6 from django.contrib.admin import FieldListFilter
+7 from django.contrib.admin.exceptions import (
+8     DisallowedModelAdminLookup, DisallowedModelAdminToField,
+9 )
+10 from django.contrib.admin.options import (
+11     IS_POPUP_VAR, TO_FIELD_VAR, IncorrectLookupParameters,
+12 )
+13 from django.contrib.admin.utils import (
+14     get_fields_from_path, lookup_needs_distinct, prepare_lookup_value, quote,
+15 )
+16 from django.core.exceptions import (
+17     FieldDoesNotExist, ImproperlyConfigured, SuspiciousOperation,
+18 )
+19 from django.core.paginator import InvalidPage
+20 from django.db.models import F, Field, ManyToOneRel, OrderBy
+21 from django.db.models.expressions import Combinable
+22 from django.urls import reverse
+23 from django.utils.http import urlencode
+24 from django.utils.timezone import make_aware
+25 from django.utils.translation import gettext
+26 
+27 # Changelist settings
+28 ALL_VAR = 'all'
+29 ORDER_VAR = 'o'
+30 ORDER_TYPE_VAR = 'ot'
+31 PAGE_VAR = 'p'
+32 SEARCH_VAR = 'q'
+33 ERROR_FLAG = 'e'
+34 
+35 IGNORED_PARAMS = (
+36     ALL_VAR, ORDER_VAR, ORDER_TYPE_VAR, SEARCH_VAR, IS_POPUP_VAR, TO_FIELD_VAR)
+37 
+38 
+39 class ChangeListSearchForm(forms.Form):
+40     def __init__(self, *args, **kwargs):
+41         super().__init__(*args, **kwargs)
+42         # Populate "fields" dynamically because SEARCH_VAR is a variable:
+43         self.fields = {
+44             SEARCH_VAR: forms.CharField(required=False, strip=False),
+45         }
+46 
+47 
+48 class ChangeList:
+49     search_form_class = ChangeListSearchForm
+50 
+51     def __init__(self, request, model, list_display, list_display_links,
+52                  list_filter, date_hierarchy, search_fields, list_select_related,
+53                  list_per_page, list_max_show_all, list_editable, model_admin, sortable_by):
+54         self.model = model
+55         self.opts = model._meta
+56         self.lookup_opts = self.opts
+57         self.root_queryset = model_admin.get_queryset(request)
+58         self.list_display = list_display
+59         self.list_display_links = list_display_links
+60         self.list_filter = list_filter
+61         self.has_filters = None
+62         self.date_hierarchy = date_hierarchy
+63         self.search_fields = search_fields
+64         self.list_select_related = list_select_related
+65         self.list_per_page = list_per_page
+66         self.list_max_show_all = list_max_show_all
+67         self.model_admin = model_admin
+68         self.preserved_filters = model_admin.get_preserved_filters(request)
+69         self.sortable_by = sortable_by
+70 
+71         # Get search parameters from the query string.
+72         _search_form = self.search_form_class(request.GET)
+73         if not _search_form.is_valid():
+74             for error in _search_form.errors.values():
+75                 messages.error(request, ', '.join(error))
+76         self.query = _search_form.cleaned_data.get(SEARCH_VAR) or ''
+77         try:
+78             self.page_num = int(request.GET.get(PAGE_VAR, 0))
+79         except ValueError:
+80             self.page_num = 0
+81         self.show_all = ALL_VAR in request.GET
+82         self.is_popup = IS_POPUP_VAR in request.GET
+83         to_field = request.GET.get(TO_FIELD_VAR)
+84         if to_field and not model_admin.to_field_allowed(request, to_field):
+85             raise DisallowedModelAdminToField("The field %s cannot be referenced." % to_field)
+86         self.to_field = to_field
+87         self.params = dict(request.GET.items())
+88         if PAGE_VAR in self.params:
+89             del self.params[PAGE_VAR]
+90         if ERROR_FLAG in self.params:
+91             del self.params[ERROR_FLAG]
+92 
+93         if self.is_popup:
+94             self.list_editable = ()
+95         else:
+96             self.list_editable = list_editable
+97         self.queryset = self.get_queryset(request)
+98         self.get_results(request)
+99         if self.is_popup:
+100             title = gettext('Select %s')
+101         elif self.model_admin.has_change_permission(request):
+102             title = gettext('Select %s to change')
+103         else:
+104             title = gettext('Select %s to view')
+105         self.title = title % self.opts.verbose_name
+106         self.pk_attname = self.lookup_opts.pk.attname
+107 
+108     def get_filters_params(self, params=None):
+109         """
+110         Return all params except IGNORED_PARAMS.
+111         """
+112         params = params or self.params
+113         lookup_params = params.copy()  # a dictionary of the query string
+114         # Remove all the parameters that are globally and systematically
+115         # ignored.
+116         for ignored in IGNORED_PARAMS:
+117             if ignored in lookup_params:
+118                 del lookup_params[ignored]
+119         return lookup_params
+120 
+121     def get_filters(self, request):
+122         lookup_params = self.get_filters_params()
+123         use_distinct = False
+124 
+125         for key, value in lookup_params.items():
+126             if not self.model_admin.lookup_allowed(key, value):
+127                 raise DisallowedModelAdminLookup("Filtering by %s not allowed" % key)
+128 
+129         filter_specs = []
+130         for list_filter in self.list_filter:
+131             if callable(list_filter):
+132                 # This is simply a custom list filter class.
+133                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+134             else:
+135                 field_path = None
+136                 if isinstance(list_filter, (tuple, list)):
+137                     # This is a custom FieldListFilter class for a given field.
+138                     field, field_list_filter_class = list_filter
+139                 else:
+140                     # This is simply a field name, so use the default
+141                     # FieldListFilter class that has been registered for the
+142                     # type of the given field.
+143                     field, field_list_filter_class = list_filter, FieldListFilter.create
+144                 if not isinstance(field, Field):
+145                     field_path = field
+146                     field = get_fields_from_path(self.model, field_path)[-1]
+147 
+148                 lookup_params_count = len(lookup_params)
+149                 spec = field_list_filter_class(
+150                     field, request, lookup_params,
+151                     self.model, self.model_admin, field_path=field_path,
+152                 )
+153                 # field_list_filter_class removes any lookup_params it
+154                 # processes. If that happened, check if distinct() is needed to
+155                 # remove duplicate results.
+156                 if lookup_params_count > len(lookup_params):
+157                     use_distinct = use_distinct or lookup_needs_distinct(self.lookup_opts, field_path)
+158             if spec and spec.has_output():
+159                 filter_specs.append(spec)
+160 
+161         if self.date_hierarchy:
+162             # Create bounded lookup parameters so that the query is more
+163             # efficient.
+164             year = lookup_params.pop('%s__year' % self.date_hierarchy, None)
+165             if year is not None:
+166                 month = lookup_params.pop('%s__month' % self.date_hierarchy, None)
+167                 day = lookup_params.pop('%s__day' % self.date_hierarchy, None)
+168                 try:
+169                     from_date = datetime(
+170                         int(year),
+171                         int(month if month is not None else 1),
+172                         int(day if day is not None else 1),
+173                     )
+174                 except ValueError as e:
+175                     raise IncorrectLookupParameters(e) from e
+176                 if day:
+177                     to_date = from_date + timedelta(days=1)
+178                 elif month:
+179                     # In this branch, from_date will always be the first of a
+180                     # month, so advancing 32 days gives the next month.
+181                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+182                 else:
+183                     to_date = from_date.replace(year=from_date.year + 1)
+184                 if settings.USE_TZ:
+185                     from_date = make_aware(from_date)
+186                     to_date = make_aware(to_date)
+187                 lookup_params.update({
+188                     '%s__gte' % self.date_hierarchy: from_date,
+189                     '%s__lt' % self.date_hierarchy: to_date,
+190                 })
+191 
+192         # At this point, all the parameters used by the various ListFilters
+193         # have been removed from lookup_params, which now only contains other
+194         # parameters passed via the query string. We now loop through the
+195         # remaining parameters both to ensure that all the parameters are valid
+196         # fields and to determine if at least one of them needs distinct(). If
+197         # the lookup parameters aren't real fields, then bail out.
+198         try:
+199             for key, value in lookup_params.items():
+200                 lookup_params[key] = prepare_lookup_value(key, value)
+201                 use_distinct = use_distinct or lookup_needs_distinct(self.lookup_opts, key)
+202             return filter_specs, bool(filter_specs), lookup_params, use_distinct
+203         except FieldDoesNotExist as e:
+204             raise IncorrectLookupParameters(e) from e
+205 
+206     def get_query_string(self, new_params=None, remove=None):
+207         if new_params is None:
+208             new_params = {}
+209         if remove is None:
+210             remove = []
+211         p = self.params.copy()
+212         for r in remove:
+213             for k in list(p):
+214                 if k.startswith(r):
+215                     del p[k]
+216         for k, v in new_params.items():
+217             if v is None:
+218                 if k in p:
+219                     del p[k]
+220             else:
+221                 p[k] = v
+222         return '?%s' % urlencode(sorted(p.items()))
+223 
+224     def get_results(self, request):
+225         paginator = self.model_admin.get_paginator(request, self.queryset, self.list_per_page)
+226         # Get the number of objects, with admin filters applied.
+227         result_count = paginator.count
+228 
+229         # Get the total number of objects, with no admin filters applied.
+230         if self.model_admin.show_full_result_count:
+231             full_result_count = self.root_queryset.count()
+232         else:
+233             full_result_count = None
+234         can_show_all = result_count <= self.list_max_show_all
+235         multi_page = result_count > self.list_per_page
+236 
+237         # Get the list of objects to display on this page.
+238         if (self.show_all and can_show_all) or not multi_page:
+239             result_list = self.queryset._clone()
+240         else:
+241             try:
+242                 result_list = paginator.page(self.page_num + 1).object_list
+243             except InvalidPage:
+244                 raise IncorrectLookupParameters
+245 
+246         self.result_count = result_count
+247         self.show_full_result_count = self.model_admin.show_full_result_count
+248         # Admin actions are shown if there is at least one entry
+249         # or if entries are not counted because show_full_result_count is disabled
+250         self.show_admin_actions = not self.show_full_result_count or bool(full_result_count)
+251         self.full_result_count = full_result_count
+252         self.result_list = result_list
+253         self.can_show_all = can_show_all
+254         self.multi_page = multi_page
+255         self.paginator = paginator
+256 
+257     def _get_default_ordering(self):
+258         ordering = []
+259         if self.model_admin.ordering:
+260             ordering = self.model_admin.ordering
+261         elif self.lookup_opts.ordering:
+262             ordering = self.lookup_opts.ordering
+263         return ordering
+264 
+265     def get_ordering_field(self, field_name):
+266         """
+267         Return the proper model field name corresponding to the given
+268         field_name to use for ordering. field_name may either be the name of a
+269         proper model field or the name of a method (on the admin or model) or a
+270         callable with the 'admin_order_field' attribute. Return None if no
+271         proper model field name can be matched.
+272         """
+273         try:
+274             field = self.lookup_opts.get_field(field_name)
+275             return field.name
+276         except FieldDoesNotExist:
+277             # See whether field_name is a name of a non-field
+278             # that allows sorting.
+279             if callable(field_name):
+280                 attr = field_name
+281             elif hasattr(self.model_admin, field_name):
+282                 attr = getattr(self.model_admin, field_name)
+283             else:
+284                 attr = getattr(self.model, field_name)
+285             if isinstance(attr, property) and hasattr(attr, 'fget'):
+286                 attr = attr.fget
+287             return getattr(attr, 'admin_order_field', None)
+288 
+289     def get_ordering(self, request, queryset):
+290         """
+291         Return the list of ordering fields for the change list.
+292         First check the get_ordering() method in model admin, then check
+293         the object's default ordering. Then, any manually-specified ordering
+294         from the query string overrides anything. Finally, a deterministic
+295         order is guaranteed by calling _get_deterministic_ordering() with the
+296         constructed ordering.
+297         """
+298         params = self.params
+299         ordering = list(self.model_admin.get_ordering(request) or self._get_default_ordering())
+300         if ORDER_VAR in params:
+301             # Clear ordering and used params
+302             ordering = []
+303             order_params = params[ORDER_VAR].split('.')
+304             for p in order_params:
+305                 try:
+306                     none, pfx, idx = p.rpartition('-')
+307                     field_name = self.list_display[int(idx)]
+308                     order_field = self.get_ordering_field(field_name)
+309                     if not order_field:
+310                         continue  # No 'admin_order_field', skip it
+311                     if isinstance(order_field, OrderBy):
+312                         if pfx == '-':
+313                             order_field = order_field.copy()
+314                             order_field.reverse_ordering()
+315                         ordering.append(order_field)
+316                     elif hasattr(order_field, 'resolve_expression'):
+317                         # order_field is an expression.
+318                         ordering.append(order_field.desc() if pfx == '-' else order_field.asc())
+319                     # reverse order if order_field has already "-" as prefix
+320                     elif order_field.startswith('-') and pfx == '-':
+321                         ordering.append(order_field[1:])
+322                     else:
+323                         ordering.append(pfx + order_field)
+324                 except (IndexError, ValueError):
+325                     continue  # Invalid ordering specified, skip it.
+326 
+327         # Add the given query's ordering fields, if any.
+328         ordering.extend(queryset.query.order_by)
+329 
+330         return self._get_deterministic_ordering(ordering)
+331 
+332     def _get_deterministic_ordering(self, ordering):
+333         """
+334         Ensure a deterministic order across all database backends. Search for a
+335         single field or unique together set of fields providing a total
+336         ordering. If these are missing, augment the ordering with a descendant
+337         primary key.
+338         """
+339         ordering = list(ordering)
+340         ordering_fields = set()
+341         total_ordering_fields = {'pk'} | {
+342             field.attname for field in self.lookup_opts.fields
+343             if field.unique and not field.null
+344         }
+345         for part in ordering:
+346             # Search for single field providing a total ordering.
+347             field_name = None
+348             if isinstance(part, str):
+349                 field_name = part.lstrip('-')
+350             elif isinstance(part, F):
+351                 field_name = part.name
+352             elif isinstance(part, OrderBy) and isinstance(part.expression, F):
+353                 field_name = part.expression.name
+354             if field_name:
+355                 # Normalize attname references by using get_field().
+356                 try:
+357                     field = self.lookup_opts.get_field(field_name)
+358                 except FieldDoesNotExist:
+359                     # Could be "?" for random ordering or a related field
+360                     # lookup. Skip this part of introspection for now.
+361                     continue
+362                 # Ordering by a related field name orders by the referenced
+363                 # model's ordering. Skip this part of introspection for now.
+364                 if field.remote_field and field_name == field.name:
+365                     continue
+366                 if field.attname in total_ordering_fields:
+367                     break
+368                 ordering_fields.add(field.attname)
+369         else:
+370             # No single total ordering field, try unique_together and total
+371             # unique constraints.
+372             constraint_field_names = (
+373                 *self.lookup_opts.unique_together,
+374                 *(
+375                     constraint.fields
+376                     for constraint in self.lookup_opts.total_unique_constraints
+377                 ),
+378             )
+379             for field_names in constraint_field_names:
+380                 # Normalize attname references by using get_field().
+381                 fields = [self.lookup_opts.get_field(field_name) for field_name in field_names]
+382                 # Composite unique constraints containing a nullable column
+383                 # cannot ensure total ordering.
+384                 if any(field.null for field in fields):
+385                     continue
+386                 if ordering_fields.issuperset(field.attname for field in fields):
+387                     break
+388             else:
+389                 # If no set of unique fields is present in the ordering, rely
+390                 # on the primary key to provide total ordering.
+391                 ordering.append('-pk')
+392         return ordering
+393 
+394     def get_ordering_field_columns(self):
+395         """
+396         Return a dictionary of ordering field column numbers and asc/desc.
+397         """
+398         # We must cope with more than one column having the same underlying sort
+399         # field, so we base things on column numbers.
+400         ordering = self._get_default_ordering()
+401         ordering_fields = {}
+402         if ORDER_VAR not in self.params:
+403             # for ordering specified on ModelAdmin or model Meta, we don't know
+404             # the right column numbers absolutely, because there might be more
+405             # than one column associated with that ordering, so we guess.
+406             for field in ordering:
+407                 if isinstance(field, (Combinable, OrderBy)):
+408                     if not isinstance(field, OrderBy):
+409                         field = field.asc()
+410                     if isinstance(field.expression, F):
+411                         order_type = 'desc' if field.descending else 'asc'
+412                         field = field.expression.name
+413                     else:
+414                         continue
+415                 elif field.startswith('-'):
+416                     field = field[1:]
+417                     order_type = 'desc'
+418                 else:
+419                     order_type = 'asc'
+420                 for index, attr in enumerate(self.list_display):
+421                     if self.get_ordering_field(attr) == field:
+422                         ordering_fields[index] = order_type
+423                         break
+424         else:
+425             for p in self.params[ORDER_VAR].split('.'):
+426                 none, pfx, idx = p.rpartition('-')
+427                 try:
+428                     idx = int(idx)
+429                 except ValueError:
+430                     continue  # skip it
+431                 ordering_fields[idx] = 'desc' if pfx == '-' else 'asc'
+432         return ordering_fields
+433 
+434     def get_queryset(self, request):
+435         # First, we collect all the declared list filters.
+436         (self.filter_specs, self.has_filters, remaining_lookup_params,
+437          filters_use_distinct) = self.get_filters(request)
+438 
+439         # Then, we let every list filter modify the queryset to its liking.
+440         qs = self.root_queryset
+441         for filter_spec in self.filter_specs:
+442             new_qs = filter_spec.queryset(request, qs)
+443             if new_qs is not None:
+444                 qs = new_qs
+445 
+446         try:
+447             # Finally, we apply the remaining lookup parameters from the query
+448             # string (i.e. those that haven't already been processed by the
+449             # filters).
+450             qs = qs.filter(**remaining_lookup_params)
+451         except (SuspiciousOperation, ImproperlyConfigured):
+452             # Allow certain types of errors to be re-raised as-is so that the
+453             # caller can treat them in a special way.
+454             raise
+455         except Exception as e:
+456             # Every other error is caught with a naked except, because we don't
+457             # have any other way of validating lookup parameters. They might be
+458             # invalid if the keyword arguments are incorrect, or if the values
+459             # are not in the correct type, so we might get FieldError,
+460             # ValueError, ValidationError, or ?.
+461             raise IncorrectLookupParameters(e)
+462 
+463         if not qs.query.select_related:
+464             qs = self.apply_select_related(qs)
+465 
+466         # Set ordering.
+467         ordering = self.get_ordering(request, qs)
+468         qs = qs.order_by(*ordering)
+469 
+470         # Apply search results
+471         qs, search_use_distinct = self.model_admin.get_search_results(request, qs, self.query)
+472 
+473         # Remove duplicates from results, if necessary
+474         if filters_use_distinct | search_use_distinct:
+475             return qs.distinct()
+476         else:
+477             return qs
+478 
+479     def apply_select_related(self, qs):
+480         if self.list_select_related is True:
+481             return qs.select_related()
+482 
+483         if self.list_select_related is False:
+484             if self.has_related_field_in_list_display():
+485                 return qs.select_related()
+486 
+487         if self.list_select_related:
+488             return qs.select_related(*self.list_select_related)
+489         return qs
+490 
+491     def has_related_field_in_list_display(self):
+492         for field_name in self.list_display:
+493             try:
+494                 field = self.lookup_opts.get_field(field_name)
+495             except FieldDoesNotExist:
+496                 pass
+497             else:
+498                 if isinstance(field.remote_field, ManyToOneRel):
+499                     # <FK>_id field names don't require a join.
+500                     if field_name != field.get_attname():
+501                         return True
+502         return False
+503 
+504     def url_for_result(self, result):
+505         pk = getattr(result, self.pk_attname)
+506         return reverse('admin:%s_%s_change' % (self.opts.app_label,
+507                                                self.opts.model_name),
+508                        args=(quote(pk),),
+509                        current_app=self.model_admin.admin_site.name)
+
+</code><intended_behavior>The code in this file responsible for handling date hierarchies needs to be adjusted so that it accounts for user-specific timezones when determining the start and end of the month. This means ensuring that when filtering by month, the calculation of date boundaries (e.g., the first and last day of the month) should consider the user's timezone. Any logic that computes these boundaries must correctly translate dates to avoid including days from the adjacent month due to timezone offsets. Importantly, this fix must preserve existing functionality for users in the UTC timezone or when timezone support is disabled, ensuring backward compatibility.</intended_behavior>, <file>django/utils/timezone.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 Timezone-related classes and functions.
+3 """
+4 
+5 import functools
+6 from contextlib import ContextDecorator
+7 from datetime import datetime, timedelta, timezone, tzinfo
+8 
+9 import pytz
+10 from asgiref.local import Local
+11 
+12 from django.conf import settings
+13 
+14 __all__ = [
+15     'utc', 'get_fixed_timezone',
+16     'get_default_timezone', 'get_default_timezone_name',
+17     'get_current_timezone', 'get_current_timezone_name',
+18     'activate', 'deactivate', 'override',
+19     'localtime', 'now',
+20     'is_aware', 'is_naive', 'make_aware', 'make_naive',
+21 ]
+22 
+23 
+24 # UTC time zone as a tzinfo instance.
+25 utc = pytz.utc
+26 
+27 
+28 def get_fixed_timezone(offset):
+29     """Return a tzinfo instance with a fixed offset from UTC."""
+30     if isinstance(offset, timedelta):
+31         offset = offset.total_seconds() // 60
+32     sign = '-' if offset < 0 else '+'
+33     hhmm = '%02d%02d' % divmod(abs(offset), 60)
+34     name = sign + hhmm
+35     return timezone(timedelta(minutes=offset), name)
+36 
+37 
+38 # In order to avoid accessing settings at compile time,
+39 # wrap the logic in a function and cache the result.
+40 @functools.lru_cache()
+41 def get_default_timezone():
+42     """
+43     Return the default time zone as a tzinfo instance.
+44 
+45     This is the time zone defined by settings.TIME_ZONE.
+46     """
+47     return pytz.timezone(settings.TIME_ZONE)
+48 
+49 
+50 # This function exists for consistency with get_current_timezone_name
+51 def get_default_timezone_name():
+52     """Return the name of the default time zone."""
+53     return _get_timezone_name(get_default_timezone())
+54 
+55 
+56 _active = Local()
+57 
+58 
+59 def get_current_timezone():
+60     """Return the currently active time zone as a tzinfo instance."""
+61     return getattr(_active, "value", get_default_timezone())
+62 
+63 
+64 def get_current_timezone_name():
+65     """Return the name of the currently active time zone."""
+66     return _get_timezone_name(get_current_timezone())
+67 
+68 
+69 def _get_timezone_name(timezone):
+70     """Return the name of ``timezone``."""
+71     return timezone.tzname(None)
+72 
+73 # Timezone selection functions.
+74 
+75 # These functions don't change os.environ['TZ'] and call time.tzset()
+76 # because it isn't thread safe.
+77 
+78 
+79 def activate(timezone):
+80     """
+81     Set the time zone for the current thread.
+82 
+83     The ``timezone`` argument must be an instance of a tzinfo subclass or a
+84     time zone name.
+85     """
+86     if isinstance(timezone, tzinfo):
+87         _active.value = timezone
+88     elif isinstance(timezone, str):
+89         _active.value = pytz.timezone(timezone)
+90     else:
+91         raise ValueError("Invalid timezone: %r" % timezone)
+92 
+93 
+94 def deactivate():
+95     """
+96     Unset the time zone for the current thread.
+97 
+98     Django will then use the time zone defined by settings.TIME_ZONE.
+99     """
+100     if hasattr(_active, "value"):
+101         del _active.value
+102 
+103 
+104 class override(ContextDecorator):
+105     """
+106     Temporarily set the time zone for the current thread.
+107 
+108     This is a context manager that uses django.utils.timezone.activate()
+109     to set the timezone on entry and restores the previously active timezone
+110     on exit.
+111 
+112     The ``timezone`` argument must be an instance of a ``tzinfo`` subclass, a
+113     time zone name, or ``None``. If it is ``None``, Django enables the default
+114     time zone.
+115     """
+116     def __init__(self, timezone):
+117         self.timezone = timezone
+118 
+119     def __enter__(self):
+120         self.old_timezone = getattr(_active, 'value', None)
+121         if self.timezone is None:
+122             deactivate()
+123         else:
+124             activate(self.timezone)
+125 
+126     def __exit__(self, exc_type, exc_value, traceback):
+127         if self.old_timezone is None:
+128             deactivate()
+129         else:
+130             _active.value = self.old_timezone
+131 
+132 
+133 # Templates
+134 
+135 def template_localtime(value, use_tz=None):
+136     """
+137     Check if value is a datetime and converts it to local time if necessary.
+138 
+139     If use_tz is provided and is not None, that will force the value to
+140     be converted (or not), overriding the value of settings.USE_TZ.
+141 
+142     This function is designed for use by the template engine.
+143     """
+144     should_convert = (
+145         isinstance(value, datetime) and
+146         (settings.USE_TZ if use_tz is None else use_tz) and
+147         not is_naive(value) and
+148         getattr(value, 'convert_to_local_time', True)
+149     )
+150     return localtime(value) if should_convert else value
+151 
+152 
+153 # Utilities
+154 
+155 def localtime(value=None, timezone=None):
+156     """
+157     Convert an aware datetime.datetime to local time.
+158 
+159     Only aware datetimes are allowed. When value is omitted, it defaults to
+160     now().
+161 
+162     Local time is defined by the current time zone, unless another time zone
+163     is specified.
+164     """
+165     if value is None:
+166         value = now()
+167     if timezone is None:
+168         timezone = get_current_timezone()
+169     # Emulate the behavior of astimezone() on Python < 3.6.
+170     if is_naive(value):
+171         raise ValueError("localtime() cannot be applied to a naive datetime")
+172     return value.astimezone(timezone)
+173 
+174 
+175 def localdate(value=None, timezone=None):
+176     """
+177     Convert an aware datetime to local time and return the value's date.
+178 
+179     Only aware datetimes are allowed. When value is omitted, it defaults to
+180     now().
+181 
+182     Local time is defined by the current time zone, unless another time zone is
+183     specified.
+184     """
+185     return localtime(value, timezone).date()
+186 
+187 
+188 def now():
+189     """
+190     Return an aware or naive datetime.datetime, depending on settings.USE_TZ.
+191     """
+192     if settings.USE_TZ:
+193         # timeit shows that datetime.now(tz=utc) is 24% slower
+194         return datetime.utcnow().replace(tzinfo=utc)
+195     else:
+196         return datetime.now()
+197 
+198 
+199 # By design, these four functions don't perform any checks on their arguments.
+200 # The caller should ensure that they don't receive an invalid value like None.
+201 
+202 def is_aware(value):
+203     """
+204     Determine if a given datetime.datetime is aware.
+205 
+206     The concept is defined in Python's docs:
+207     https://docs.python.org/library/datetime.html#datetime.tzinfo
+208 
+209     Assuming value.tzinfo is either None or a proper datetime.tzinfo,
+210     value.utcoffset() implements the appropriate logic.
+211     """
+212     return value.utcoffset() is not None
+213 
+214 
+215 def is_naive(value):
+216     """
+217     Determine if a given datetime.datetime is naive.
+218 
+219     The concept is defined in Python's docs:
+220     https://docs.python.org/library/datetime.html#datetime.tzinfo
+221 
+222     Assuming value.tzinfo is either None or a proper datetime.tzinfo,
+223     value.utcoffset() implements the appropriate logic.
+224     """
+225     return value.utcoffset() is None
+226 
+227 
+228 def make_aware(value, timezone=None, is_dst=None):
+229     """Make a naive datetime.datetime in a given time zone aware."""
+230     if timezone is None:
+231         timezone = get_current_timezone()
+232     if hasattr(timezone, 'localize'):
+233         # This method is available for pytz time zones.
+234         return timezone.localize(value, is_dst=is_dst)
+235     else:
+236         # Check that we won't overwrite the timezone of an aware datetime.
+237         if is_aware(value):
+238             raise ValueError(
+239                 "make_aware expects a naive datetime, got %s" % value)
+240         # This may be wrong around DST changes!
+241         return value.replace(tzinfo=timezone)
+242 
+243 
+244 def make_naive(value, timezone=None):
+245     """Make an aware datetime.datetime naive in a given time zone."""
+246     if timezone is None:
+247         timezone = get_current_timezone()
+248     # Emulate the behavior of astimezone() on Python < 3.6.
+249     if is_naive(value):
+250         raise ValueError("make_naive() cannot be applied to a naive datetime")
+251     return value.astimezone(timezone).replace(tzinfo=None)
+
+</code><intended_behavior>Ensure that this utility file's functions, which are likely used across the admin interface for timezone adjustments, accurately handle the conversion of dates to and from the user's timezone in a way that does not inadvertently shift dates across month boundaries. As this file contains timezone utilities used throughout Django, the modifications here should be made cautiously to ensure that changes do not adversely affect other parts of the framework. It should offer a reliable way to perform date boundary calculations that are sensitive to the timezone, perhaps by providing utility functions specifically designed to calculate start and end dates of months within the correct timezone context.</intended_behavior>]
+2025-10-15 17:35:13.927 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-15 17:35:13.927 | INFO     | Search-only: skipping patch selection
+2025-10-15 17:35:14.092 | INFO     | Task django__django-12469 completed successfully.
+2025-10-15 17:35:14.093 | INFO     | No patch generated. You can try running ACR again.
