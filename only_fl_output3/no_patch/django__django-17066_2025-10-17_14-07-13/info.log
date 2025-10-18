@@ -1,0 +1,1486 @@
+2025-10-17 14:07:13.528 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-17 14:07:16.736 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=369, output_tokens=12, cost=0.004050
+2025-10-17 14:07:16.737 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-17 14:07:16.741 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-17 14:07:25.939 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=678, output_tokens=391, cost=0.018510
+2025-10-17 14:07:25.946 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-17 14:07:28.588 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=745, output_tokens=53, cost=0.009040
+2025-10-17 14:07:28.590 | DEBUG    | Extracted a valid json.
+2025-10-17 14:07:28.590 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"unique_together\")",
+        "search_code(\"index_together\")",
+        "search_class(\"MigrationSerializer\")",
+        "search_method(\"serialize\")"
+    ],
+    "bug_locations": []
+}
+2025-10-17 14:07:28.762 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-17 14:07:28.763 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-17 14:07:45.103 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1905, output_tokens=710, cost=0.040350
+2025-10-17 14:07:45.111 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-17 14:07:53.426 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2831, output_tokens=333, cost=0.038300
+2025-10-17 14:07:53.430 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-17 14:07:59.148 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=687, output_tokens=229, cost=0.013740
+2025-10-17 14:07:59.149 | DEBUG    | Extracted a valid json.
+2025-10-17 14:07:59.149 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/db/migrations/serializer.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Modify the serialization logic to sort sets by their string representation before serialization. This ensures that the output order of elements such as unique_together and index_together constraints remains consistent across different runs. The modification should not alter the logical representation of the sets within the migrations; it should only affect their string output to ensure deterministic ordering. The existing functionality for serializing other types of fields or constraints should remain unaffected."
+        },
+        {
+            "file": "django/db/migrations/writer.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Ensure that during the final writing process, any sets (or potentially other non-deterministic structures) related to unique_together and index_together are processed in a sorted manner to preserve order stability in the generated migration files. The change should specifically target serialization output consistency without impacting the functional aspects of migration application or rollback."
+        }
+    ]
+}
+2025-10-17 14:07:59.153 | DEBUG    | Bug location extracted successfully: [<file>django/db/migrations/serializer.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import builtins
+2 import collections.abc
+3 import datetime
+4 import decimal
+5 import enum
+6 import functools
+7 import math
+8 import os
+9 import pathlib
+10 import re
+11 import types
+12 import uuid
+13 
+14 from django.conf import SettingsReference
+15 from django.db import models
+16 from django.db.migrations.operations.base import Operation
+17 from django.db.migrations.utils import COMPILED_REGEX_TYPE, RegexObject
+18 from django.utils.functional import LazyObject, Promise
+19 from django.utils.version import PY311, get_docs_version
+20 
+21 
+22 class BaseSerializer:
+23     def __init__(self, value):
+24         self.value = value
+25 
+26     def serialize(self):
+27         raise NotImplementedError(
+28             "Subclasses of BaseSerializer must implement the serialize() method."
+29         )
+30 
+31 
+32 class BaseSequenceSerializer(BaseSerializer):
+33     def _format(self):
+34         raise NotImplementedError(
+35             "Subclasses of BaseSequenceSerializer must implement the _format() method."
+36         )
+37 
+38     def serialize(self):
+39         imports = set()
+40         strings = []
+41         for item in self.value:
+42             item_string, item_imports = serializer_factory(item).serialize()
+43             imports.update(item_imports)
+44             strings.append(item_string)
+45         value = self._format()
+46         return value % (", ".join(strings)), imports
+47 
+48 
+49 class BaseSimpleSerializer(BaseSerializer):
+50     def serialize(self):
+51         return repr(self.value), set()
+52 
+53 
+54 class ChoicesSerializer(BaseSerializer):
+55     def serialize(self):
+56         return serializer_factory(self.value.value).serialize()
+57 
+58 
+59 class DateTimeSerializer(BaseSerializer):
+60     """For datetime.*, except datetime.datetime."""
+61 
+62     def serialize(self):
+63         return repr(self.value), {"import datetime"}
+64 
+65 
+66 class DatetimeDatetimeSerializer(BaseSerializer):
+67     """For datetime.datetime."""
+68 
+69     def serialize(self):
+70         if self.value.tzinfo is not None and self.value.tzinfo != datetime.timezone.utc:
+71             self.value = self.value.astimezone(datetime.timezone.utc)
+72         imports = ["import datetime"]
+73         return repr(self.value), set(imports)
+74 
+75 
+76 class DecimalSerializer(BaseSerializer):
+77     def serialize(self):
+78         return repr(self.value), {"from decimal import Decimal"}
+79 
+80 
+81 class DeconstructableSerializer(BaseSerializer):
+82     @staticmethod
+83     def serialize_deconstructed(path, args, kwargs):
+84         name, imports = DeconstructableSerializer._serialize_path(path)
+85         strings = []
+86         for arg in args:
+87             arg_string, arg_imports = serializer_factory(arg).serialize()
+88             strings.append(arg_string)
+89             imports.update(arg_imports)
+90         for kw, arg in sorted(kwargs.items()):
+91             arg_string, arg_imports = serializer_factory(arg).serialize()
+92             imports.update(arg_imports)
+93             strings.append("%s=%s" % (kw, arg_string))
+94         return "%s(%s)" % (name, ", ".join(strings)), imports
+95 
+96     @staticmethod
+97     def _serialize_path(path):
+98         module, name = path.rsplit(".", 1)
+99         if module == "django.db.models":
+100             imports = {"from django.db import models"}
+101             name = "models.%s" % name
+102         else:
+103             imports = {"import %s" % module}
+104             name = path
+105         return name, imports
+106 
+107     def serialize(self):
+108         return self.serialize_deconstructed(*self.value.deconstruct())
+109 
+110 
+111 class DictionarySerializer(BaseSerializer):
+112     def serialize(self):
+113         imports = set()
+114         strings = []
+115         for k, v in sorted(self.value.items()):
+116             k_string, k_imports = serializer_factory(k).serialize()
+117             v_string, v_imports = serializer_factory(v).serialize()
+118             imports.update(k_imports)
+119             imports.update(v_imports)
+120             strings.append((k_string, v_string))
+121         return "{%s}" % (", ".join("%s: %s" % (k, v) for k, v in strings)), imports
+122 
+123 
+124 class EnumSerializer(BaseSerializer):
+125     def serialize(self):
+126         enum_class = self.value.__class__
+127         module = enum_class.__module__
+128         if issubclass(enum_class, enum.Flag):
+129             if PY311:
+130                 members = list(self.value)
+131             else:
+132                 members, _ = enum._decompose(enum_class, self.value)
+133                 members = reversed(members)
+134         else:
+135             members = (self.value,)
+136         return (
+137             " | ".join(
+138                 [
+139                     f"{module}.{enum_class.__qualname__}[{item.name!r}]"
+140                     for item in members
+141                 ]
+142             ),
+143             {"import %s" % module},
+144         )
+145 
+146 
+147 class FloatSerializer(BaseSimpleSerializer):
+148     def serialize(self):
+149         if math.isnan(self.value) or math.isinf(self.value):
+150             return 'float("{}")'.format(self.value), set()
+151         return super().serialize()
+152 
+153 
+154 class FrozensetSerializer(BaseSequenceSerializer):
+155     def _format(self):
+156         return "frozenset([%s])"
+157 
+158 
+159 class FunctionTypeSerializer(BaseSerializer):
+160     def serialize(self):
+161         if getattr(self.value, "__self__", None) and isinstance(
+162             self.value.__self__, type
+163         ):
+164             klass = self.value.__self__
+165             module = klass.__module__
+166             return "%s.%s.%s" % (module, klass.__name__, self.value.__name__), {
+167                 "import %s" % module
+168             }
+169         # Further error checking
+170         if self.value.__name__ == "<lambda>":
+171             raise ValueError("Cannot serialize function: lambda")
+172         if self.value.__module__ is None:
+173             raise ValueError("Cannot serialize function %r: No module" % self.value)
+174 
+175         module_name = self.value.__module__
+176 
+177         if "<" not in self.value.__qualname__:  # Qualname can include <locals>
+178             return "%s.%s" % (module_name, self.value.__qualname__), {
+179                 "import %s" % self.value.__module__
+180             }
+181 
+182         raise ValueError(
+183             "Could not find function %s in %s.\n" % (self.value.__name__, module_name)
+184         )
+185 
+186 
+187 class FunctoolsPartialSerializer(BaseSerializer):
+188     def serialize(self):
+189         # Serialize functools.partial() arguments
+190         func_string, func_imports = serializer_factory(self.value.func).serialize()
+191         args_string, args_imports = serializer_factory(self.value.args).serialize()
+192         keywords_string, keywords_imports = serializer_factory(
+193             self.value.keywords
+194         ).serialize()
+195         # Add any imports needed by arguments
+196         imports = {"import functools", *func_imports, *args_imports, *keywords_imports}
+197         return (
+198             "functools.%s(%s, *%s, **%s)"
+199             % (
+200                 self.value.__class__.__name__,
+201                 func_string,
+202                 args_string,
+203                 keywords_string,
+204             ),
+205             imports,
+206         )
+207 
+208 
+209 class IterableSerializer(BaseSerializer):
+210     def serialize(self):
+211         imports = set()
+212         strings = []
+213         for item in self.value:
+214             item_string, item_imports = serializer_factory(item).serialize()
+215             imports.update(item_imports)
+216             strings.append(item_string)
+217         # When len(strings)==0, the empty iterable should be serialized as
+218         # "()", not "(,)" because (,) is invalid Python syntax.
+219         value = "(%s)" if len(strings) != 1 else "(%s,)"
+220         return value % (", ".join(strings)), imports
+221 
+222 
+223 class ModelFieldSerializer(DeconstructableSerializer):
+224     def serialize(self):
+225         attr_name, path, args, kwargs = self.value.deconstruct()
+226         return self.serialize_deconstructed(path, args, kwargs)
+227 
+228 
+229 class ModelManagerSerializer(DeconstructableSerializer):
+230     def serialize(self):
+231         as_manager, manager_path, qs_path, args, kwargs = self.value.deconstruct()
+232         if as_manager:
+233             name, imports = self._serialize_path(qs_path)
+234             return "%s.as_manager()" % name, imports
+235         else:
+236             return self.serialize_deconstructed(manager_path, args, kwargs)
+237 
+238 
+239 class OperationSerializer(BaseSerializer):
+240     def serialize(self):
+241         from django.db.migrations.writer import OperationWriter
+242 
+243         string, imports = OperationWriter(self.value, indentation=0).serialize()
+244         # Nested operation, trailing comma is handled in upper OperationWriter._write()
+245         return string.rstrip(","), imports
+246 
+247 
+248 class PathLikeSerializer(BaseSerializer):
+249     def serialize(self):
+250         return repr(os.fspath(self.value)), {}
+251 
+252 
+253 class PathSerializer(BaseSerializer):
+254     def serialize(self):
+255         # Convert concrete paths to pure paths to avoid issues with migrations
+256         # generated on one platform being used on a different platform.
+257         prefix = "Pure" if isinstance(self.value, pathlib.Path) else ""
+258         return "pathlib.%s%r" % (prefix, self.value), {"import pathlib"}
+259 
+260 
+261 class RegexSerializer(BaseSerializer):
+262     def serialize(self):
+263         regex_pattern, pattern_imports = serializer_factory(
+264             self.value.pattern
+265         ).serialize()
+266         # Turn off default implicit flags (e.g. re.U) because regexes with the
+267         # same implicit and explicit flags aren't equal.
+268         flags = self.value.flags ^ re.compile("").flags
+269         regex_flags, flag_imports = serializer_factory(flags).serialize()
+270         imports = {"import re", *pattern_imports, *flag_imports}
+271         args = [regex_pattern]
+272         if flags:
+273             args.append(regex_flags)
+274         return "re.compile(%s)" % ", ".join(args), imports
+275 
+276 
+277 class SequenceSerializer(BaseSequenceSerializer):
+278     def _format(self):
+279         return "[%s]"
+280 
+281 
+282 class SetSerializer(BaseSequenceSerializer):
+283     def _format(self):
+284         # Serialize as a set literal except when value is empty because {}
+285         # is an empty dict.
+286         return "{%s}" if self.value else "set(%s)"
+287 
+288 
+289 class SettingsReferenceSerializer(BaseSerializer):
+290     def serialize(self):
+291         return "settings.%s" % self.value.setting_name, {
+292             "from django.conf import settings"
+293         }
+294 
+295 
+296 class TupleSerializer(BaseSequenceSerializer):
+297     def _format(self):
+298         # When len(value)==0, the empty tuple should be serialized as "()",
+299         # not "(,)" because (,) is invalid Python syntax.
+300         return "(%s)" if len(self.value) != 1 else "(%s,)"
+301 
+302 
+303 class TypeSerializer(BaseSerializer):
+304     def serialize(self):
+305         special_cases = [
+306             (models.Model, "models.Model", ["from django.db import models"]),
+307             (types.NoneType, "types.NoneType", ["import types"]),
+308         ]
+309         for case, string, imports in special_cases:
+310             if case is self.value:
+311                 return string, set(imports)
+312         if hasattr(self.value, "__module__"):
+313             module = self.value.__module__
+314             if module == builtins.__name__:
+315                 return self.value.__name__, set()
+316             else:
+317                 return "%s.%s" % (module, self.value.__qualname__), {
+318                     "import %s" % module
+319                 }
+320 
+321 
+322 class UUIDSerializer(BaseSerializer):
+323     def serialize(self):
+324         return "uuid.%s" % repr(self.value), {"import uuid"}
+325 
+326 
+327 class Serializer:
+328     _registry = {
+329         # Some of these are order-dependent.
+330         frozenset: FrozensetSerializer,
+331         list: SequenceSerializer,
+332         set: SetSerializer,
+333         tuple: TupleSerializer,
+334         dict: DictionarySerializer,
+335         models.Choices: ChoicesSerializer,
+336         enum.Enum: EnumSerializer,
+337         datetime.datetime: DatetimeDatetimeSerializer,
+338         (datetime.date, datetime.timedelta, datetime.time): DateTimeSerializer,
+339         SettingsReference: SettingsReferenceSerializer,
+340         float: FloatSerializer,
+341         (bool, int, types.NoneType, bytes, str, range): BaseSimpleSerializer,
+342         decimal.Decimal: DecimalSerializer,
+343         (functools.partial, functools.partialmethod): FunctoolsPartialSerializer,
+344         (
+345             types.FunctionType,
+346             types.BuiltinFunctionType,
+347             types.MethodType,
+348         ): FunctionTypeSerializer,
+349         collections.abc.Iterable: IterableSerializer,
+350         (COMPILED_REGEX_TYPE, RegexObject): RegexSerializer,
+351         uuid.UUID: UUIDSerializer,
+352         pathlib.PurePath: PathSerializer,
+353         os.PathLike: PathLikeSerializer,
+354     }
+355 
+356     @classmethod
+357     def register(cls, type_, serializer):
+358         if not issubclass(serializer, BaseSerializer):
+359             raise ValueError(
+360                 "'%s' must inherit from 'BaseSerializer'." % serializer.__name__
+361             )
+362         cls._registry[type_] = serializer
+363 
+364     @classmethod
+365     def unregister(cls, type_):
+366         cls._registry.pop(type_)
+367 
+368 
+369 def serializer_factory(value):
+370     if isinstance(value, Promise):
+371         value = str(value)
+372     elif isinstance(value, LazyObject):
+373         # The unwrapped value is returned as the first item of the arguments
+374         # tuple.
+375         value = value.__reduce__()[1][0]
+376 
+377     if isinstance(value, models.Field):
+378         return ModelFieldSerializer(value)
+379     if isinstance(value, models.manager.BaseManager):
+380         return ModelManagerSerializer(value)
+381     if isinstance(value, Operation):
+382         return OperationSerializer(value)
+383     if isinstance(value, type):
+384         return TypeSerializer(value)
+385     # Anything that knows how to deconstruct itself.
+386     if hasattr(value, "deconstruct"):
+387         return DeconstructableSerializer(value)
+388     for type_, serializer_cls in Serializer._registry.items():
+389         if isinstance(value, type_):
+390             return serializer_cls(value)
+391     raise ValueError(
+392         "Cannot serialize: %r\nThere are some values Django cannot serialize into "
+393         "migration files.\nFor more, see https://docs.djangoproject.com/en/%s/"
+394         "topics/migrations/#migration-serializing" % (value, get_docs_version())
+395     )
+
+</code><intended_behavior>Modify the serialization logic to sort sets by their string representation before serialization. This ensures that the output order of elements such as unique_together and index_together constraints remains consistent across different runs. The modification should not alter the logical representation of the sets within the migrations; it should only affect their string output to ensure deterministic ordering. The existing functionality for serializing other types of fields or constraints should remain unaffected.</intended_behavior>, <file>django/db/migrations/writer.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os
+2 import re
+3 from importlib import import_module
+4 
+5 from django import get_version
+6 from django.apps import apps
+7 
+8 # SettingsReference imported for backwards compatibility in Django 2.2.
+9 from django.conf import SettingsReference  # NOQA
+10 from django.db import migrations
+11 from django.db.migrations.loader import MigrationLoader
+12 from django.db.migrations.serializer import Serializer, serializer_factory
+13 from django.utils.inspect import get_func_args
+14 from django.utils.module_loading import module_dir
+15 from django.utils.timezone import now
+16 
+17 
+18 class OperationWriter:
+19     def __init__(self, operation, indentation=2):
+20         self.operation = operation
+21         self.buff = []
+22         self.indentation = indentation
+23 
+24     def serialize(self):
+25         def _write(_arg_name, _arg_value):
+26             if _arg_name in self.operation.serialization_expand_args and isinstance(
+27                 _arg_value, (list, tuple, dict)
+28             ):
+29                 if isinstance(_arg_value, dict):
+30                     self.feed("%s={" % _arg_name)
+31                     self.indent()
+32                     for key, value in _arg_value.items():
+33                         key_string, key_imports = MigrationWriter.serialize(key)
+34                         arg_string, arg_imports = MigrationWriter.serialize(value)
+35                         args = arg_string.splitlines()
+36                         if len(args) > 1:
+37                             self.feed("%s: %s" % (key_string, args[0]))
+38                             for arg in args[1:-1]:
+39                                 self.feed(arg)
+40                             self.feed("%s," % args[-1])
+41                         else:
+42                             self.feed("%s: %s," % (key_string, arg_string))
+43                         imports.update(key_imports)
+44                         imports.update(arg_imports)
+45                     self.unindent()
+46                     self.feed("},")
+47                 else:
+48                     self.feed("%s=[" % _arg_name)
+49                     self.indent()
+50                     for item in _arg_value:
+51                         arg_string, arg_imports = MigrationWriter.serialize(item)
+52                         args = arg_string.splitlines()
+53                         if len(args) > 1:
+54                             for arg in args[:-1]:
+55                                 self.feed(arg)
+56                             self.feed("%s," % args[-1])
+57                         else:
+58                             self.feed("%s," % arg_string)
+59                         imports.update(arg_imports)
+60                     self.unindent()
+61                     self.feed("],")
+62             else:
+63                 arg_string, arg_imports = MigrationWriter.serialize(_arg_value)
+64                 args = arg_string.splitlines()
+65                 if len(args) > 1:
+66                     self.feed("%s=%s" % (_arg_name, args[0]))
+67                     for arg in args[1:-1]:
+68                         self.feed(arg)
+69                     self.feed("%s," % args[-1])
+70                 else:
+71                     self.feed("%s=%s," % (_arg_name, arg_string))
+72                 imports.update(arg_imports)
+73 
+74         imports = set()
+75         name, args, kwargs = self.operation.deconstruct()
+76         operation_args = get_func_args(self.operation.__init__)
+77 
+78         # See if this operation is in django.db.migrations. If it is,
+79         # We can just use the fact we already have that imported,
+80         # otherwise, we need to add an import for the operation class.
+81         if getattr(migrations, name, None) == self.operation.__class__:
+82             self.feed("migrations.%s(" % name)
+83         else:
+84             imports.add("import %s" % (self.operation.__class__.__module__))
+85             self.feed("%s.%s(" % (self.operation.__class__.__module__, name))
+86 
+87         self.indent()
+88 
+89         for i, arg in enumerate(args):
+90             arg_value = arg
+91             arg_name = operation_args[i]
+92             _write(arg_name, arg_value)
+93 
+94         i = len(args)
+95         # Only iterate over remaining arguments
+96         for arg_name in operation_args[i:]:
+97             if arg_name in kwargs:  # Don't sort to maintain signature order
+98                 arg_value = kwargs[arg_name]
+99                 _write(arg_name, arg_value)
+100 
+101         self.unindent()
+102         self.feed("),")
+103         return self.render(), imports
+104 
+105     def indent(self):
+106         self.indentation += 1
+107 
+108     def unindent(self):
+109         self.indentation -= 1
+110 
+111     def feed(self, line):
+112         self.buff.append(" " * (self.indentation * 4) + line)
+113 
+114     def render(self):
+115         return "\n".join(self.buff)
+116 
+117 
+118 class MigrationWriter:
+119     """
+120     Take a Migration instance and is able to produce the contents
+121     of the migration file from it.
+122     """
+123 
+124     def __init__(self, migration, include_header=True):
+125         self.migration = migration
+126         self.include_header = include_header
+127         self.needs_manual_porting = False
+128 
+129     def as_string(self):
+130         """Return a string of the file contents."""
+131         items = {
+132             "replaces_str": "",
+133             "initial_str": "",
+134         }
+135 
+136         imports = set()
+137 
+138         # Deconstruct operations
+139         operations = []
+140         for operation in self.migration.operations:
+141             operation_string, operation_imports = OperationWriter(operation).serialize()
+142             imports.update(operation_imports)
+143             operations.append(operation_string)
+144         items["operations"] = "\n".join(operations) + "\n" if operations else ""
+145 
+146         # Format dependencies and write out swappable dependencies right
+147         dependencies = []
+148         for dependency in self.migration.dependencies:
+149             if dependency[0] == "__setting__":
+150                 dependencies.append(
+151                     "        migrations.swappable_dependency(settings.%s),"
+152                     % dependency[1]
+153                 )
+154                 imports.add("from django.conf import settings")
+155             else:
+156                 dependencies.append("        %s," % self.serialize(dependency)[0])
+157         items["dependencies"] = "\n".join(dependencies) + "\n" if dependencies else ""
+158 
+159         # Format imports nicely, swapping imports of functions from migration files
+160         # for comments
+161         migration_imports = set()
+162         for line in list(imports):
+163             if re.match(r"^import (.*)\.\d+[^\s]*$", line):
+164                 migration_imports.add(line.split("import")[1].strip())
+165                 imports.remove(line)
+166                 self.needs_manual_porting = True
+167 
+168         # django.db.migrations is always used, but models import may not be.
+169         # If models import exists, merge it with migrations import.
+170         if "from django.db import models" in imports:
+171             imports.discard("from django.db import models")
+172             imports.add("from django.db import migrations, models")
+173         else:
+174             imports.add("from django.db import migrations")
+175 
+176         # Sort imports by the package / module to be imported (the part after
+177         # "from" in "from ... import ..." or after "import" in "import ...").
+178         # First group the "import" statements, then "from ... import ...".
+179         sorted_imports = sorted(
+180             imports, key=lambda i: (i.split()[0] == "from", i.split()[1])
+181         )
+182         items["imports"] = "\n".join(sorted_imports) + "\n" if imports else ""
+183         if migration_imports:
+184             items["imports"] += (
+185                 "\n\n# Functions from the following migrations need manual "
+186                 "copying.\n# Move them and any dependencies into this file, "
+187                 "then update the\n# RunPython operations to refer to the local "
+188                 "versions:\n# %s"
+189             ) % "\n# ".join(sorted(migration_imports))
+190         # If there's a replaces, make a string for it
+191         if self.migration.replaces:
+192             items["replaces_str"] = (
+193                 "\n    replaces = %s\n" % self.serialize(self.migration.replaces)[0]
+194             )
+195         # Hinting that goes into comment
+196         if self.include_header:
+197             items["migration_header"] = MIGRATION_HEADER_TEMPLATE % {
+198                 "version": get_version(),
+199                 "timestamp": now().strftime("%Y-%m-%d %H:%M"),
+200             }
+201         else:
+202             items["migration_header"] = ""
+203 
+204         if self.migration.initial:
+205             items["initial_str"] = "\n    initial = True\n"
+206 
+207         return MIGRATION_TEMPLATE % items
+208 
+209     @property
+210     def basedir(self):
+211         migrations_package_name, _ = MigrationLoader.migrations_module(
+212             self.migration.app_label
+213         )
+214 
+215         if migrations_package_name is None:
+216             raise ValueError(
+217                 "Django can't create migrations for app '%s' because "
+218                 "migrations have been disabled via the MIGRATION_MODULES "
+219                 "setting." % self.migration.app_label
+220             )
+221 
+222         # See if we can import the migrations module directly
+223         try:
+224             migrations_module = import_module(migrations_package_name)
+225         except ImportError:
+226             pass
+227         else:
+228             try:
+229                 return module_dir(migrations_module)
+230             except ValueError:
+231                 pass
+232 
+233         # Alright, see if it's a direct submodule of the app
+234         app_config = apps.get_app_config(self.migration.app_label)
+235         (
+236             maybe_app_name,
+237             _,
+238             migrations_package_basename,
+239         ) = migrations_package_name.rpartition(".")
+240         if app_config.name == maybe_app_name:
+241             return os.path.join(app_config.path, migrations_package_basename)
+242 
+243         # In case of using MIGRATION_MODULES setting and the custom package
+244         # doesn't exist, create one, starting from an existing package
+245         existing_dirs, missing_dirs = migrations_package_name.split("."), []
+246         while existing_dirs:
+247             missing_dirs.insert(0, existing_dirs.pop(-1))
+248             try:
+249                 base_module = import_module(".".join(existing_dirs))
+250             except (ImportError, ValueError):
+251                 continue
+252             else:
+253                 try:
+254                     base_dir = module_dir(base_module)
+255                 except ValueError:
+256                     continue
+257                 else:
+258                     break
+259         else:
+260             raise ValueError(
+261                 "Could not locate an appropriate location to create "
+262                 "migrations package %s. Make sure the toplevel "
+263                 "package exists and can be imported." % migrations_package_name
+264             )
+265 
+266         final_dir = os.path.join(base_dir, *missing_dirs)
+267         os.makedirs(final_dir, exist_ok=True)
+268         for missing_dir in missing_dirs:
+269             base_dir = os.path.join(base_dir, missing_dir)
+270             with open(os.path.join(base_dir, "__init__.py"), "w"):
+271                 pass
+272 
+273         return final_dir
+274 
+275     @property
+276     def filename(self):
+277         return "%s.py" % self.migration.name
+278 
+279     @property
+280     def path(self):
+281         return os.path.join(self.basedir, self.filename)
+282 
+283     @classmethod
+284     def serialize(cls, value):
+285         return serializer_factory(value).serialize()
+286 
+287     @classmethod
+288     def register_serializer(cls, type_, serializer):
+289         Serializer.register(type_, serializer)
+290 
+291     @classmethod
+292     def unregister_serializer(cls, type_):
+293         Serializer.unregister(type_)
+294 
+295 
+296 MIGRATION_HEADER_TEMPLATE = """\
+297 # Generated by Django %(version)s on %(timestamp)s
+298 
+299 """
+300 
+301 
+302 MIGRATION_TEMPLATE = """\
+303 %(migration_header)s%(imports)s
+304 
+305 class Migration(migrations.Migration):
+306 %(replaces_str)s%(initial_str)s
+307     dependencies = [
+308 %(dependencies)s\
+309     ]
+310 
+311     operations = [
+312 %(operations)s\
+313     ]
+314 """
+
+</code><intended_behavior>Ensure that during the final writing process, any sets (or potentially other non-deterministic structures) related to unique_together and index_together are processed in a sorted manner to preserve order stability in the generated migration files. The change should specifically target serialization output consistency without impacting the functional aspects of migration application or rollback.</intended_behavior>]
+2025-10-17 14:07:59.153 | INFO     | Search completed. Bug locations: [<file>django/db/migrations/serializer.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import builtins
+2 import collections.abc
+3 import datetime
+4 import decimal
+5 import enum
+6 import functools
+7 import math
+8 import os
+9 import pathlib
+10 import re
+11 import types
+12 import uuid
+13 
+14 from django.conf import SettingsReference
+15 from django.db import models
+16 from django.db.migrations.operations.base import Operation
+17 from django.db.migrations.utils import COMPILED_REGEX_TYPE, RegexObject
+18 from django.utils.functional import LazyObject, Promise
+19 from django.utils.version import PY311, get_docs_version
+20 
+21 
+22 class BaseSerializer:
+23     def __init__(self, value):
+24         self.value = value
+25 
+26     def serialize(self):
+27         raise NotImplementedError(
+28             "Subclasses of BaseSerializer must implement the serialize() method."
+29         )
+30 
+31 
+32 class BaseSequenceSerializer(BaseSerializer):
+33     def _format(self):
+34         raise NotImplementedError(
+35             "Subclasses of BaseSequenceSerializer must implement the _format() method."
+36         )
+37 
+38     def serialize(self):
+39         imports = set()
+40         strings = []
+41         for item in self.value:
+42             item_string, item_imports = serializer_factory(item).serialize()
+43             imports.update(item_imports)
+44             strings.append(item_string)
+45         value = self._format()
+46         return value % (", ".join(strings)), imports
+47 
+48 
+49 class BaseSimpleSerializer(BaseSerializer):
+50     def serialize(self):
+51         return repr(self.value), set()
+52 
+53 
+54 class ChoicesSerializer(BaseSerializer):
+55     def serialize(self):
+56         return serializer_factory(self.value.value).serialize()
+57 
+58 
+59 class DateTimeSerializer(BaseSerializer):
+60     """For datetime.*, except datetime.datetime."""
+61 
+62     def serialize(self):
+63         return repr(self.value), {"import datetime"}
+64 
+65 
+66 class DatetimeDatetimeSerializer(BaseSerializer):
+67     """For datetime.datetime."""
+68 
+69     def serialize(self):
+70         if self.value.tzinfo is not None and self.value.tzinfo != datetime.timezone.utc:
+71             self.value = self.value.astimezone(datetime.timezone.utc)
+72         imports = ["import datetime"]
+73         return repr(self.value), set(imports)
+74 
+75 
+76 class DecimalSerializer(BaseSerializer):
+77     def serialize(self):
+78         return repr(self.value), {"from decimal import Decimal"}
+79 
+80 
+81 class DeconstructableSerializer(BaseSerializer):
+82     @staticmethod
+83     def serialize_deconstructed(path, args, kwargs):
+84         name, imports = DeconstructableSerializer._serialize_path(path)
+85         strings = []
+86         for arg in args:
+87             arg_string, arg_imports = serializer_factory(arg).serialize()
+88             strings.append(arg_string)
+89             imports.update(arg_imports)
+90         for kw, arg in sorted(kwargs.items()):
+91             arg_string, arg_imports = serializer_factory(arg).serialize()
+92             imports.update(arg_imports)
+93             strings.append("%s=%s" % (kw, arg_string))
+94         return "%s(%s)" % (name, ", ".join(strings)), imports
+95 
+96     @staticmethod
+97     def _serialize_path(path):
+98         module, name = path.rsplit(".", 1)
+99         if module == "django.db.models":
+100             imports = {"from django.db import models"}
+101             name = "models.%s" % name
+102         else:
+103             imports = {"import %s" % module}
+104             name = path
+105         return name, imports
+106 
+107     def serialize(self):
+108         return self.serialize_deconstructed(*self.value.deconstruct())
+109 
+110 
+111 class DictionarySerializer(BaseSerializer):
+112     def serialize(self):
+113         imports = set()
+114         strings = []
+115         for k, v in sorted(self.value.items()):
+116             k_string, k_imports = serializer_factory(k).serialize()
+117             v_string, v_imports = serializer_factory(v).serialize()
+118             imports.update(k_imports)
+119             imports.update(v_imports)
+120             strings.append((k_string, v_string))
+121         return "{%s}" % (", ".join("%s: %s" % (k, v) for k, v in strings)), imports
+122 
+123 
+124 class EnumSerializer(BaseSerializer):
+125     def serialize(self):
+126         enum_class = self.value.__class__
+127         module = enum_class.__module__
+128         if issubclass(enum_class, enum.Flag):
+129             if PY311:
+130                 members = list(self.value)
+131             else:
+132                 members, _ = enum._decompose(enum_class, self.value)
+133                 members = reversed(members)
+134         else:
+135             members = (self.value,)
+136         return (
+137             " | ".join(
+138                 [
+139                     f"{module}.{enum_class.__qualname__}[{item.name!r}]"
+140                     for item in members
+141                 ]
+142             ),
+143             {"import %s" % module},
+144         )
+145 
+146 
+147 class FloatSerializer(BaseSimpleSerializer):
+148     def serialize(self):
+149         if math.isnan(self.value) or math.isinf(self.value):
+150             return 'float("{}")'.format(self.value), set()
+151         return super().serialize()
+152 
+153 
+154 class FrozensetSerializer(BaseSequenceSerializer):
+155     def _format(self):
+156         return "frozenset([%s])"
+157 
+158 
+159 class FunctionTypeSerializer(BaseSerializer):
+160     def serialize(self):
+161         if getattr(self.value, "__self__", None) and isinstance(
+162             self.value.__self__, type
+163         ):
+164             klass = self.value.__self__
+165             module = klass.__module__
+166             return "%s.%s.%s" % (module, klass.__name__, self.value.__name__), {
+167                 "import %s" % module
+168             }
+169         # Further error checking
+170         if self.value.__name__ == "<lambda>":
+171             raise ValueError("Cannot serialize function: lambda")
+172         if self.value.__module__ is None:
+173             raise ValueError("Cannot serialize function %r: No module" % self.value)
+174 
+175         module_name = self.value.__module__
+176 
+177         if "<" not in self.value.__qualname__:  # Qualname can include <locals>
+178             return "%s.%s" % (module_name, self.value.__qualname__), {
+179                 "import %s" % self.value.__module__
+180             }
+181 
+182         raise ValueError(
+183             "Could not find function %s in %s.\n" % (self.value.__name__, module_name)
+184         )
+185 
+186 
+187 class FunctoolsPartialSerializer(BaseSerializer):
+188     def serialize(self):
+189         # Serialize functools.partial() arguments
+190         func_string, func_imports = serializer_factory(self.value.func).serialize()
+191         args_string, args_imports = serializer_factory(self.value.args).serialize()
+192         keywords_string, keywords_imports = serializer_factory(
+193             self.value.keywords
+194         ).serialize()
+195         # Add any imports needed by arguments
+196         imports = {"import functools", *func_imports, *args_imports, *keywords_imports}
+197         return (
+198             "functools.%s(%s, *%s, **%s)"
+199             % (
+200                 self.value.__class__.__name__,
+201                 func_string,
+202                 args_string,
+203                 keywords_string,
+204             ),
+205             imports,
+206         )
+207 
+208 
+209 class IterableSerializer(BaseSerializer):
+210     def serialize(self):
+211         imports = set()
+212         strings = []
+213         for item in self.value:
+214             item_string, item_imports = serializer_factory(item).serialize()
+215             imports.update(item_imports)
+216             strings.append(item_string)
+217         # When len(strings)==0, the empty iterable should be serialized as
+218         # "()", not "(,)" because (,) is invalid Python syntax.
+219         value = "(%s)" if len(strings) != 1 else "(%s,)"
+220         return value % (", ".join(strings)), imports
+221 
+222 
+223 class ModelFieldSerializer(DeconstructableSerializer):
+224     def serialize(self):
+225         attr_name, path, args, kwargs = self.value.deconstruct()
+226         return self.serialize_deconstructed(path, args, kwargs)
+227 
+228 
+229 class ModelManagerSerializer(DeconstructableSerializer):
+230     def serialize(self):
+231         as_manager, manager_path, qs_path, args, kwargs = self.value.deconstruct()
+232         if as_manager:
+233             name, imports = self._serialize_path(qs_path)
+234             return "%s.as_manager()" % name, imports
+235         else:
+236             return self.serialize_deconstructed(manager_path, args, kwargs)
+237 
+238 
+239 class OperationSerializer(BaseSerializer):
+240     def serialize(self):
+241         from django.db.migrations.writer import OperationWriter
+242 
+243         string, imports = OperationWriter(self.value, indentation=0).serialize()
+244         # Nested operation, trailing comma is handled in upper OperationWriter._write()
+245         return string.rstrip(","), imports
+246 
+247 
+248 class PathLikeSerializer(BaseSerializer):
+249     def serialize(self):
+250         return repr(os.fspath(self.value)), {}
+251 
+252 
+253 class PathSerializer(BaseSerializer):
+254     def serialize(self):
+255         # Convert concrete paths to pure paths to avoid issues with migrations
+256         # generated on one platform being used on a different platform.
+257         prefix = "Pure" if isinstance(self.value, pathlib.Path) else ""
+258         return "pathlib.%s%r" % (prefix, self.value), {"import pathlib"}
+259 
+260 
+261 class RegexSerializer(BaseSerializer):
+262     def serialize(self):
+263         regex_pattern, pattern_imports = serializer_factory(
+264             self.value.pattern
+265         ).serialize()
+266         # Turn off default implicit flags (e.g. re.U) because regexes with the
+267         # same implicit and explicit flags aren't equal.
+268         flags = self.value.flags ^ re.compile("").flags
+269         regex_flags, flag_imports = serializer_factory(flags).serialize()
+270         imports = {"import re", *pattern_imports, *flag_imports}
+271         args = [regex_pattern]
+272         if flags:
+273             args.append(regex_flags)
+274         return "re.compile(%s)" % ", ".join(args), imports
+275 
+276 
+277 class SequenceSerializer(BaseSequenceSerializer):
+278     def _format(self):
+279         return "[%s]"
+280 
+281 
+282 class SetSerializer(BaseSequenceSerializer):
+283     def _format(self):
+284         # Serialize as a set literal except when value is empty because {}
+285         # is an empty dict.
+286         return "{%s}" if self.value else "set(%s)"
+287 
+288 
+289 class SettingsReferenceSerializer(BaseSerializer):
+290     def serialize(self):
+291         return "settings.%s" % self.value.setting_name, {
+292             "from django.conf import settings"
+293         }
+294 
+295 
+296 class TupleSerializer(BaseSequenceSerializer):
+297     def _format(self):
+298         # When len(value)==0, the empty tuple should be serialized as "()",
+299         # not "(,)" because (,) is invalid Python syntax.
+300         return "(%s)" if len(self.value) != 1 else "(%s,)"
+301 
+302 
+303 class TypeSerializer(BaseSerializer):
+304     def serialize(self):
+305         special_cases = [
+306             (models.Model, "models.Model", ["from django.db import models"]),
+307             (types.NoneType, "types.NoneType", ["import types"]),
+308         ]
+309         for case, string, imports in special_cases:
+310             if case is self.value:
+311                 return string, set(imports)
+312         if hasattr(self.value, "__module__"):
+313             module = self.value.__module__
+314             if module == builtins.__name__:
+315                 return self.value.__name__, set()
+316             else:
+317                 return "%s.%s" % (module, self.value.__qualname__), {
+318                     "import %s" % module
+319                 }
+320 
+321 
+322 class UUIDSerializer(BaseSerializer):
+323     def serialize(self):
+324         return "uuid.%s" % repr(self.value), {"import uuid"}
+325 
+326 
+327 class Serializer:
+328     _registry = {
+329         # Some of these are order-dependent.
+330         frozenset: FrozensetSerializer,
+331         list: SequenceSerializer,
+332         set: SetSerializer,
+333         tuple: TupleSerializer,
+334         dict: DictionarySerializer,
+335         models.Choices: ChoicesSerializer,
+336         enum.Enum: EnumSerializer,
+337         datetime.datetime: DatetimeDatetimeSerializer,
+338         (datetime.date, datetime.timedelta, datetime.time): DateTimeSerializer,
+339         SettingsReference: SettingsReferenceSerializer,
+340         float: FloatSerializer,
+341         (bool, int, types.NoneType, bytes, str, range): BaseSimpleSerializer,
+342         decimal.Decimal: DecimalSerializer,
+343         (functools.partial, functools.partialmethod): FunctoolsPartialSerializer,
+344         (
+345             types.FunctionType,
+346             types.BuiltinFunctionType,
+347             types.MethodType,
+348         ): FunctionTypeSerializer,
+349         collections.abc.Iterable: IterableSerializer,
+350         (COMPILED_REGEX_TYPE, RegexObject): RegexSerializer,
+351         uuid.UUID: UUIDSerializer,
+352         pathlib.PurePath: PathSerializer,
+353         os.PathLike: PathLikeSerializer,
+354     }
+355 
+356     @classmethod
+357     def register(cls, type_, serializer):
+358         if not issubclass(serializer, BaseSerializer):
+359             raise ValueError(
+360                 "'%s' must inherit from 'BaseSerializer'." % serializer.__name__
+361             )
+362         cls._registry[type_] = serializer
+363 
+364     @classmethod
+365     def unregister(cls, type_):
+366         cls._registry.pop(type_)
+367 
+368 
+369 def serializer_factory(value):
+370     if isinstance(value, Promise):
+371         value = str(value)
+372     elif isinstance(value, LazyObject):
+373         # The unwrapped value is returned as the first item of the arguments
+374         # tuple.
+375         value = value.__reduce__()[1][0]
+376 
+377     if isinstance(value, models.Field):
+378         return ModelFieldSerializer(value)
+379     if isinstance(value, models.manager.BaseManager):
+380         return ModelManagerSerializer(value)
+381     if isinstance(value, Operation):
+382         return OperationSerializer(value)
+383     if isinstance(value, type):
+384         return TypeSerializer(value)
+385     # Anything that knows how to deconstruct itself.
+386     if hasattr(value, "deconstruct"):
+387         return DeconstructableSerializer(value)
+388     for type_, serializer_cls in Serializer._registry.items():
+389         if isinstance(value, type_):
+390             return serializer_cls(value)
+391     raise ValueError(
+392         "Cannot serialize: %r\nThere are some values Django cannot serialize into "
+393         "migration files.\nFor more, see https://docs.djangoproject.com/en/%s/"
+394         "topics/migrations/#migration-serializing" % (value, get_docs_version())
+395     )
+
+</code><intended_behavior>Modify the serialization logic to sort sets by their string representation before serialization. This ensures that the output order of elements such as unique_together and index_together constraints remains consistent across different runs. The modification should not alter the logical representation of the sets within the migrations; it should only affect their string output to ensure deterministic ordering. The existing functionality for serializing other types of fields or constraints should remain unaffected.</intended_behavior>, <file>django/db/migrations/writer.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os
+2 import re
+3 from importlib import import_module
+4 
+5 from django import get_version
+6 from django.apps import apps
+7 
+8 # SettingsReference imported for backwards compatibility in Django 2.2.
+9 from django.conf import SettingsReference  # NOQA
+10 from django.db import migrations
+11 from django.db.migrations.loader import MigrationLoader
+12 from django.db.migrations.serializer import Serializer, serializer_factory
+13 from django.utils.inspect import get_func_args
+14 from django.utils.module_loading import module_dir
+15 from django.utils.timezone import now
+16 
+17 
+18 class OperationWriter:
+19     def __init__(self, operation, indentation=2):
+20         self.operation = operation
+21         self.buff = []
+22         self.indentation = indentation
+23 
+24     def serialize(self):
+25         def _write(_arg_name, _arg_value):
+26             if _arg_name in self.operation.serialization_expand_args and isinstance(
+27                 _arg_value, (list, tuple, dict)
+28             ):
+29                 if isinstance(_arg_value, dict):
+30                     self.feed("%s={" % _arg_name)
+31                     self.indent()
+32                     for key, value in _arg_value.items():
+33                         key_string, key_imports = MigrationWriter.serialize(key)
+34                         arg_string, arg_imports = MigrationWriter.serialize(value)
+35                         args = arg_string.splitlines()
+36                         if len(args) > 1:
+37                             self.feed("%s: %s" % (key_string, args[0]))
+38                             for arg in args[1:-1]:
+39                                 self.feed(arg)
+40                             self.feed("%s," % args[-1])
+41                         else:
+42                             self.feed("%s: %s," % (key_string, arg_string))
+43                         imports.update(key_imports)
+44                         imports.update(arg_imports)
+45                     self.unindent()
+46                     self.feed("},")
+47                 else:
+48                     self.feed("%s=[" % _arg_name)
+49                     self.indent()
+50                     for item in _arg_value:
+51                         arg_string, arg_imports = MigrationWriter.serialize(item)
+52                         args = arg_string.splitlines()
+53                         if len(args) > 1:
+54                             for arg in args[:-1]:
+55                                 self.feed(arg)
+56                             self.feed("%s," % args[-1])
+57                         else:
+58                             self.feed("%s," % arg_string)
+59                         imports.update(arg_imports)
+60                     self.unindent()
+61                     self.feed("],")
+62             else:
+63                 arg_string, arg_imports = MigrationWriter.serialize(_arg_value)
+64                 args = arg_string.splitlines()
+65                 if len(args) > 1:
+66                     self.feed("%s=%s" % (_arg_name, args[0]))
+67                     for arg in args[1:-1]:
+68                         self.feed(arg)
+69                     self.feed("%s," % args[-1])
+70                 else:
+71                     self.feed("%s=%s," % (_arg_name, arg_string))
+72                 imports.update(arg_imports)
+73 
+74         imports = set()
+75         name, args, kwargs = self.operation.deconstruct()
+76         operation_args = get_func_args(self.operation.__init__)
+77 
+78         # See if this operation is in django.db.migrations. If it is,
+79         # We can just use the fact we already have that imported,
+80         # otherwise, we need to add an import for the operation class.
+81         if getattr(migrations, name, None) == self.operation.__class__:
+82             self.feed("migrations.%s(" % name)
+83         else:
+84             imports.add("import %s" % (self.operation.__class__.__module__))
+85             self.feed("%s.%s(" % (self.operation.__class__.__module__, name))
+86 
+87         self.indent()
+88 
+89         for i, arg in enumerate(args):
+90             arg_value = arg
+91             arg_name = operation_args[i]
+92             _write(arg_name, arg_value)
+93 
+94         i = len(args)
+95         # Only iterate over remaining arguments
+96         for arg_name in operation_args[i:]:
+97             if arg_name in kwargs:  # Don't sort to maintain signature order
+98                 arg_value = kwargs[arg_name]
+99                 _write(arg_name, arg_value)
+100 
+101         self.unindent()
+102         self.feed("),")
+103         return self.render(), imports
+104 
+105     def indent(self):
+106         self.indentation += 1
+107 
+108     def unindent(self):
+109         self.indentation -= 1
+110 
+111     def feed(self, line):
+112         self.buff.append(" " * (self.indentation * 4) + line)
+113 
+114     def render(self):
+115         return "\n".join(self.buff)
+116 
+117 
+118 class MigrationWriter:
+119     """
+120     Take a Migration instance and is able to produce the contents
+121     of the migration file from it.
+122     """
+123 
+124     def __init__(self, migration, include_header=True):
+125         self.migration = migration
+126         self.include_header = include_header
+127         self.needs_manual_porting = False
+128 
+129     def as_string(self):
+130         """Return a string of the file contents."""
+131         items = {
+132             "replaces_str": "",
+133             "initial_str": "",
+134         }
+135 
+136         imports = set()
+137 
+138         # Deconstruct operations
+139         operations = []
+140         for operation in self.migration.operations:
+141             operation_string, operation_imports = OperationWriter(operation).serialize()
+142             imports.update(operation_imports)
+143             operations.append(operation_string)
+144         items["operations"] = "\n".join(operations) + "\n" if operations else ""
+145 
+146         # Format dependencies and write out swappable dependencies right
+147         dependencies = []
+148         for dependency in self.migration.dependencies:
+149             if dependency[0] == "__setting__":
+150                 dependencies.append(
+151                     "        migrations.swappable_dependency(settings.%s),"
+152                     % dependency[1]
+153                 )
+154                 imports.add("from django.conf import settings")
+155             else:
+156                 dependencies.append("        %s," % self.serialize(dependency)[0])
+157         items["dependencies"] = "\n".join(dependencies) + "\n" if dependencies else ""
+158 
+159         # Format imports nicely, swapping imports of functions from migration files
+160         # for comments
+161         migration_imports = set()
+162         for line in list(imports):
+163             if re.match(r"^import (.*)\.\d+[^\s]*$", line):
+164                 migration_imports.add(line.split("import")[1].strip())
+165                 imports.remove(line)
+166                 self.needs_manual_porting = True
+167 
+168         # django.db.migrations is always used, but models import may not be.
+169         # If models import exists, merge it with migrations import.
+170         if "from django.db import models" in imports:
+171             imports.discard("from django.db import models")
+172             imports.add("from django.db import migrations, models")
+173         else:
+174             imports.add("from django.db import migrations")
+175 
+176         # Sort imports by the package / module to be imported (the part after
+177         # "from" in "from ... import ..." or after "import" in "import ...").
+178         # First group the "import" statements, then "from ... import ...".
+179         sorted_imports = sorted(
+180             imports, key=lambda i: (i.split()[0] == "from", i.split()[1])
+181         )
+182         items["imports"] = "\n".join(sorted_imports) + "\n" if imports else ""
+183         if migration_imports:
+184             items["imports"] += (
+185                 "\n\n# Functions from the following migrations need manual "
+186                 "copying.\n# Move them and any dependencies into this file, "
+187                 "then update the\n# RunPython operations to refer to the local "
+188                 "versions:\n# %s"
+189             ) % "\n# ".join(sorted(migration_imports))
+190         # If there's a replaces, make a string for it
+191         if self.migration.replaces:
+192             items["replaces_str"] = (
+193                 "\n    replaces = %s\n" % self.serialize(self.migration.replaces)[0]
+194             )
+195         # Hinting that goes into comment
+196         if self.include_header:
+197             items["migration_header"] = MIGRATION_HEADER_TEMPLATE % {
+198                 "version": get_version(),
+199                 "timestamp": now().strftime("%Y-%m-%d %H:%M"),
+200             }
+201         else:
+202             items["migration_header"] = ""
+203 
+204         if self.migration.initial:
+205             items["initial_str"] = "\n    initial = True\n"
+206 
+207         return MIGRATION_TEMPLATE % items
+208 
+209     @property
+210     def basedir(self):
+211         migrations_package_name, _ = MigrationLoader.migrations_module(
+212             self.migration.app_label
+213         )
+214 
+215         if migrations_package_name is None:
+216             raise ValueError(
+217                 "Django can't create migrations for app '%s' because "
+218                 "migrations have been disabled via the MIGRATION_MODULES "
+219                 "setting." % self.migration.app_label
+220             )
+221 
+222         # See if we can import the migrations module directly
+223         try:
+224             migrations_module = import_module(migrations_package_name)
+225         except ImportError:
+226             pass
+227         else:
+228             try:
+229                 return module_dir(migrations_module)
+230             except ValueError:
+231                 pass
+232 
+233         # Alright, see if it's a direct submodule of the app
+234         app_config = apps.get_app_config(self.migration.app_label)
+235         (
+236             maybe_app_name,
+237             _,
+238             migrations_package_basename,
+239         ) = migrations_package_name.rpartition(".")
+240         if app_config.name == maybe_app_name:
+241             return os.path.join(app_config.path, migrations_package_basename)
+242 
+243         # In case of using MIGRATION_MODULES setting and the custom package
+244         # doesn't exist, create one, starting from an existing package
+245         existing_dirs, missing_dirs = migrations_package_name.split("."), []
+246         while existing_dirs:
+247             missing_dirs.insert(0, existing_dirs.pop(-1))
+248             try:
+249                 base_module = import_module(".".join(existing_dirs))
+250             except (ImportError, ValueError):
+251                 continue
+252             else:
+253                 try:
+254                     base_dir = module_dir(base_module)
+255                 except ValueError:
+256                     continue
+257                 else:
+258                     break
+259         else:
+260             raise ValueError(
+261                 "Could not locate an appropriate location to create "
+262                 "migrations package %s. Make sure the toplevel "
+263                 "package exists and can be imported." % migrations_package_name
+264             )
+265 
+266         final_dir = os.path.join(base_dir, *missing_dirs)
+267         os.makedirs(final_dir, exist_ok=True)
+268         for missing_dir in missing_dirs:
+269             base_dir = os.path.join(base_dir, missing_dir)
+270             with open(os.path.join(base_dir, "__init__.py"), "w"):
+271                 pass
+272 
+273         return final_dir
+274 
+275     @property
+276     def filename(self):
+277         return "%s.py" % self.migration.name
+278 
+279     @property
+280     def path(self):
+281         return os.path.join(self.basedir, self.filename)
+282 
+283     @classmethod
+284     def serialize(cls, value):
+285         return serializer_factory(value).serialize()
+286 
+287     @classmethod
+288     def register_serializer(cls, type_, serializer):
+289         Serializer.register(type_, serializer)
+290 
+291     @classmethod
+292     def unregister_serializer(cls, type_):
+293         Serializer.unregister(type_)
+294 
+295 
+296 MIGRATION_HEADER_TEMPLATE = """\
+297 # Generated by Django %(version)s on %(timestamp)s
+298 
+299 """
+300 
+301 
+302 MIGRATION_TEMPLATE = """\
+303 %(migration_header)s%(imports)s
+304 
+305 class Migration(migrations.Migration):
+306 %(replaces_str)s%(initial_str)s
+307     dependencies = [
+308 %(dependencies)s\
+309     ]
+310 
+311     operations = [
+312 %(operations)s\
+313     ]
+314 """
+
+</code><intended_behavior>Ensure that during the final writing process, any sets (or potentially other non-deterministic structures) related to unique_together and index_together are processed in a sorted manner to preserve order stability in the generated migration files. The change should specifically target serialization output consistency without impacting the functional aspects of migration application or rollback.</intended_behavior>]
+2025-10-17 14:07:59.154 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-17 14:07:59.154 | INFO     | Search-only: skipping patch selection
+2025-10-17 14:07:59.309 | INFO     | Task django__django-17066 completed successfully.
+2025-10-17 14:07:59.310 | INFO     | No patch generated. You can try running ACR again.

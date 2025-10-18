@@ -1,0 +1,1557 @@
+2025-10-17 16:55:40.977 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-17 16:55:43.398 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=487, output_tokens=12, cost=0.005230
+2025-10-17 16:55:43.399 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-17 16:55:43.406 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-17 16:55:50.752 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=774, output_tokens=295, cost=0.016590
+2025-10-17 16:55:50.758 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-17 16:55:52.805 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=649, output_tokens=20, cost=0.007090
+2025-10-17 16:55:52.806 | DEBUG    | Extracted a valid json.
+2025-10-17 16:55:52.806 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_method(\"raises\")"],
+    "bug_locations": []
+}
+2025-10-17 16:55:52.812 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-17 16:55:52.813 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-17 16:56:06.163 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1241, output_tokens=555, cost=0.029060
+2025-10-17 16:56:06.176 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-17 16:56:14.174 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2012, output_tokens=306, cost=0.029300
+2025-10-17 16:56:14.181 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-17 16:56:21.285 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=660, output_tokens=253, cost=0.014190
+2025-10-17 16:56:21.286 | DEBUG    | Extracted a valid json.
+2025-10-17 16:56:21.286 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "src/_pytest/python_api.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The code at this location should be enhanced to provide clearer feedback when a match fails due to the presence of special characters in the strings being compared. Specifically, when match is not None and contains characters that have special meaning in regular expressions, such as parentheses, the error message should: 1. Inform the user that the string being matched is treated as a regular expression. 2. Suggest that if the matching fails due to literal characters that have special meanings in regex (such as parentheses), the user should consider escaping those characters or using a raw string literal if they did not intend for a regex match. 3. This improvement should be made without altering the existing functionality for regular users who are correctly using the match parameter as intended (with properly escaped characters or regex patterns). This enhancement aims to make the debugging process more intuitive, particularly for cases where users may unintentionally include regex-special characters in their strings. Additionally, this should preserve the utility of using regular expressions in the match parameter for more advanced use cases."
+        }
+    ]
+}
+2025-10-17 16:56:21.294 | DEBUG    | Bug location extracted successfully: [<file>src/_pytest/python_api.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import inspect
+2 import math
+3 import pprint
+4 from collections.abc import Iterable
+5 from collections.abc import Mapping
+6 from collections.abc import Sized
+7 from decimal import Decimal
+8 from itertools import filterfalse
+9 from numbers import Number
+10 from types import TracebackType
+11 from typing import Any
+12 from typing import Callable
+13 from typing import cast
+14 from typing import Generic
+15 from typing import Optional
+16 from typing import Pattern
+17 from typing import Tuple
+18 from typing import TypeVar
+19 from typing import Union
+20 
+21 from more_itertools.more import always_iterable
+22 
+23 import _pytest._code
+24 from _pytest.compat import overload
+25 from _pytest.compat import STRING_TYPES
+26 from _pytest.compat import TYPE_CHECKING
+27 from _pytest.outcomes import fail
+28 
+29 if TYPE_CHECKING:
+30     from typing import Type
+31 
+32 
+33 BASE_TYPE = (type, STRING_TYPES)
+34 
+35 
+36 def _non_numeric_type_error(value, at: Optional[str]) -> TypeError:
+37     at_str = " at {}".format(at) if at else ""
+38     return TypeError(
+39         "cannot make approximate comparisons to non-numeric values: {!r} {}".format(
+40             value, at_str
+41         )
+42     )
+43 
+44 
+45 # builtin pytest.approx helper
+46 
+47 
+48 class ApproxBase:
+49     """
+50     Provide shared utilities for making approximate comparisons between numbers
+51     or sequences of numbers.
+52     """
+53 
+54     # Tell numpy to use our `__eq__` operator instead of its.
+55     __array_ufunc__ = None
+56     __array_priority__ = 100
+57 
+58     def __init__(self, expected, rel=None, abs=None, nan_ok: bool = False) -> None:
+59         __tracebackhide__ = True
+60         self.expected = expected
+61         self.abs = abs
+62         self.rel = rel
+63         self.nan_ok = nan_ok
+64         self._check_type()
+65 
+66     def __repr__(self) -> str:
+67         raise NotImplementedError
+68 
+69     def __eq__(self, actual) -> bool:
+70         return all(
+71             a == self._approx_scalar(x) for a, x in self._yield_comparisons(actual)
+72         )
+73 
+74     # Ignore type because of https://github.com/python/mypy/issues/4266.
+75     __hash__ = None  # type: ignore
+76 
+77     def __ne__(self, actual) -> bool:
+78         return not (actual == self)
+79 
+80     def _approx_scalar(self, x) -> "ApproxScalar":
+81         return ApproxScalar(x, rel=self.rel, abs=self.abs, nan_ok=self.nan_ok)
+82 
+83     def _yield_comparisons(self, actual):
+84         """
+85         Yield all the pairs of numbers to be compared.  This is used to
+86         implement the `__eq__` method.
+87         """
+88         raise NotImplementedError
+89 
+90     def _check_type(self) -> None:
+91         """
+92         Raise a TypeError if the expected value is not a valid type.
+93         """
+94         # This is only a concern if the expected value is a sequence.  In every
+95         # other case, the approx() function ensures that the expected value has
+96         # a numeric type.  For this reason, the default is to do nothing.  The
+97         # classes that deal with sequences should reimplement this method to
+98         # raise if there are any non-numeric elements in the sequence.
+99         pass
+100 
+101 
+102 def _recursive_list_map(f, x):
+103     if isinstance(x, list):
+104         return list(_recursive_list_map(f, xi) for xi in x)
+105     else:
+106         return f(x)
+107 
+108 
+109 class ApproxNumpy(ApproxBase):
+110     """
+111     Perform approximate comparisons where the expected value is numpy array.
+112     """
+113 
+114     def __repr__(self) -> str:
+115         list_scalars = _recursive_list_map(self._approx_scalar, self.expected.tolist())
+116         return "approx({!r})".format(list_scalars)
+117 
+118     def __eq__(self, actual) -> bool:
+119         import numpy as np
+120 
+121         # self.expected is supposed to always be an array here
+122 
+123         if not np.isscalar(actual):
+124             try:
+125                 actual = np.asarray(actual)
+126             except Exception as e:
+127                 raise TypeError(
+128                     "cannot compare '{}' to numpy.ndarray".format(actual)
+129                 ) from e
+130 
+131         if not np.isscalar(actual) and actual.shape != self.expected.shape:
+132             return False
+133 
+134         return ApproxBase.__eq__(self, actual)
+135 
+136     def _yield_comparisons(self, actual):
+137         import numpy as np
+138 
+139         # `actual` can either be a numpy array or a scalar, it is treated in
+140         # `__eq__` before being passed to `ApproxBase.__eq__`, which is the
+141         # only method that calls this one.
+142 
+143         if np.isscalar(actual):
+144             for i in np.ndindex(self.expected.shape):
+145                 yield actual, self.expected[i].item()
+146         else:
+147             for i in np.ndindex(self.expected.shape):
+148                 yield actual[i].item(), self.expected[i].item()
+149 
+150 
+151 class ApproxMapping(ApproxBase):
+152     """
+153     Perform approximate comparisons where the expected value is a mapping with
+154     numeric values (the keys can be anything).
+155     """
+156 
+157     def __repr__(self) -> str:
+158         return "approx({!r})".format(
+159             {k: self._approx_scalar(v) for k, v in self.expected.items()}
+160         )
+161 
+162     def __eq__(self, actual) -> bool:
+163         if set(actual.keys()) != set(self.expected.keys()):
+164             return False
+165 
+166         return ApproxBase.__eq__(self, actual)
+167 
+168     def _yield_comparisons(self, actual):
+169         for k in self.expected.keys():
+170             yield actual[k], self.expected[k]
+171 
+172     def _check_type(self) -> None:
+173         __tracebackhide__ = True
+174         for key, value in self.expected.items():
+175             if isinstance(value, type(self.expected)):
+176                 msg = "pytest.approx() does not support nested dictionaries: key={!r} value={!r}\n  full mapping={}"
+177                 raise TypeError(msg.format(key, value, pprint.pformat(self.expected)))
+178             elif not isinstance(value, Number):
+179                 raise _non_numeric_type_error(self.expected, at="key={!r}".format(key))
+180 
+181 
+182 class ApproxSequencelike(ApproxBase):
+183     """
+184     Perform approximate comparisons where the expected value is a sequence of
+185     numbers.
+186     """
+187 
+188     def __repr__(self) -> str:
+189         seq_type = type(self.expected)
+190         if seq_type not in (tuple, list, set):
+191             seq_type = list
+192         return "approx({!r})".format(
+193             seq_type(self._approx_scalar(x) for x in self.expected)
+194         )
+195 
+196     def __eq__(self, actual) -> bool:
+197         if len(actual) != len(self.expected):
+198             return False
+199         return ApproxBase.__eq__(self, actual)
+200 
+201     def _yield_comparisons(self, actual):
+202         return zip(actual, self.expected)
+203 
+204     def _check_type(self) -> None:
+205         __tracebackhide__ = True
+206         for index, x in enumerate(self.expected):
+207             if isinstance(x, type(self.expected)):
+208                 msg = "pytest.approx() does not support nested data structures: {!r} at index {}\n  full sequence: {}"
+209                 raise TypeError(msg.format(x, index, pprint.pformat(self.expected)))
+210             elif not isinstance(x, Number):
+211                 raise _non_numeric_type_error(
+212                     self.expected, at="index {}".format(index)
+213                 )
+214 
+215 
+216 class ApproxScalar(ApproxBase):
+217     """
+218     Perform approximate comparisons where the expected value is a single number.
+219     """
+220 
+221     # Using Real should be better than this Union, but not possible yet:
+222     # https://github.com/python/typeshed/pull/3108
+223     DEFAULT_ABSOLUTE_TOLERANCE = 1e-12  # type: Union[float, Decimal]
+224     DEFAULT_RELATIVE_TOLERANCE = 1e-6  # type: Union[float, Decimal]
+225 
+226     def __repr__(self) -> str:
+227         """
+228         Return a string communicating both the expected value and the tolerance
+229         for the comparison being made, e.g. '1.0 ± 1e-6', '(3+4j) ± 5e-6 ∠ ±180°'.
+230         """
+231 
+232         # Infinities aren't compared using tolerances, so don't show a
+233         # tolerance. Need to call abs to handle complex numbers, e.g. (inf + 1j)
+234         if math.isinf(abs(self.expected)):
+235             return str(self.expected)
+236 
+237         # If a sensible tolerance can't be calculated, self.tolerance will
+238         # raise a ValueError.  In this case, display '???'.
+239         try:
+240             vetted_tolerance = "{:.1e}".format(self.tolerance)
+241             if isinstance(self.expected, complex) and not math.isinf(self.tolerance):
+242                 vetted_tolerance += " ∠ ±180°"
+243         except ValueError:
+244             vetted_tolerance = "???"
+245 
+246         return "{} ± {}".format(self.expected, vetted_tolerance)
+247 
+248     def __eq__(self, actual) -> bool:
+249         """
+250         Return true if the given value is equal to the expected value within
+251         the pre-specified tolerance.
+252         """
+253         if _is_numpy_array(actual):
+254             # Call ``__eq__()`` manually to prevent infinite-recursion with
+255             # numpy<1.13.  See #3748.
+256             return all(self.__eq__(a) for a in actual.flat)
+257 
+258         # Short-circuit exact equality.
+259         if actual == self.expected:
+260             return True
+261 
+262         # Allow the user to control whether NaNs are considered equal to each
+263         # other or not.  The abs() calls are for compatibility with complex
+264         # numbers.
+265         if math.isnan(abs(self.expected)):
+266             return self.nan_ok and math.isnan(abs(actual))
+267 
+268         # Infinity shouldn't be approximately equal to anything but itself, but
+269         # if there's a relative tolerance, it will be infinite and infinity
+270         # will seem approximately equal to everything.  The equal-to-itself
+271         # case would have been short circuited above, so here we can just
+272         # return false if the expected value is infinite.  The abs() call is
+273         # for compatibility with complex numbers.
+274         if math.isinf(abs(self.expected)):
+275             return False
+276 
+277         # Return true if the two numbers are within the tolerance.
+278         result = abs(self.expected - actual) <= self.tolerance  # type: bool
+279         return result
+280 
+281     # Ignore type because of https://github.com/python/mypy/issues/4266.
+282     __hash__ = None  # type: ignore
+283 
+284     @property
+285     def tolerance(self):
+286         """
+287         Return the tolerance for the comparison.  This could be either an
+288         absolute tolerance or a relative tolerance, depending on what the user
+289         specified or which would be larger.
+290         """
+291 
+292         def set_default(x, default):
+293             return x if x is not None else default
+294 
+295         # Figure out what the absolute tolerance should be.  ``self.abs`` is
+296         # either None or a value specified by the user.
+297         absolute_tolerance = set_default(self.abs, self.DEFAULT_ABSOLUTE_TOLERANCE)
+298 
+299         if absolute_tolerance < 0:
+300             raise ValueError(
+301                 "absolute tolerance can't be negative: {}".format(absolute_tolerance)
+302             )
+303         if math.isnan(absolute_tolerance):
+304             raise ValueError("absolute tolerance can't be NaN.")
+305 
+306         # If the user specified an absolute tolerance but not a relative one,
+307         # just return the absolute tolerance.
+308         if self.rel is None:
+309             if self.abs is not None:
+310                 return absolute_tolerance
+311 
+312         # Figure out what the relative tolerance should be.  ``self.rel`` is
+313         # either None or a value specified by the user.  This is done after
+314         # we've made sure the user didn't ask for an absolute tolerance only,
+315         # because we don't want to raise errors about the relative tolerance if
+316         # we aren't even going to use it.
+317         relative_tolerance = set_default(
+318             self.rel, self.DEFAULT_RELATIVE_TOLERANCE
+319         ) * abs(self.expected)
+320 
+321         if relative_tolerance < 0:
+322             raise ValueError(
+323                 "relative tolerance can't be negative: {}".format(absolute_tolerance)
+324             )
+325         if math.isnan(relative_tolerance):
+326             raise ValueError("relative tolerance can't be NaN.")
+327 
+328         # Return the larger of the relative and absolute tolerances.
+329         return max(relative_tolerance, absolute_tolerance)
+330 
+331 
+332 class ApproxDecimal(ApproxScalar):
+333     """
+334     Perform approximate comparisons where the expected value is a decimal.
+335     """
+336 
+337     DEFAULT_ABSOLUTE_TOLERANCE = Decimal("1e-12")
+338     DEFAULT_RELATIVE_TOLERANCE = Decimal("1e-6")
+339 
+340 
+341 def approx(expected, rel=None, abs=None, nan_ok: bool = False) -> ApproxBase:
+342     """
+343     Assert that two numbers (or two sets of numbers) are equal to each other
+344     within some tolerance.
+345 
+346     Due to the `intricacies of floating-point arithmetic`__, numbers that we
+347     would intuitively expect to be equal are not always so::
+348 
+349         >>> 0.1 + 0.2 == 0.3
+350         False
+351 
+352     __ https://docs.python.org/3/tutorial/floatingpoint.html
+353 
+354     This problem is commonly encountered when writing tests, e.g. when making
+355     sure that floating-point values are what you expect them to be.  One way to
+356     deal with this problem is to assert that two floating-point numbers are
+357     equal to within some appropriate tolerance::
+358 
+359         >>> abs((0.1 + 0.2) - 0.3) < 1e-6
+360         True
+361 
+362     However, comparisons like this are tedious to write and difficult to
+363     understand.  Furthermore, absolute comparisons like the one above are
+364     usually discouraged because there's no tolerance that works well for all
+365     situations.  ``1e-6`` is good for numbers around ``1``, but too small for
+366     very big numbers and too big for very small ones.  It's better to express
+367     the tolerance as a fraction of the expected value, but relative comparisons
+368     like that are even more difficult to write correctly and concisely.
+369 
+370     The ``approx`` class performs floating-point comparisons using a syntax
+371     that's as intuitive as possible::
+372 
+373         >>> from pytest import approx
+374         >>> 0.1 + 0.2 == approx(0.3)
+375         True
+376 
+377     The same syntax also works for sequences of numbers::
+378 
+379         >>> (0.1 + 0.2, 0.2 + 0.4) == approx((0.3, 0.6))
+380         True
+381 
+382     Dictionary *values*::
+383 
+384         >>> {'a': 0.1 + 0.2, 'b': 0.2 + 0.4} == approx({'a': 0.3, 'b': 0.6})
+385         True
+386 
+387     ``numpy`` arrays::
+388 
+389         >>> import numpy as np                                                          # doctest: +SKIP
+390         >>> np.array([0.1, 0.2]) + np.array([0.2, 0.4]) == approx(np.array([0.3, 0.6])) # doctest: +SKIP
+391         True
+392 
+393     And for a ``numpy`` array against a scalar::
+394 
+395         >>> import numpy as np                                         # doctest: +SKIP
+396         >>> np.array([0.1, 0.2]) + np.array([0.2, 0.1]) == approx(0.3) # doctest: +SKIP
+397         True
+398 
+399     By default, ``approx`` considers numbers within a relative tolerance of
+400     ``1e-6`` (i.e. one part in a million) of its expected value to be equal.
+401     This treatment would lead to surprising results if the expected value was
+402     ``0.0``, because nothing but ``0.0`` itself is relatively close to ``0.0``.
+403     To handle this case less surprisingly, ``approx`` also considers numbers
+404     within an absolute tolerance of ``1e-12`` of its expected value to be
+405     equal.  Infinity and NaN are special cases.  Infinity is only considered
+406     equal to itself, regardless of the relative tolerance.  NaN is not
+407     considered equal to anything by default, but you can make it be equal to
+408     itself by setting the ``nan_ok`` argument to True.  (This is meant to
+409     facilitate comparing arrays that use NaN to mean "no data".)
+410 
+411     Both the relative and absolute tolerances can be changed by passing
+412     arguments to the ``approx`` constructor::
+413 
+414         >>> 1.0001 == approx(1)
+415         False
+416         >>> 1.0001 == approx(1, rel=1e-3)
+417         True
+418         >>> 1.0001 == approx(1, abs=1e-3)
+419         True
+420 
+421     If you specify ``abs`` but not ``rel``, the comparison will not consider
+422     the relative tolerance at all.  In other words, two numbers that are within
+423     the default relative tolerance of ``1e-6`` will still be considered unequal
+424     if they exceed the specified absolute tolerance.  If you specify both
+425     ``abs`` and ``rel``, the numbers will be considered equal if either
+426     tolerance is met::
+427 
+428         >>> 1 + 1e-8 == approx(1)
+429         True
+430         >>> 1 + 1e-8 == approx(1, abs=1e-12)
+431         False
+432         >>> 1 + 1e-8 == approx(1, rel=1e-6, abs=1e-12)
+433         True
+434 
+435     If you're thinking about using ``approx``, then you might want to know how
+436     it compares to other good ways of comparing floating-point numbers.  All of
+437     these algorithms are based on relative and absolute tolerances and should
+438     agree for the most part, but they do have meaningful differences:
+439 
+440     - ``math.isclose(a, b, rel_tol=1e-9, abs_tol=0.0)``:  True if the relative
+441       tolerance is met w.r.t. either ``a`` or ``b`` or if the absolute
+442       tolerance is met.  Because the relative tolerance is calculated w.r.t.
+443       both ``a`` and ``b``, this test is symmetric (i.e.  neither ``a`` nor
+444       ``b`` is a "reference value").  You have to specify an absolute tolerance
+445       if you want to compare to ``0.0`` because there is no tolerance by
+446       default.  Only available in python>=3.5.  `More information...`__
+447 
+448       __ https://docs.python.org/3/library/math.html#math.isclose
+449 
+450     - ``numpy.isclose(a, b, rtol=1e-5, atol=1e-8)``: True if the difference
+451       between ``a`` and ``b`` is less that the sum of the relative tolerance
+452       w.r.t. ``b`` and the absolute tolerance.  Because the relative tolerance
+453       is only calculated w.r.t. ``b``, this test is asymmetric and you can
+454       think of ``b`` as the reference value.  Support for comparing sequences
+455       is provided by ``numpy.allclose``.  `More information...`__
+456 
+457       __ http://docs.scipy.org/doc/numpy-1.10.0/reference/generated/numpy.isclose.html
+458 
+459     - ``unittest.TestCase.assertAlmostEqual(a, b)``: True if ``a`` and ``b``
+460       are within an absolute tolerance of ``1e-7``.  No relative tolerance is
+461       considered and the absolute tolerance cannot be changed, so this function
+462       is not appropriate for very large or very small numbers.  Also, it's only
+463       available in subclasses of ``unittest.TestCase`` and it's ugly because it
+464       doesn't follow PEP8.  `More information...`__
+465 
+466       __ https://docs.python.org/3/library/unittest.html#unittest.TestCase.assertAlmostEqual
+467 
+468     - ``a == pytest.approx(b, rel=1e-6, abs=1e-12)``: True if the relative
+469       tolerance is met w.r.t. ``b`` or if the absolute tolerance is met.
+470       Because the relative tolerance is only calculated w.r.t. ``b``, this test
+471       is asymmetric and you can think of ``b`` as the reference value.  In the
+472       special case that you explicitly specify an absolute tolerance but not a
+473       relative tolerance, only the absolute tolerance is considered.
+474 
+475     .. warning::
+476 
+477        .. versionchanged:: 3.2
+478 
+479        In order to avoid inconsistent behavior, ``TypeError`` is
+480        raised for ``>``, ``>=``, ``<`` and ``<=`` comparisons.
+481        The example below illustrates the problem::
+482 
+483            assert approx(0.1) > 0.1 + 1e-10  # calls approx(0.1).__gt__(0.1 + 1e-10)
+484            assert 0.1 + 1e-10 > approx(0.1)  # calls approx(0.1).__lt__(0.1 + 1e-10)
+485 
+486        In the second example one expects ``approx(0.1).__le__(0.1 + 1e-10)``
+487        to be called. But instead, ``approx(0.1).__lt__(0.1 + 1e-10)`` is used to
+488        comparison. This is because the call hierarchy of rich comparisons
+489        follows a fixed behavior. `More information...`__
+490 
+491        __ https://docs.python.org/3/reference/datamodel.html#object.__ge__
+492     """
+493 
+494     # Delegate the comparison to a class that knows how to deal with the type
+495     # of the expected value (e.g. int, float, list, dict, numpy.array, etc).
+496     #
+497     # The primary responsibility of these classes is to implement ``__eq__()``
+498     # and ``__repr__()``.  The former is used to actually check if some
+499     # "actual" value is equivalent to the given expected value within the
+500     # allowed tolerance.  The latter is used to show the user the expected
+501     # value and tolerance, in the case that a test failed.
+502     #
+503     # The actual logic for making approximate comparisons can be found in
+504     # ApproxScalar, which is used to compare individual numbers.  All of the
+505     # other Approx classes eventually delegate to this class.  The ApproxBase
+506     # class provides some convenient methods and overloads, but isn't really
+507     # essential.
+508 
+509     __tracebackhide__ = True
+510 
+511     if isinstance(expected, Decimal):
+512         cls = ApproxDecimal  # type: Type[ApproxBase]
+513     elif isinstance(expected, Number):
+514         cls = ApproxScalar
+515     elif isinstance(expected, Mapping):
+516         cls = ApproxMapping
+517     elif _is_numpy_array(expected):
+518         cls = ApproxNumpy
+519     elif (
+520         isinstance(expected, Iterable)
+521         and isinstance(expected, Sized)
+522         and not isinstance(expected, STRING_TYPES)
+523     ):
+524         cls = ApproxSequencelike
+525     else:
+526         raise _non_numeric_type_error(expected, at=None)
+527 
+528     return cls(expected, rel, abs, nan_ok)
+529 
+530 
+531 def _is_numpy_array(obj: object) -> bool:
+532     """
+533     Return true if the given object is a numpy array.  Make a special effort to
+534     avoid importing numpy unless it's really necessary.
+535     """
+536     import sys
+537 
+538     np = sys.modules.get("numpy")  # type: Any
+539     if np is not None:
+540         return isinstance(obj, np.ndarray)
+541     return False
+542 
+543 
+544 # builtin pytest.raises helper
+545 
+546 _E = TypeVar("_E", bound=BaseException)
+547 
+548 
+549 @overload
+550 def raises(
+551     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+552     *,
+553     match: "Optional[Union[str, Pattern]]" = ...
+554 ) -> "RaisesContext[_E]":
+555     ...  # pragma: no cover
+556 
+557 
+558 @overload  # noqa: F811
+559 def raises(  # noqa: F811
+560     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+561     func: Callable,
+562     *args: Any,
+563     **kwargs: Any
+564 ) -> _pytest._code.ExceptionInfo[_E]:
+565     ...  # pragma: no cover
+566 
+567 
+568 def raises(  # noqa: F811
+569     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+570     *args: Any,
+571     **kwargs: Any
+572 ) -> Union["RaisesContext[_E]", _pytest._code.ExceptionInfo[_E]]:
+573     r"""
+574     Assert that a code block/function call raises ``expected_exception``
+575     or raise a failure exception otherwise.
+576 
+577     :kwparam match: if specified, a string containing a regular expression,
+578         or a regular expression object, that is tested against the string
+579         representation of the exception using ``re.search``. To match a literal
+580         string that may contain `special characters`__, the pattern can
+581         first be escaped with ``re.escape``.
+582 
+583         (This is only used when ``pytest.raises`` is used as a context manager,
+584         and passed through to the function otherwise.
+585         When using ``pytest.raises`` as a function, you can use:
+586         ``pytest.raises(Exc, func, match="passed on").match("my pattern")``.)
+587 
+588         __ https://docs.python.org/3/library/re.html#regular-expression-syntax
+589 
+590     .. currentmodule:: _pytest._code
+591 
+592     Use ``pytest.raises`` as a context manager, which will capture the exception of the given
+593     type::
+594 
+595         >>> with raises(ZeroDivisionError):
+596         ...    1/0
+597 
+598     If the code block does not raise the expected exception (``ZeroDivisionError`` in the example
+599     above), or no exception at all, the check will fail instead.
+600 
+601     You can also use the keyword argument ``match`` to assert that the
+602     exception matches a text or regex::
+603 
+604         >>> with raises(ValueError, match='must be 0 or None'):
+605         ...     raise ValueError("value must be 0 or None")
+606 
+607         >>> with raises(ValueError, match=r'must be \d+$'):
+608         ...     raise ValueError("value must be 42")
+609 
+610     The context manager produces an :class:`ExceptionInfo` object which can be used to inspect the
+611     details of the captured exception::
+612 
+613         >>> with raises(ValueError) as exc_info:
+614         ...     raise ValueError("value must be 42")
+615         >>> assert exc_info.type is ValueError
+616         >>> assert exc_info.value.args[0] == "value must be 42"
+617 
+618     .. note::
+619 
+620        When using ``pytest.raises`` as a context manager, it's worthwhile to
+621        note that normal context manager rules apply and that the exception
+622        raised *must* be the final line in the scope of the context manager.
+623        Lines of code after that, within the scope of the context manager will
+624        not be executed. For example::
+625 
+626            >>> value = 15
+627            >>> with raises(ValueError) as exc_info:
+628            ...     if value > 10:
+629            ...         raise ValueError("value must be <= 10")
+630            ...     assert exc_info.type is ValueError  # this will not execute
+631 
+632        Instead, the following approach must be taken (note the difference in
+633        scope)::
+634 
+635            >>> with raises(ValueError) as exc_info:
+636            ...     if value > 10:
+637            ...         raise ValueError("value must be <= 10")
+638            ...
+639            >>> assert exc_info.type is ValueError
+640 
+641     **Using with** ``pytest.mark.parametrize``
+642 
+643     When using :ref:`pytest.mark.parametrize ref`
+644     it is possible to parametrize tests such that
+645     some runs raise an exception and others do not.
+646 
+647     See :ref:`parametrizing_conditional_raising` for an example.
+648 
+649     **Legacy form**
+650 
+651     It is possible to specify a callable by passing a to-be-called lambda::
+652 
+653         >>> raises(ZeroDivisionError, lambda: 1/0)
+654         <ExceptionInfo ...>
+655 
+656     or you can specify an arbitrary callable with arguments::
+657 
+658         >>> def f(x): return 1/x
+659         ...
+660         >>> raises(ZeroDivisionError, f, 0)
+661         <ExceptionInfo ...>
+662         >>> raises(ZeroDivisionError, f, x=0)
+663         <ExceptionInfo ...>
+664 
+665     The form above is fully supported but discouraged for new code because the
+666     context manager form is regarded as more readable and less error-prone.
+667 
+668     .. note::
+669         Similar to caught exception objects in Python, explicitly clearing
+670         local references to returned ``ExceptionInfo`` objects can
+671         help the Python interpreter speed up its garbage collection.
+672 
+673         Clearing those references breaks a reference cycle
+674         (``ExceptionInfo`` --> caught exception --> frame stack raising
+675         the exception --> current frame stack --> local variables -->
+676         ``ExceptionInfo``) which makes Python keep all objects referenced
+677         from that cycle (including all local variables in the current
+678         frame) alive until the next cyclic garbage collection run.
+679         More detailed information can be found in the official Python
+680         documentation for :ref:`the try statement <python:try>`.
+681     """
+682     __tracebackhide__ = True
+683     for exc in filterfalse(
+684         inspect.isclass, always_iterable(expected_exception, BASE_TYPE)
+685     ):
+686         msg = "exceptions must be derived from BaseException, not %s"
+687         raise TypeError(msg % type(exc))
+688 
+689     message = "DID NOT RAISE {}".format(expected_exception)
+690 
+691     if not args:
+692         match = kwargs.pop("match", None)
+693         if kwargs:
+694             msg = "Unexpected keyword arguments passed to pytest.raises: "
+695             msg += ", ".join(sorted(kwargs))
+696             msg += "\nUse context-manager form instead?"
+697             raise TypeError(msg)
+698         return RaisesContext(expected_exception, message, match)
+699     else:
+700         func = args[0]
+701         if not callable(func):
+702             raise TypeError(
+703                 "{!r} object (type: {}) must be callable".format(func, type(func))
+704             )
+705         try:
+706             func(*args[1:], **kwargs)
+707         except expected_exception as e:
+708             # We just caught the exception - there is a traceback.
+709             assert e.__traceback__ is not None
+710             return _pytest._code.ExceptionInfo.from_exc_info(
+711                 (type(e), e, e.__traceback__)
+712             )
+713     fail(message)
+714 
+715 
+716 # This doesn't work with mypy for now. Use fail.Exception instead.
+717 raises.Exception = fail.Exception  # type: ignore
+718 
+719 
+720 class RaisesContext(Generic[_E]):
+721     def __init__(
+722         self,
+723         expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+724         message: str,
+725         match_expr: Optional[Union[str, "Pattern"]] = None,
+726     ) -> None:
+727         self.expected_exception = expected_exception
+728         self.message = message
+729         self.match_expr = match_expr
+730         self.excinfo = None  # type: Optional[_pytest._code.ExceptionInfo[_E]]
+731 
+732     def __enter__(self) -> _pytest._code.ExceptionInfo[_E]:
+733         self.excinfo = _pytest._code.ExceptionInfo.for_later()
+734         return self.excinfo
+735 
+736     def __exit__(
+737         self,
+738         exc_type: Optional["Type[BaseException]"],
+739         exc_val: Optional[BaseException],
+740         exc_tb: Optional[TracebackType],
+741     ) -> bool:
+742         __tracebackhide__ = True
+743         if exc_type is None:
+744             fail(self.message)
+745         assert self.excinfo is not None
+746         if not issubclass(exc_type, self.expected_exception):
+747             return False
+748         # Cast to narrow the exception type now that it's verified.
+749         exc_info = cast(
+750             Tuple["Type[_E]", _E, TracebackType], (exc_type, exc_val, exc_tb)
+751         )
+752         self.excinfo.fill_unfilled(exc_info)
+753         if self.match_expr is not None:
+754             self.excinfo.match(self.match_expr)
+755         return True
+
+</code><intended_behavior>The code at this location should be enhanced to provide clearer feedback when a match fails due to the presence of special characters in the strings being compared. Specifically, when match is not None and contains characters that have special meaning in regular expressions, such as parentheses, the error message should: 1. Inform the user that the string being matched is treated as a regular expression. 2. Suggest that if the matching fails due to literal characters that have special meanings in regex (such as parentheses), the user should consider escaping those characters or using a raw string literal if they did not intend for a regex match. 3. This improvement should be made without altering the existing functionality for regular users who are correctly using the match parameter as intended (with properly escaped characters or regex patterns). This enhancement aims to make the debugging process more intuitive, particularly for cases where users may unintentionally include regex-special characters in their strings. Additionally, this should preserve the utility of using regular expressions in the match parameter for more advanced use cases.</intended_behavior>]
+2025-10-17 16:56:21.294 | INFO     | Search completed. Bug locations: [<file>src/_pytest/python_api.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import inspect
+2 import math
+3 import pprint
+4 from collections.abc import Iterable
+5 from collections.abc import Mapping
+6 from collections.abc import Sized
+7 from decimal import Decimal
+8 from itertools import filterfalse
+9 from numbers import Number
+10 from types import TracebackType
+11 from typing import Any
+12 from typing import Callable
+13 from typing import cast
+14 from typing import Generic
+15 from typing import Optional
+16 from typing import Pattern
+17 from typing import Tuple
+18 from typing import TypeVar
+19 from typing import Union
+20 
+21 from more_itertools.more import always_iterable
+22 
+23 import _pytest._code
+24 from _pytest.compat import overload
+25 from _pytest.compat import STRING_TYPES
+26 from _pytest.compat import TYPE_CHECKING
+27 from _pytest.outcomes import fail
+28 
+29 if TYPE_CHECKING:
+30     from typing import Type
+31 
+32 
+33 BASE_TYPE = (type, STRING_TYPES)
+34 
+35 
+36 def _non_numeric_type_error(value, at: Optional[str]) -> TypeError:
+37     at_str = " at {}".format(at) if at else ""
+38     return TypeError(
+39         "cannot make approximate comparisons to non-numeric values: {!r} {}".format(
+40             value, at_str
+41         )
+42     )
+43 
+44 
+45 # builtin pytest.approx helper
+46 
+47 
+48 class ApproxBase:
+49     """
+50     Provide shared utilities for making approximate comparisons between numbers
+51     or sequences of numbers.
+52     """
+53 
+54     # Tell numpy to use our `__eq__` operator instead of its.
+55     __array_ufunc__ = None
+56     __array_priority__ = 100
+57 
+58     def __init__(self, expected, rel=None, abs=None, nan_ok: bool = False) -> None:
+59         __tracebackhide__ = True
+60         self.expected = expected
+61         self.abs = abs
+62         self.rel = rel
+63         self.nan_ok = nan_ok
+64         self._check_type()
+65 
+66     def __repr__(self) -> str:
+67         raise NotImplementedError
+68 
+69     def __eq__(self, actual) -> bool:
+70         return all(
+71             a == self._approx_scalar(x) for a, x in self._yield_comparisons(actual)
+72         )
+73 
+74     # Ignore type because of https://github.com/python/mypy/issues/4266.
+75     __hash__ = None  # type: ignore
+76 
+77     def __ne__(self, actual) -> bool:
+78         return not (actual == self)
+79 
+80     def _approx_scalar(self, x) -> "ApproxScalar":
+81         return ApproxScalar(x, rel=self.rel, abs=self.abs, nan_ok=self.nan_ok)
+82 
+83     def _yield_comparisons(self, actual):
+84         """
+85         Yield all the pairs of numbers to be compared.  This is used to
+86         implement the `__eq__` method.
+87         """
+88         raise NotImplementedError
+89 
+90     def _check_type(self) -> None:
+91         """
+92         Raise a TypeError if the expected value is not a valid type.
+93         """
+94         # This is only a concern if the expected value is a sequence.  In every
+95         # other case, the approx() function ensures that the expected value has
+96         # a numeric type.  For this reason, the default is to do nothing.  The
+97         # classes that deal with sequences should reimplement this method to
+98         # raise if there are any non-numeric elements in the sequence.
+99         pass
+100 
+101 
+102 def _recursive_list_map(f, x):
+103     if isinstance(x, list):
+104         return list(_recursive_list_map(f, xi) for xi in x)
+105     else:
+106         return f(x)
+107 
+108 
+109 class ApproxNumpy(ApproxBase):
+110     """
+111     Perform approximate comparisons where the expected value is numpy array.
+112     """
+113 
+114     def __repr__(self) -> str:
+115         list_scalars = _recursive_list_map(self._approx_scalar, self.expected.tolist())
+116         return "approx({!r})".format(list_scalars)
+117 
+118     def __eq__(self, actual) -> bool:
+119         import numpy as np
+120 
+121         # self.expected is supposed to always be an array here
+122 
+123         if not np.isscalar(actual):
+124             try:
+125                 actual = np.asarray(actual)
+126             except Exception as e:
+127                 raise TypeError(
+128                     "cannot compare '{}' to numpy.ndarray".format(actual)
+129                 ) from e
+130 
+131         if not np.isscalar(actual) and actual.shape != self.expected.shape:
+132             return False
+133 
+134         return ApproxBase.__eq__(self, actual)
+135 
+136     def _yield_comparisons(self, actual):
+137         import numpy as np
+138 
+139         # `actual` can either be a numpy array or a scalar, it is treated in
+140         # `__eq__` before being passed to `ApproxBase.__eq__`, which is the
+141         # only method that calls this one.
+142 
+143         if np.isscalar(actual):
+144             for i in np.ndindex(self.expected.shape):
+145                 yield actual, self.expected[i].item()
+146         else:
+147             for i in np.ndindex(self.expected.shape):
+148                 yield actual[i].item(), self.expected[i].item()
+149 
+150 
+151 class ApproxMapping(ApproxBase):
+152     """
+153     Perform approximate comparisons where the expected value is a mapping with
+154     numeric values (the keys can be anything).
+155     """
+156 
+157     def __repr__(self) -> str:
+158         return "approx({!r})".format(
+159             {k: self._approx_scalar(v) for k, v in self.expected.items()}
+160         )
+161 
+162     def __eq__(self, actual) -> bool:
+163         if set(actual.keys()) != set(self.expected.keys()):
+164             return False
+165 
+166         return ApproxBase.__eq__(self, actual)
+167 
+168     def _yield_comparisons(self, actual):
+169         for k in self.expected.keys():
+170             yield actual[k], self.expected[k]
+171 
+172     def _check_type(self) -> None:
+173         __tracebackhide__ = True
+174         for key, value in self.expected.items():
+175             if isinstance(value, type(self.expected)):
+176                 msg = "pytest.approx() does not support nested dictionaries: key={!r} value={!r}\n  full mapping={}"
+177                 raise TypeError(msg.format(key, value, pprint.pformat(self.expected)))
+178             elif not isinstance(value, Number):
+179                 raise _non_numeric_type_error(self.expected, at="key={!r}".format(key))
+180 
+181 
+182 class ApproxSequencelike(ApproxBase):
+183     """
+184     Perform approximate comparisons where the expected value is a sequence of
+185     numbers.
+186     """
+187 
+188     def __repr__(self) -> str:
+189         seq_type = type(self.expected)
+190         if seq_type not in (tuple, list, set):
+191             seq_type = list
+192         return "approx({!r})".format(
+193             seq_type(self._approx_scalar(x) for x in self.expected)
+194         )
+195 
+196     def __eq__(self, actual) -> bool:
+197         if len(actual) != len(self.expected):
+198             return False
+199         return ApproxBase.__eq__(self, actual)
+200 
+201     def _yield_comparisons(self, actual):
+202         return zip(actual, self.expected)
+203 
+204     def _check_type(self) -> None:
+205         __tracebackhide__ = True
+206         for index, x in enumerate(self.expected):
+207             if isinstance(x, type(self.expected)):
+208                 msg = "pytest.approx() does not support nested data structures: {!r} at index {}\n  full sequence: {}"
+209                 raise TypeError(msg.format(x, index, pprint.pformat(self.expected)))
+210             elif not isinstance(x, Number):
+211                 raise _non_numeric_type_error(
+212                     self.expected, at="index {}".format(index)
+213                 )
+214 
+215 
+216 class ApproxScalar(ApproxBase):
+217     """
+218     Perform approximate comparisons where the expected value is a single number.
+219     """
+220 
+221     # Using Real should be better than this Union, but not possible yet:
+222     # https://github.com/python/typeshed/pull/3108
+223     DEFAULT_ABSOLUTE_TOLERANCE = 1e-12  # type: Union[float, Decimal]
+224     DEFAULT_RELATIVE_TOLERANCE = 1e-6  # type: Union[float, Decimal]
+225 
+226     def __repr__(self) -> str:
+227         """
+228         Return a string communicating both the expected value and the tolerance
+229         for the comparison being made, e.g. '1.0 ± 1e-6', '(3+4j) ± 5e-6 ∠ ±180°'.
+230         """
+231 
+232         # Infinities aren't compared using tolerances, so don't show a
+233         # tolerance. Need to call abs to handle complex numbers, e.g. (inf + 1j)
+234         if math.isinf(abs(self.expected)):
+235             return str(self.expected)
+236 
+237         # If a sensible tolerance can't be calculated, self.tolerance will
+238         # raise a ValueError.  In this case, display '???'.
+239         try:
+240             vetted_tolerance = "{:.1e}".format(self.tolerance)
+241             if isinstance(self.expected, complex) and not math.isinf(self.tolerance):
+242                 vetted_tolerance += " ∠ ±180°"
+243         except ValueError:
+244             vetted_tolerance = "???"
+245 
+246         return "{} ± {}".format(self.expected, vetted_tolerance)
+247 
+248     def __eq__(self, actual) -> bool:
+249         """
+250         Return true if the given value is equal to the expected value within
+251         the pre-specified tolerance.
+252         """
+253         if _is_numpy_array(actual):
+254             # Call ``__eq__()`` manually to prevent infinite-recursion with
+255             # numpy<1.13.  See #3748.
+256             return all(self.__eq__(a) for a in actual.flat)
+257 
+258         # Short-circuit exact equality.
+259         if actual == self.expected:
+260             return True
+261 
+262         # Allow the user to control whether NaNs are considered equal to each
+263         # other or not.  The abs() calls are for compatibility with complex
+264         # numbers.
+265         if math.isnan(abs(self.expected)):
+266             return self.nan_ok and math.isnan(abs(actual))
+267 
+268         # Infinity shouldn't be approximately equal to anything but itself, but
+269         # if there's a relative tolerance, it will be infinite and infinity
+270         # will seem approximately equal to everything.  The equal-to-itself
+271         # case would have been short circuited above, so here we can just
+272         # return false if the expected value is infinite.  The abs() call is
+273         # for compatibility with complex numbers.
+274         if math.isinf(abs(self.expected)):
+275             return False
+276 
+277         # Return true if the two numbers are within the tolerance.
+278         result = abs(self.expected - actual) <= self.tolerance  # type: bool
+279         return result
+280 
+281     # Ignore type because of https://github.com/python/mypy/issues/4266.
+282     __hash__ = None  # type: ignore
+283 
+284     @property
+285     def tolerance(self):
+286         """
+287         Return the tolerance for the comparison.  This could be either an
+288         absolute tolerance or a relative tolerance, depending on what the user
+289         specified or which would be larger.
+290         """
+291 
+292         def set_default(x, default):
+293             return x if x is not None else default
+294 
+295         # Figure out what the absolute tolerance should be.  ``self.abs`` is
+296         # either None or a value specified by the user.
+297         absolute_tolerance = set_default(self.abs, self.DEFAULT_ABSOLUTE_TOLERANCE)
+298 
+299         if absolute_tolerance < 0:
+300             raise ValueError(
+301                 "absolute tolerance can't be negative: {}".format(absolute_tolerance)
+302             )
+303         if math.isnan(absolute_tolerance):
+304             raise ValueError("absolute tolerance can't be NaN.")
+305 
+306         # If the user specified an absolute tolerance but not a relative one,
+307         # just return the absolute tolerance.
+308         if self.rel is None:
+309             if self.abs is not None:
+310                 return absolute_tolerance
+311 
+312         # Figure out what the relative tolerance should be.  ``self.rel`` is
+313         # either None or a value specified by the user.  This is done after
+314         # we've made sure the user didn't ask for an absolute tolerance only,
+315         # because we don't want to raise errors about the relative tolerance if
+316         # we aren't even going to use it.
+317         relative_tolerance = set_default(
+318             self.rel, self.DEFAULT_RELATIVE_TOLERANCE
+319         ) * abs(self.expected)
+320 
+321         if relative_tolerance < 0:
+322             raise ValueError(
+323                 "relative tolerance can't be negative: {}".format(absolute_tolerance)
+324             )
+325         if math.isnan(relative_tolerance):
+326             raise ValueError("relative tolerance can't be NaN.")
+327 
+328         # Return the larger of the relative and absolute tolerances.
+329         return max(relative_tolerance, absolute_tolerance)
+330 
+331 
+332 class ApproxDecimal(ApproxScalar):
+333     """
+334     Perform approximate comparisons where the expected value is a decimal.
+335     """
+336 
+337     DEFAULT_ABSOLUTE_TOLERANCE = Decimal("1e-12")
+338     DEFAULT_RELATIVE_TOLERANCE = Decimal("1e-6")
+339 
+340 
+341 def approx(expected, rel=None, abs=None, nan_ok: bool = False) -> ApproxBase:
+342     """
+343     Assert that two numbers (or two sets of numbers) are equal to each other
+344     within some tolerance.
+345 
+346     Due to the `intricacies of floating-point arithmetic`__, numbers that we
+347     would intuitively expect to be equal are not always so::
+348 
+349         >>> 0.1 + 0.2 == 0.3
+350         False
+351 
+352     __ https://docs.python.org/3/tutorial/floatingpoint.html
+353 
+354     This problem is commonly encountered when writing tests, e.g. when making
+355     sure that floating-point values are what you expect them to be.  One way to
+356     deal with this problem is to assert that two floating-point numbers are
+357     equal to within some appropriate tolerance::
+358 
+359         >>> abs((0.1 + 0.2) - 0.3) < 1e-6
+360         True
+361 
+362     However, comparisons like this are tedious to write and difficult to
+363     understand.  Furthermore, absolute comparisons like the one above are
+364     usually discouraged because there's no tolerance that works well for all
+365     situations.  ``1e-6`` is good for numbers around ``1``, but too small for
+366     very big numbers and too big for very small ones.  It's better to express
+367     the tolerance as a fraction of the expected value, but relative comparisons
+368     like that are even more difficult to write correctly and concisely.
+369 
+370     The ``approx`` class performs floating-point comparisons using a syntax
+371     that's as intuitive as possible::
+372 
+373         >>> from pytest import approx
+374         >>> 0.1 + 0.2 == approx(0.3)
+375         True
+376 
+377     The same syntax also works for sequences of numbers::
+378 
+379         >>> (0.1 + 0.2, 0.2 + 0.4) == approx((0.3, 0.6))
+380         True
+381 
+382     Dictionary *values*::
+383 
+384         >>> {'a': 0.1 + 0.2, 'b': 0.2 + 0.4} == approx({'a': 0.3, 'b': 0.6})
+385         True
+386 
+387     ``numpy`` arrays::
+388 
+389         >>> import numpy as np                                                          # doctest: +SKIP
+390         >>> np.array([0.1, 0.2]) + np.array([0.2, 0.4]) == approx(np.array([0.3, 0.6])) # doctest: +SKIP
+391         True
+392 
+393     And for a ``numpy`` array against a scalar::
+394 
+395         >>> import numpy as np                                         # doctest: +SKIP
+396         >>> np.array([0.1, 0.2]) + np.array([0.2, 0.1]) == approx(0.3) # doctest: +SKIP
+397         True
+398 
+399     By default, ``approx`` considers numbers within a relative tolerance of
+400     ``1e-6`` (i.e. one part in a million) of its expected value to be equal.
+401     This treatment would lead to surprising results if the expected value was
+402     ``0.0``, because nothing but ``0.0`` itself is relatively close to ``0.0``.
+403     To handle this case less surprisingly, ``approx`` also considers numbers
+404     within an absolute tolerance of ``1e-12`` of its expected value to be
+405     equal.  Infinity and NaN are special cases.  Infinity is only considered
+406     equal to itself, regardless of the relative tolerance.  NaN is not
+407     considered equal to anything by default, but you can make it be equal to
+408     itself by setting the ``nan_ok`` argument to True.  (This is meant to
+409     facilitate comparing arrays that use NaN to mean "no data".)
+410 
+411     Both the relative and absolute tolerances can be changed by passing
+412     arguments to the ``approx`` constructor::
+413 
+414         >>> 1.0001 == approx(1)
+415         False
+416         >>> 1.0001 == approx(1, rel=1e-3)
+417         True
+418         >>> 1.0001 == approx(1, abs=1e-3)
+419         True
+420 
+421     If you specify ``abs`` but not ``rel``, the comparison will not consider
+422     the relative tolerance at all.  In other words, two numbers that are within
+423     the default relative tolerance of ``1e-6`` will still be considered unequal
+424     if they exceed the specified absolute tolerance.  If you specify both
+425     ``abs`` and ``rel``, the numbers will be considered equal if either
+426     tolerance is met::
+427 
+428         >>> 1 + 1e-8 == approx(1)
+429         True
+430         >>> 1 + 1e-8 == approx(1, abs=1e-12)
+431         False
+432         >>> 1 + 1e-8 == approx(1, rel=1e-6, abs=1e-12)
+433         True
+434 
+435     If you're thinking about using ``approx``, then you might want to know how
+436     it compares to other good ways of comparing floating-point numbers.  All of
+437     these algorithms are based on relative and absolute tolerances and should
+438     agree for the most part, but they do have meaningful differences:
+439 
+440     - ``math.isclose(a, b, rel_tol=1e-9, abs_tol=0.0)``:  True if the relative
+441       tolerance is met w.r.t. either ``a`` or ``b`` or if the absolute
+442       tolerance is met.  Because the relative tolerance is calculated w.r.t.
+443       both ``a`` and ``b``, this test is symmetric (i.e.  neither ``a`` nor
+444       ``b`` is a "reference value").  You have to specify an absolute tolerance
+445       if you want to compare to ``0.0`` because there is no tolerance by
+446       default.  Only available in python>=3.5.  `More information...`__
+447 
+448       __ https://docs.python.org/3/library/math.html#math.isclose
+449 
+450     - ``numpy.isclose(a, b, rtol=1e-5, atol=1e-8)``: True if the difference
+451       between ``a`` and ``b`` is less that the sum of the relative tolerance
+452       w.r.t. ``b`` and the absolute tolerance.  Because the relative tolerance
+453       is only calculated w.r.t. ``b``, this test is asymmetric and you can
+454       think of ``b`` as the reference value.  Support for comparing sequences
+455       is provided by ``numpy.allclose``.  `More information...`__
+456 
+457       __ http://docs.scipy.org/doc/numpy-1.10.0/reference/generated/numpy.isclose.html
+458 
+459     - ``unittest.TestCase.assertAlmostEqual(a, b)``: True if ``a`` and ``b``
+460       are within an absolute tolerance of ``1e-7``.  No relative tolerance is
+461       considered and the absolute tolerance cannot be changed, so this function
+462       is not appropriate for very large or very small numbers.  Also, it's only
+463       available in subclasses of ``unittest.TestCase`` and it's ugly because it
+464       doesn't follow PEP8.  `More information...`__
+465 
+466       __ https://docs.python.org/3/library/unittest.html#unittest.TestCase.assertAlmostEqual
+467 
+468     - ``a == pytest.approx(b, rel=1e-6, abs=1e-12)``: True if the relative
+469       tolerance is met w.r.t. ``b`` or if the absolute tolerance is met.
+470       Because the relative tolerance is only calculated w.r.t. ``b``, this test
+471       is asymmetric and you can think of ``b`` as the reference value.  In the
+472       special case that you explicitly specify an absolute tolerance but not a
+473       relative tolerance, only the absolute tolerance is considered.
+474 
+475     .. warning::
+476 
+477        .. versionchanged:: 3.2
+478 
+479        In order to avoid inconsistent behavior, ``TypeError`` is
+480        raised for ``>``, ``>=``, ``<`` and ``<=`` comparisons.
+481        The example below illustrates the problem::
+482 
+483            assert approx(0.1) > 0.1 + 1e-10  # calls approx(0.1).__gt__(0.1 + 1e-10)
+484            assert 0.1 + 1e-10 > approx(0.1)  # calls approx(0.1).__lt__(0.1 + 1e-10)
+485 
+486        In the second example one expects ``approx(0.1).__le__(0.1 + 1e-10)``
+487        to be called. But instead, ``approx(0.1).__lt__(0.1 + 1e-10)`` is used to
+488        comparison. This is because the call hierarchy of rich comparisons
+489        follows a fixed behavior. `More information...`__
+490 
+491        __ https://docs.python.org/3/reference/datamodel.html#object.__ge__
+492     """
+493 
+494     # Delegate the comparison to a class that knows how to deal with the type
+495     # of the expected value (e.g. int, float, list, dict, numpy.array, etc).
+496     #
+497     # The primary responsibility of these classes is to implement ``__eq__()``
+498     # and ``__repr__()``.  The former is used to actually check if some
+499     # "actual" value is equivalent to the given expected value within the
+500     # allowed tolerance.  The latter is used to show the user the expected
+501     # value and tolerance, in the case that a test failed.
+502     #
+503     # The actual logic for making approximate comparisons can be found in
+504     # ApproxScalar, which is used to compare individual numbers.  All of the
+505     # other Approx classes eventually delegate to this class.  The ApproxBase
+506     # class provides some convenient methods and overloads, but isn't really
+507     # essential.
+508 
+509     __tracebackhide__ = True
+510 
+511     if isinstance(expected, Decimal):
+512         cls = ApproxDecimal  # type: Type[ApproxBase]
+513     elif isinstance(expected, Number):
+514         cls = ApproxScalar
+515     elif isinstance(expected, Mapping):
+516         cls = ApproxMapping
+517     elif _is_numpy_array(expected):
+518         cls = ApproxNumpy
+519     elif (
+520         isinstance(expected, Iterable)
+521         and isinstance(expected, Sized)
+522         and not isinstance(expected, STRING_TYPES)
+523     ):
+524         cls = ApproxSequencelike
+525     else:
+526         raise _non_numeric_type_error(expected, at=None)
+527 
+528     return cls(expected, rel, abs, nan_ok)
+529 
+530 
+531 def _is_numpy_array(obj: object) -> bool:
+532     """
+533     Return true if the given object is a numpy array.  Make a special effort to
+534     avoid importing numpy unless it's really necessary.
+535     """
+536     import sys
+537 
+538     np = sys.modules.get("numpy")  # type: Any
+539     if np is not None:
+540         return isinstance(obj, np.ndarray)
+541     return False
+542 
+543 
+544 # builtin pytest.raises helper
+545 
+546 _E = TypeVar("_E", bound=BaseException)
+547 
+548 
+549 @overload
+550 def raises(
+551     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+552     *,
+553     match: "Optional[Union[str, Pattern]]" = ...
+554 ) -> "RaisesContext[_E]":
+555     ...  # pragma: no cover
+556 
+557 
+558 @overload  # noqa: F811
+559 def raises(  # noqa: F811
+560     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+561     func: Callable,
+562     *args: Any,
+563     **kwargs: Any
+564 ) -> _pytest._code.ExceptionInfo[_E]:
+565     ...  # pragma: no cover
+566 
+567 
+568 def raises(  # noqa: F811
+569     expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+570     *args: Any,
+571     **kwargs: Any
+572 ) -> Union["RaisesContext[_E]", _pytest._code.ExceptionInfo[_E]]:
+573     r"""
+574     Assert that a code block/function call raises ``expected_exception``
+575     or raise a failure exception otherwise.
+576 
+577     :kwparam match: if specified, a string containing a regular expression,
+578         or a regular expression object, that is tested against the string
+579         representation of the exception using ``re.search``. To match a literal
+580         string that may contain `special characters`__, the pattern can
+581         first be escaped with ``re.escape``.
+582 
+583         (This is only used when ``pytest.raises`` is used as a context manager,
+584         and passed through to the function otherwise.
+585         When using ``pytest.raises`` as a function, you can use:
+586         ``pytest.raises(Exc, func, match="passed on").match("my pattern")``.)
+587 
+588         __ https://docs.python.org/3/library/re.html#regular-expression-syntax
+589 
+590     .. currentmodule:: _pytest._code
+591 
+592     Use ``pytest.raises`` as a context manager, which will capture the exception of the given
+593     type::
+594 
+595         >>> with raises(ZeroDivisionError):
+596         ...    1/0
+597 
+598     If the code block does not raise the expected exception (``ZeroDivisionError`` in the example
+599     above), or no exception at all, the check will fail instead.
+600 
+601     You can also use the keyword argument ``match`` to assert that the
+602     exception matches a text or regex::
+603 
+604         >>> with raises(ValueError, match='must be 0 or None'):
+605         ...     raise ValueError("value must be 0 or None")
+606 
+607         >>> with raises(ValueError, match=r'must be \d+$'):
+608         ...     raise ValueError("value must be 42")
+609 
+610     The context manager produces an :class:`ExceptionInfo` object which can be used to inspect the
+611     details of the captured exception::
+612 
+613         >>> with raises(ValueError) as exc_info:
+614         ...     raise ValueError("value must be 42")
+615         >>> assert exc_info.type is ValueError
+616         >>> assert exc_info.value.args[0] == "value must be 42"
+617 
+618     .. note::
+619 
+620        When using ``pytest.raises`` as a context manager, it's worthwhile to
+621        note that normal context manager rules apply and that the exception
+622        raised *must* be the final line in the scope of the context manager.
+623        Lines of code after that, within the scope of the context manager will
+624        not be executed. For example::
+625 
+626            >>> value = 15
+627            >>> with raises(ValueError) as exc_info:
+628            ...     if value > 10:
+629            ...         raise ValueError("value must be <= 10")
+630            ...     assert exc_info.type is ValueError  # this will not execute
+631 
+632        Instead, the following approach must be taken (note the difference in
+633        scope)::
+634 
+635            >>> with raises(ValueError) as exc_info:
+636            ...     if value > 10:
+637            ...         raise ValueError("value must be <= 10")
+638            ...
+639            >>> assert exc_info.type is ValueError
+640 
+641     **Using with** ``pytest.mark.parametrize``
+642 
+643     When using :ref:`pytest.mark.parametrize ref`
+644     it is possible to parametrize tests such that
+645     some runs raise an exception and others do not.
+646 
+647     See :ref:`parametrizing_conditional_raising` for an example.
+648 
+649     **Legacy form**
+650 
+651     It is possible to specify a callable by passing a to-be-called lambda::
+652 
+653         >>> raises(ZeroDivisionError, lambda: 1/0)
+654         <ExceptionInfo ...>
+655 
+656     or you can specify an arbitrary callable with arguments::
+657 
+658         >>> def f(x): return 1/x
+659         ...
+660         >>> raises(ZeroDivisionError, f, 0)
+661         <ExceptionInfo ...>
+662         >>> raises(ZeroDivisionError, f, x=0)
+663         <ExceptionInfo ...>
+664 
+665     The form above is fully supported but discouraged for new code because the
+666     context manager form is regarded as more readable and less error-prone.
+667 
+668     .. note::
+669         Similar to caught exception objects in Python, explicitly clearing
+670         local references to returned ``ExceptionInfo`` objects can
+671         help the Python interpreter speed up its garbage collection.
+672 
+673         Clearing those references breaks a reference cycle
+674         (``ExceptionInfo`` --> caught exception --> frame stack raising
+675         the exception --> current frame stack --> local variables -->
+676         ``ExceptionInfo``) which makes Python keep all objects referenced
+677         from that cycle (including all local variables in the current
+678         frame) alive until the next cyclic garbage collection run.
+679         More detailed information can be found in the official Python
+680         documentation for :ref:`the try statement <python:try>`.
+681     """
+682     __tracebackhide__ = True
+683     for exc in filterfalse(
+684         inspect.isclass, always_iterable(expected_exception, BASE_TYPE)
+685     ):
+686         msg = "exceptions must be derived from BaseException, not %s"
+687         raise TypeError(msg % type(exc))
+688 
+689     message = "DID NOT RAISE {}".format(expected_exception)
+690 
+691     if not args:
+692         match = kwargs.pop("match", None)
+693         if kwargs:
+694             msg = "Unexpected keyword arguments passed to pytest.raises: "
+695             msg += ", ".join(sorted(kwargs))
+696             msg += "\nUse context-manager form instead?"
+697             raise TypeError(msg)
+698         return RaisesContext(expected_exception, message, match)
+699     else:
+700         func = args[0]
+701         if not callable(func):
+702             raise TypeError(
+703                 "{!r} object (type: {}) must be callable".format(func, type(func))
+704             )
+705         try:
+706             func(*args[1:], **kwargs)
+707         except expected_exception as e:
+708             # We just caught the exception - there is a traceback.
+709             assert e.__traceback__ is not None
+710             return _pytest._code.ExceptionInfo.from_exc_info(
+711                 (type(e), e, e.__traceback__)
+712             )
+713     fail(message)
+714 
+715 
+716 # This doesn't work with mypy for now. Use fail.Exception instead.
+717 raises.Exception = fail.Exception  # type: ignore
+718 
+719 
+720 class RaisesContext(Generic[_E]):
+721     def __init__(
+722         self,
+723         expected_exception: Union["Type[_E]", Tuple["Type[_E]", ...]],
+724         message: str,
+725         match_expr: Optional[Union[str, "Pattern"]] = None,
+726     ) -> None:
+727         self.expected_exception = expected_exception
+728         self.message = message
+729         self.match_expr = match_expr
+730         self.excinfo = None  # type: Optional[_pytest._code.ExceptionInfo[_E]]
+731 
+732     def __enter__(self) -> _pytest._code.ExceptionInfo[_E]:
+733         self.excinfo = _pytest._code.ExceptionInfo.for_later()
+734         return self.excinfo
+735 
+736     def __exit__(
+737         self,
+738         exc_type: Optional["Type[BaseException]"],
+739         exc_val: Optional[BaseException],
+740         exc_tb: Optional[TracebackType],
+741     ) -> bool:
+742         __tracebackhide__ = True
+743         if exc_type is None:
+744             fail(self.message)
+745         assert self.excinfo is not None
+746         if not issubclass(exc_type, self.expected_exception):
+747             return False
+748         # Cast to narrow the exception type now that it's verified.
+749         exc_info = cast(
+750             Tuple["Type[_E]", _E, TracebackType], (exc_type, exc_val, exc_tb)
+751         )
+752         self.excinfo.fill_unfilled(exc_info)
+753         if self.match_expr is not None:
+754             self.excinfo.match(self.match_expr)
+755         return True
+
+</code><intended_behavior>The code at this location should be enhanced to provide clearer feedback when a match fails due to the presence of special characters in the strings being compared. Specifically, when match is not None and contains characters that have special meaning in regular expressions, such as parentheses, the error message should: 1. Inform the user that the string being matched is treated as a regular expression. 2. Suggest that if the matching fails due to literal characters that have special meanings in regex (such as parentheses), the user should consider escaping those characters or using a raw string literal if they did not intend for a regex match. 3. This improvement should be made without altering the existing functionality for regular users who are correctly using the match parameter as intended (with properly escaped characters or regex patterns). This enhancement aims to make the debugging process more intuitive, particularly for cases where users may unintentionally include regex-special characters in their strings. Additionally, this should preserve the utility of using regular expressions in the match parameter for more advanced use cases.</intended_behavior>]
+2025-10-17 16:56:21.295 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-17 16:56:21.295 | INFO     | Search-only: skipping patch selection
+2025-10-17 16:56:21.381 | INFO     | Task pytest-dev__pytest-7499 completed successfully.
+2025-10-17 16:56:21.382 | INFO     | No patch generated. You can try running ACR again.
