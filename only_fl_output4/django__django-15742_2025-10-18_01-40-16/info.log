@@ -1,0 +1,2030 @@
+2025-10-18 01:40:17.035 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 01:40:19.801 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=427, output_tokens=12, cost=0.004630
+2025-10-18 01:40:31.511 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=607, output_tokens=505, cost=0.021220
+2025-10-18 01:40:32.727 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 01:40:37.795 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=736, output_tokens=232, cost=0.014320
+2025-10-18 01:40:37.801 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 01:40:40.023 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=586, output_tokens=52, cost=0.007420
+2025-10-18 01:40:40.025 | DEBUG    | Extracted a valid json.
+2025-10-18 01:40:40.025 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"blocktranslate asvar\")",
+        "search_class(\"SafeString\")",
+        "search_method(\"escape\")",
+        "search_code(\"escape\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 01:40:40.340 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 01:40:40.341 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 01:40:56.405 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2108, output_tokens=784, cost=0.044600
+2025-10-18 01:40:56.413 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 01:41:04.915 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3108, output_tokens=395, cost=0.042930
+2025-10-18 01:41:04.919 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 01:41:14.916 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=749, output_tokens=325, cost=0.017240
+2025-10-18 01:41:14.918 | DEBUG    | Extracted a valid json.
+2025-10-18 01:41:14.918 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/template/defaultfilters.py",
+            "class": "blocktranslate tag implementation",
+            "method": "",
+            "intended_behavior": "The `blocktranslate` tag's handling of the `asvar` argument should correctly manage and store variables as `SafeString` instances when the context marks them safe. This ensures that when the variable is reused (e.g., in HTML attributes), it does not undergo double escaping, preserving output fidelity. This could entail adjusting the blocktranslate tag processing code to evaluate the safety of its content when `asvar` is used and ensuring the output is either a `SafeString` (when safe) or is marked appropriately to avoid re-escaping already escaped content."
+        },
+        {
+            "file": "django/utils/html.py",
+            "class": "",
+            "method": "escape",
+            "intended_behavior": "While not directly buggy in relation to the issue, ensuring the usage of `escape` within the template processing (and particularly within the `blocktranslate` tag processing) respects the `SafeString` marking is crucial. The method itself provides the mechanism to escape content appropriately and returns `SafeString`, but its application in the context of `blocktranslate` and `asvar` must guarantee that this safety attribute is preserved, avoiding double escapes. This suggests the surrounding logic in template rendering that invokes `escape` needs to respect or leverage the `SafeString` mechanism more explicitly, especially post-variable substitution in `blocktranslate` usage."
+        }
+    ]
+}
+2025-10-18 01:41:14.929 | DEBUG    | Bug location extracted successfully: [<file>django/template/defaultfilters.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Default variable filters."""
+2 import random as random_module
+3 import re
+4 import types
+5 from decimal import ROUND_HALF_UP, Context, Decimal, InvalidOperation
+6 from functools import wraps
+7 from inspect import unwrap
+8 from operator import itemgetter
+9 from pprint import pformat
+10 from urllib.parse import quote
+11 
+12 from django.utils import formats
+13 from django.utils.dateformat import format, time_format
+14 from django.utils.encoding import iri_to_uri
+15 from django.utils.html import avoid_wrapping, conditional_escape, escape, escapejs
+16 from django.utils.html import json_script as _json_script
+17 from django.utils.html import linebreaks, strip_tags
+18 from django.utils.html import urlize as _urlize
+19 from django.utils.safestring import SafeData, mark_safe
+20 from django.utils.text import Truncator, normalize_newlines, phone2numeric
+21 from django.utils.text import slugify as _slugify
+22 from django.utils.text import wrap
+23 from django.utils.timesince import timesince, timeuntil
+24 from django.utils.translation import gettext, ngettext
+25 
+26 from .base import VARIABLE_ATTRIBUTE_SEPARATOR
+27 from .library import Library
+28 
+29 register = Library()
+30 
+31 
+32 #######################
+33 # STRING DECORATOR    #
+34 #######################
+35 
+36 
+37 def stringfilter(func):
+38     """
+39     Decorator for filters which should only receive strings. The object
+40     passed as the first positional argument will be converted to a string.
+41     """
+42 
+43     @wraps(func)
+44     def _dec(first, *args, **kwargs):
+45         first = str(first)
+46         result = func(first, *args, **kwargs)
+47         if isinstance(first, SafeData) and getattr(unwrap(func), "is_safe", False):
+48             result = mark_safe(result)
+49         return result
+50 
+51     return _dec
+52 
+53 
+54 ###################
+55 # STRINGS         #
+56 ###################
+57 
+58 
+59 @register.filter(is_safe=True)
+60 @stringfilter
+61 def addslashes(value):
+62     """
+63     Add slashes before quotes. Useful for escaping strings in CSV, for
+64     example. Less useful for escaping JavaScript; use the ``escapejs``
+65     filter instead.
+66     """
+67     return value.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+68 
+69 
+70 @register.filter(is_safe=True)
+71 @stringfilter
+72 def capfirst(value):
+73     """Capitalize the first character of the value."""
+74     return value and value[0].upper() + value[1:]
+75 
+76 
+77 @register.filter("escapejs")
+78 @stringfilter
+79 def escapejs_filter(value):
+80     """Hex encode characters for use in JavaScript strings."""
+81     return escapejs(value)
+82 
+83 
+84 @register.filter(is_safe=True)
+85 def json_script(value, element_id=None):
+86     """
+87     Output value JSON-encoded, wrapped in a <script type="application/json">
+88     tag (with an optional id).
+89     """
+90     return _json_script(value, element_id)
+91 
+92 
+93 @register.filter(is_safe=True)
+94 def floatformat(text, arg=-1):
+95     """
+96     Display a float to a specified number of decimal places.
+97 
+98     If called without an argument, display the floating point number with one
+99     decimal place -- but only if there's a decimal place to be displayed:
+100 
+101     * num1 = 34.23234
+102     * num2 = 34.00000
+103     * num3 = 34.26000
+104     * {{ num1|floatformat }} displays "34.2"
+105     * {{ num2|floatformat }} displays "34"
+106     * {{ num3|floatformat }} displays "34.3"
+107 
+108     If arg is positive, always display exactly arg number of decimal places:
+109 
+110     * {{ num1|floatformat:3 }} displays "34.232"
+111     * {{ num2|floatformat:3 }} displays "34.000"
+112     * {{ num3|floatformat:3 }} displays "34.260"
+113 
+114     If arg is negative, display arg number of decimal places -- but only if
+115     there are places to be displayed:
+116 
+117     * {{ num1|floatformat:"-3" }} displays "34.232"
+118     * {{ num2|floatformat:"-3" }} displays "34"
+119     * {{ num3|floatformat:"-3" }} displays "34.260"
+120 
+121     If arg has the 'g' suffix, force the result to be grouped by the
+122     THOUSAND_SEPARATOR for the active locale. When the active locale is
+123     en (English):
+124 
+125     * {{ 6666.6666|floatformat:"2g" }} displays "6,666.67"
+126     * {{ 10000|floatformat:"g" }} displays "10,000"
+127 
+128     If arg has the 'u' suffix, force the result to be unlocalized. When the
+129     active locale is pl (Polish):
+130 
+131     * {{ 66666.6666|floatformat:"2" }} displays "66666,67"
+132     * {{ 66666.6666|floatformat:"2u" }} displays "66666.67"
+133 
+134     If the input float is infinity or NaN, display the string representation
+135     of that value.
+136     """
+137     force_grouping = False
+138     use_l10n = True
+139     if isinstance(arg, str):
+140         last_char = arg[-1]
+141         if arg[-2:] in {"gu", "ug"}:
+142             force_grouping = True
+143             use_l10n = False
+144             arg = arg[:-2] or -1
+145         elif last_char == "g":
+146             force_grouping = True
+147             arg = arg[:-1] or -1
+148         elif last_char == "u":
+149             use_l10n = False
+150             arg = arg[:-1] or -1
+151     try:
+152         input_val = repr(text)
+153         d = Decimal(input_val)
+154     except InvalidOperation:
+155         try:
+156             d = Decimal(str(float(text)))
+157         except (ValueError, InvalidOperation, TypeError):
+158             return ""
+159     try:
+160         p = int(arg)
+161     except ValueError:
+162         return input_val
+163 
+164     try:
+165         m = int(d) - d
+166     except (ValueError, OverflowError, InvalidOperation):
+167         return input_val
+168 
+169     if not m and p < 0:
+170         return mark_safe(
+171             formats.number_format(
+172                 "%d" % (int(d)),
+173                 0,
+174                 use_l10n=use_l10n,
+175                 force_grouping=force_grouping,
+176             )
+177         )
+178 
+179     exp = Decimal(1).scaleb(-abs(p))
+180     # Set the precision high enough to avoid an exception (#15789).
+181     tupl = d.as_tuple()
+182     units = len(tupl[1])
+183     units += -tupl[2] if m else tupl[2]
+184     prec = abs(p) + units + 1
+185 
+186     # Avoid conversion to scientific notation by accessing `sign`, `digits`,
+187     # and `exponent` from Decimal.as_tuple() directly.
+188     rounded_d = d.quantize(exp, ROUND_HALF_UP, Context(prec=prec))
+189     sign, digits, exponent = rounded_d.as_tuple()
+190     digits = [str(digit) for digit in reversed(digits)]
+191     while len(digits) <= abs(exponent):
+192         digits.append("0")
+193     digits.insert(-exponent, ".")
+194     if sign and rounded_d:
+195         digits.append("-")
+196     number = "".join(reversed(digits))
+197     return mark_safe(
+198         formats.number_format(
+199             number,
+200             abs(p),
+201             use_l10n=use_l10n,
+202             force_grouping=force_grouping,
+203         )
+204     )
+205 
+206 
+207 @register.filter(is_safe=True)
+208 @stringfilter
+209 def iriencode(value):
+210     """Escape an IRI value for use in a URL."""
+211     return iri_to_uri(value)
+212 
+213 
+214 @register.filter(is_safe=True, needs_autoescape=True)
+215 @stringfilter
+216 def linenumbers(value, autoescape=True):
+217     """Display text with line numbers."""
+218     lines = value.split("\n")
+219     # Find the maximum width of the line count, for use with zero padding
+220     # string format command
+221     width = str(len(str(len(lines))))
+222     if not autoescape or isinstance(value, SafeData):
+223         for i, line in enumerate(lines):
+224             lines[i] = ("%0" + width + "d. %s") % (i + 1, line)
+225     else:
+226         for i, line in enumerate(lines):
+227             lines[i] = ("%0" + width + "d. %s") % (i + 1, escape(line))
+228     return mark_safe("\n".join(lines))
+229 
+230 
+231 @register.filter(is_safe=True)
+232 @stringfilter
+233 def lower(value):
+234     """Convert a string into all lowercase."""
+235     return value.lower()
+236 
+237 
+238 @register.filter(is_safe=False)
+239 @stringfilter
+240 def make_list(value):
+241     """
+242     Return the value turned into a list.
+243 
+244     For an integer, it's a list of digits.
+245     For a string, it's a list of characters.
+246     """
+247     return list(value)
+248 
+249 
+250 @register.filter(is_safe=True)
+251 @stringfilter
+252 def slugify(value):
+253     """
+254     Convert to ASCII. Convert spaces to hyphens. Remove characters that aren't
+255     alphanumerics, underscores, or hyphens. Convert to lowercase. Also strip
+256     leading and trailing whitespace.
+257     """
+258     return _slugify(value)
+259 
+260 
+261 @register.filter(is_safe=True)
+262 def stringformat(value, arg):
+263     """
+264     Format the variable according to the arg, a string formatting specifier.
+265 
+266     This specifier uses Python string formatting syntax, with the exception
+267     that the leading "%" is dropped.
+268 
+269     See https://docs.python.org/library/stdtypes.html#printf-style-string-formatting
+270     for documentation of Python string formatting.
+271     """
+272     if isinstance(value, tuple):
+273         value = str(value)
+274     try:
+275         return ("%" + str(arg)) % value
+276     except (ValueError, TypeError):
+277         return ""
+278 
+279 
+280 @register.filter(is_safe=True)
+281 @stringfilter
+282 def title(value):
+283     """Convert a string into titlecase."""
+284     t = re.sub("([a-z])'([A-Z])", lambda m: m[0].lower(), value.title())
+285     return re.sub(r"\d([A-Z])", lambda m: m[0].lower(), t)
+286 
+287 
+288 @register.filter(is_safe=True)
+289 @stringfilter
+290 def truncatechars(value, arg):
+291     """Truncate a string after `arg` number of characters."""
+292     try:
+293         length = int(arg)
+294     except ValueError:  # Invalid literal for int().
+295         return value  # Fail silently.
+296     return Truncator(value).chars(length)
+297 
+298 
+299 @register.filter(is_safe=True)
+300 @stringfilter
+301 def truncatechars_html(value, arg):
+302     """
+303     Truncate HTML after `arg` number of chars.
+304     Preserve newlines in the HTML.
+305     """
+306     try:
+307         length = int(arg)
+308     except ValueError:  # invalid literal for int()
+309         return value  # Fail silently.
+310     return Truncator(value).chars(length, html=True)
+311 
+312 
+313 @register.filter(is_safe=True)
+314 @stringfilter
+315 def truncatewords(value, arg):
+316     """
+317     Truncate a string after `arg` number of words.
+318     Remove newlines within the string.
+319     """
+320     try:
+321         length = int(arg)
+322     except ValueError:  # Invalid literal for int().
+323         return value  # Fail silently.
+324     return Truncator(value).words(length, truncate=" …")
+325 
+326 
+327 @register.filter(is_safe=True)
+328 @stringfilter
+329 def truncatewords_html(value, arg):
+330     """
+331     Truncate HTML after `arg` number of words.
+332     Preserve newlines in the HTML.
+333     """
+334     try:
+335         length = int(arg)
+336     except ValueError:  # invalid literal for int()
+337         return value  # Fail silently.
+338     return Truncator(value).words(length, html=True, truncate=" …")
+339 
+340 
+341 @register.filter(is_safe=False)
+342 @stringfilter
+343 def upper(value):
+344     """Convert a string into all uppercase."""
+345     return value.upper()
+346 
+347 
+348 @register.filter(is_safe=False)
+349 @stringfilter
+350 def urlencode(value, safe=None):
+351     """
+352     Escape a value for use in a URL.
+353 
+354     The ``safe`` parameter determines the characters which should not be
+355     escaped by Python's quote() function. If not provided, use the default safe
+356     characters (but an empty string can be provided when *all* characters
+357     should be escaped).
+358     """
+359     kwargs = {}
+360     if safe is not None:
+361         kwargs["safe"] = safe
+362     return quote(value, **kwargs)
+363 
+364 
+365 @register.filter(is_safe=True, needs_autoescape=True)
+366 @stringfilter
+367 def urlize(value, autoescape=True):
+368     """Convert URLs in plain text into clickable links."""
+369     return mark_safe(_urlize(value, nofollow=True, autoescape=autoescape))
+370 
+371 
+372 @register.filter(is_safe=True, needs_autoescape=True)
+373 @stringfilter
+374 def urlizetrunc(value, limit, autoescape=True):
+375     """
+376     Convert URLs into clickable links, truncating URLs to the given character
+377     limit, and adding 'rel=nofollow' attribute to discourage spamming.
+378 
+379     Argument: Length to truncate URLs to.
+380     """
+381     return mark_safe(
+382         _urlize(value, trim_url_limit=int(limit), nofollow=True, autoescape=autoescape)
+383     )
+384 
+385 
+386 @register.filter(is_safe=False)
+387 @stringfilter
+388 def wordcount(value):
+389     """Return the number of words."""
+390     return len(value.split())
+391 
+392 
+393 @register.filter(is_safe=True)
+394 @stringfilter
+395 def wordwrap(value, arg):
+396     """Wrap words at `arg` line length."""
+397     return wrap(value, int(arg))
+398 
+399 
+400 @register.filter(is_safe=True)
+401 @stringfilter
+402 def ljust(value, arg):
+403     """Left-align the value in a field of a given width."""
+404     return value.ljust(int(arg))
+405 
+406 
+407 @register.filter(is_safe=True)
+408 @stringfilter
+409 def rjust(value, arg):
+410     """Right-align the value in a field of a given width."""
+411     return value.rjust(int(arg))
+412 
+413 
+414 @register.filter(is_safe=True)
+415 @stringfilter
+416 def center(value, arg):
+417     """Center the value in a field of a given width."""
+418     return value.center(int(arg))
+419 
+420 
+421 @register.filter
+422 @stringfilter
+423 def cut(value, arg):
+424     """Remove all values of arg from the given string."""
+425     safe = isinstance(value, SafeData)
+426     value = value.replace(arg, "")
+427     if safe and arg != ";":
+428         return mark_safe(value)
+429     return value
+430 
+431 
+432 ###################
+433 # HTML STRINGS    #
+434 ###################
+435 
+436 
+437 @register.filter("escape", is_safe=True)
+438 @stringfilter
+439 def escape_filter(value):
+440     """Mark the value as a string that should be auto-escaped."""
+441     return conditional_escape(value)
+442 
+443 
+444 @register.filter(is_safe=True)
+445 @stringfilter
+446 def force_escape(value):
+447     """
+448     Escape a string's HTML. Return a new string containing the escaped
+449     characters (as opposed to "escape", which marks the content for later
+450     possible escaping).
+451     """
+452     return escape(value)
+453 
+454 
+455 @register.filter("linebreaks", is_safe=True, needs_autoescape=True)
+456 @stringfilter
+457 def linebreaks_filter(value, autoescape=True):
+458     """
+459     Replace line breaks in plain text with appropriate HTML; a single
+460     newline becomes an HTML line break (``<br>``) and a new line
+461     followed by a blank line becomes a paragraph break (``</p>``).
+462     """
+463     autoescape = autoescape and not isinstance(value, SafeData)
+464     return mark_safe(linebreaks(value, autoescape))
+465 
+466 
+467 @register.filter(is_safe=True, needs_autoescape=True)
+468 @stringfilter
+469 def linebreaksbr(value, autoescape=True):
+470     """
+471     Convert all newlines in a piece of plain text to HTML line breaks
+472     (``<br>``).
+473     """
+474     autoescape = autoescape and not isinstance(value, SafeData)
+475     value = normalize_newlines(value)
+476     if autoescape:
+477         value = escape(value)
+478     return mark_safe(value.replace("\n", "<br>"))
+479 
+480 
+481 @register.filter(is_safe=True)
+482 @stringfilter
+483 def safe(value):
+484     """Mark the value as a string that should not be auto-escaped."""
+485     return mark_safe(value)
+486 
+487 
+488 @register.filter(is_safe=True)
+489 def safeseq(value):
+490     """
+491     A "safe" filter for sequences. Mark each element in the sequence,
+492     individually, as safe, after converting them to strings. Return a list
+493     with the results.
+494     """
+495     return [mark_safe(obj) for obj in value]
+496 
+497 
+498 @register.filter(is_safe=True)
+499 @stringfilter
+500 def striptags(value):
+501     """Strip all [X]HTML tags."""
+502     return strip_tags(value)
+503 
+504 
+505 ###################
+506 # LISTS           #
+507 ###################
+508 
+509 
+510 def _property_resolver(arg):
+511     """
+512     When arg is convertible to float, behave like operator.itemgetter(arg)
+513     Otherwise, chain __getitem__() and getattr().
+514 
+515     >>> _property_resolver(1)('abc')
+516     'b'
+517     >>> _property_resolver('1')('abc')
+518     Traceback (most recent call last):
+519     ...
+520     TypeError: string indices must be integers
+521     >>> class Foo:
+522     ...     a = 42
+523     ...     b = 3.14
+524     ...     c = 'Hey!'
+525     >>> _property_resolver('b')(Foo())
+526     3.14
+527     """
+528     try:
+529         float(arg)
+530     except ValueError:
+531         if VARIABLE_ATTRIBUTE_SEPARATOR + "_" in arg or arg[0] == "_":
+532             raise AttributeError("Access to private variables is forbidden.")
+533         parts = arg.split(VARIABLE_ATTRIBUTE_SEPARATOR)
+534 
+535         def resolve(value):
+536             for part in parts:
+537                 try:
+538                     value = value[part]
+539                 except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+540                     value = getattr(value, part)
+541             return value
+542 
+543         return resolve
+544     else:
+545         return itemgetter(arg)
+546 
+547 
+548 @register.filter(is_safe=False)
+549 def dictsort(value, arg):
+550     """
+551     Given a list of dicts, return that list sorted by the property given in
+552     the argument.
+553     """
+554     try:
+555         return sorted(value, key=_property_resolver(arg))
+556     except (AttributeError, TypeError):
+557         return ""
+558 
+559 
+560 @register.filter(is_safe=False)
+561 def dictsortreversed(value, arg):
+562     """
+563     Given a list of dicts, return that list sorted in reverse order by the
+564     property given in the argument.
+565     """
+566     try:
+567         return sorted(value, key=_property_resolver(arg), reverse=True)
+568     except (AttributeError, TypeError):
+569         return ""
+570 
+571 
+572 @register.filter(is_safe=False)
+573 def first(value):
+574     """Return the first item in a list."""
+575     try:
+576         return value[0]
+577     except IndexError:
+578         return ""
+579 
+580 
+581 @register.filter(is_safe=True, needs_autoescape=True)
+582 def join(value, arg, autoescape=True):
+583     """Join a list with a string, like Python's ``str.join(list)``."""
+584     try:
+585         if autoescape:
+586             value = [conditional_escape(v) for v in value]
+587         data = conditional_escape(arg).join(value)
+588     except TypeError:  # Fail silently if arg isn't iterable.
+589         return value
+590     return mark_safe(data)
+591 
+592 
+593 @register.filter(is_safe=True)
+594 def last(value):
+595     """Return the last item in a list."""
+596     try:
+597         return value[-1]
+598     except IndexError:
+599         return ""
+600 
+601 
+602 @register.filter(is_safe=False)
+603 def length(value):
+604     """Return the length of the value - useful for lists."""
+605     try:
+606         return len(value)
+607     except (ValueError, TypeError):
+608         return 0
+609 
+610 
+611 @register.filter(is_safe=False)
+612 def length_is(value, arg):
+613     """Return a boolean of whether the value's length is the argument."""
+614     try:
+615         return len(value) == int(arg)
+616     except (ValueError, TypeError):
+617         return ""
+618 
+619 
+620 @register.filter(is_safe=True)
+621 def random(value):
+622     """Return a random item from the list."""
+623     return random_module.choice(value)
+624 
+625 
+626 @register.filter("slice", is_safe=True)
+627 def slice_filter(value, arg):
+628     """
+629     Return a slice of the list using the same syntax as Python's list slicing.
+630     """
+631     try:
+632         bits = []
+633         for x in str(arg).split(":"):
+634             if not x:
+635                 bits.append(None)
+636             else:
+637                 bits.append(int(x))
+638         return value[slice(*bits)]
+639 
+640     except (ValueError, TypeError):
+641         return value  # Fail silently.
+642 
+643 
+644 @register.filter(is_safe=True, needs_autoescape=True)
+645 def unordered_list(value, autoescape=True):
+646     """
+647     Recursively take a self-nested list and return an HTML unordered list --
+648     WITHOUT opening and closing <ul> tags.
+649 
+650     Assume the list is in the proper format. For example, if ``var`` contains:
+651     ``['States', ['Kansas', ['Lawrence', 'Topeka'], 'Illinois']]``, then
+652     ``{{ var|unordered_list }}`` returns::
+653 
+654         <li>States
+655         <ul>
+656                 <li>Kansas
+657                 <ul>
+658                         <li>Lawrence</li>
+659                         <li>Topeka</li>
+660                 </ul>
+661                 </li>
+662                 <li>Illinois</li>
+663         </ul>
+664         </li>
+665     """
+666     if autoescape:
+667         escaper = conditional_escape
+668     else:
+669 
+670         def escaper(x):
+671             return x
+672 
+673     def walk_items(item_list):
+674         item_iterator = iter(item_list)
+675         try:
+676             item = next(item_iterator)
+677             while True:
+678                 try:
+679                     next_item = next(item_iterator)
+680                 except StopIteration:
+681                     yield item, None
+682                     break
+683                 if isinstance(next_item, (list, tuple, types.GeneratorType)):
+684                     try:
+685                         iter(next_item)
+686                     except TypeError:
+687                         pass
+688                     else:
+689                         yield item, next_item
+690                         item = next(item_iterator)
+691                         continue
+692                 yield item, None
+693                 item = next_item
+694         except StopIteration:
+695             pass
+696 
+697     def list_formatter(item_list, tabs=1):
+698         indent = "\t" * tabs
+699         output = []
+700         for item, children in walk_items(item_list):
+701             sublist = ""
+702             if children:
+703                 sublist = "\n%s<ul>\n%s\n%s</ul>\n%s" % (
+704                     indent,
+705                     list_formatter(children, tabs + 1),
+706                     indent,
+707                     indent,
+708                 )
+709             output.append("%s<li>%s%s</li>" % (indent, escaper(item), sublist))
+710         return "\n".join(output)
+711 
+712     return mark_safe(list_formatter(value))
+713 
+714 
+715 ###################
+716 # INTEGERS        #
+717 ###################
+718 
+719 
+720 @register.filter(is_safe=False)
+721 def add(value, arg):
+722     """Add the arg to the value."""
+723     try:
+724         return int(value) + int(arg)
+725     except (ValueError, TypeError):
+726         try:
+727             return value + arg
+728         except Exception:
+729             return ""
+730 
+731 
+732 @register.filter(is_safe=False)
+733 def get_digit(value, arg):
+734     """
+735     Given a whole number, return the requested digit of it, where 1 is the
+736     right-most digit, 2 is the second-right-most digit, etc. Return the
+737     original value for invalid input (if input or argument is not an integer,
+738     or if argument is less than 1). Otherwise, output is always an integer.
+739     """
+740     try:
+741         arg = int(arg)
+742         value = int(value)
+743     except ValueError:
+744         return value  # Fail silently for an invalid argument
+745     if arg < 1:
+746         return value
+747     try:
+748         return int(str(value)[-arg])
+749     except IndexError:
+750         return 0
+751 
+752 
+753 ###################
+754 # DATES           #
+755 ###################
+756 
+757 
+758 @register.filter(expects_localtime=True, is_safe=False)
+759 def date(value, arg=None):
+760     """Format a date according to the given format."""
+761     if value in (None, ""):
+762         return ""
+763     try:
+764         return formats.date_format(value, arg)
+765     except AttributeError:
+766         try:
+767             return format(value, arg)
+768         except AttributeError:
+769             return ""
+770 
+771 
+772 @register.filter(expects_localtime=True, is_safe=False)
+773 def time(value, arg=None):
+774     """Format a time according to the given format."""
+775     if value in (None, ""):
+776         return ""
+777     try:
+778         return formats.time_format(value, arg)
+779     except (AttributeError, TypeError):
+780         try:
+781             return time_format(value, arg)
+782         except (AttributeError, TypeError):
+783             return ""
+784 
+785 
+786 @register.filter("timesince", is_safe=False)
+787 def timesince_filter(value, arg=None):
+788     """Format a date as the time since that date (i.e. "4 days, 6 hours")."""
+789     if not value:
+790         return ""
+791     try:
+792         if arg:
+793             return timesince(value, arg)
+794         return timesince(value)
+795     except (ValueError, TypeError):
+796         return ""
+797 
+798 
+799 @register.filter("timeuntil", is_safe=False)
+800 def timeuntil_filter(value, arg=None):
+801     """Format a date as the time until that date (i.e. "4 days, 6 hours")."""
+802     if not value:
+803         return ""
+804     try:
+805         return timeuntil(value, arg)
+806     except (ValueError, TypeError):
+807         return ""
+808 
+809 
+810 ###################
+811 # LOGIC           #
+812 ###################
+813 
+814 
+815 @register.filter(is_safe=False)
+816 def default(value, arg):
+817     """If value is unavailable, use given default."""
+818     return value or arg
+819 
+820 
+821 @register.filter(is_safe=False)
+822 def default_if_none(value, arg):
+823     """If value is None, use given default."""
+824     if value is None:
+825         return arg
+826     return value
+827 
+828 
+829 @register.filter(is_safe=False)
+830 def divisibleby(value, arg):
+831     """Return True if the value is divisible by the argument."""
+832     return int(value) % int(arg) == 0
+833 
+834 
+835 @register.filter(is_safe=False)
+836 def yesno(value, arg=None):
+837     """
+838     Given a string mapping values for true, false, and (optionally) None,
+839     return one of those strings according to the value:
+840 
+841     ==========  ======================  ==================================
+842     Value       Argument                Outputs
+843     ==========  ======================  ==================================
+844     ``True``    ``"yeah,no,maybe"``     ``yeah``
+845     ``False``   ``"yeah,no,maybe"``     ``no``
+846     ``None``    ``"yeah,no,maybe"``     ``maybe``
+847     ``None``    ``"yeah,no"``           ``"no"`` (converts None to False
+848                                         if no mapping for None is given.
+849     ==========  ======================  ==================================
+850     """
+851     if arg is None:
+852         # Translators: Please do not add spaces around commas.
+853         arg = gettext("yes,no,maybe")
+854     bits = arg.split(",")
+855     if len(bits) < 2:
+856         return value  # Invalid arg.
+857     try:
+858         yes, no, maybe = bits
+859     except ValueError:
+860         # Unpack list of wrong size (no "maybe" value provided).
+861         yes, no, maybe = bits[0], bits[1], bits[1]
+862     if value is None:
+863         return maybe
+864     if value:
+865         return yes
+866     return no
+867 
+868 
+869 ###################
+870 # MISC            #
+871 ###################
+872 
+873 
+874 @register.filter(is_safe=True)
+875 def filesizeformat(bytes_):
+876     """
+877     Format the value like a 'human-readable' file size (i.e. 13 KB, 4.1 MB,
+878     102 bytes, etc.).
+879     """
+880     try:
+881         bytes_ = int(bytes_)
+882     except (TypeError, ValueError, UnicodeDecodeError):
+883         value = ngettext("%(size)d byte", "%(size)d bytes", 0) % {"size": 0}
+884         return avoid_wrapping(value)
+885 
+886     def filesize_number_format(value):
+887         return formats.number_format(round(value, 1), 1)
+888 
+889     KB = 1 << 10
+890     MB = 1 << 20
+891     GB = 1 << 30
+892     TB = 1 << 40
+893     PB = 1 << 50
+894 
+895     negative = bytes_ < 0
+896     if negative:
+897         bytes_ = -bytes_  # Allow formatting of negative numbers.
+898 
+899     if bytes_ < KB:
+900         value = ngettext("%(size)d byte", "%(size)d bytes", bytes_) % {"size": bytes_}
+901     elif bytes_ < MB:
+902         value = gettext("%s KB") % filesize_number_format(bytes_ / KB)
+903     elif bytes_ < GB:
+904         value = gettext("%s MB") % filesize_number_format(bytes_ / MB)
+905     elif bytes_ < TB:
+906         value = gettext("%s GB") % filesize_number_format(bytes_ / GB)
+907     elif bytes_ < PB:
+908         value = gettext("%s TB") % filesize_number_format(bytes_ / TB)
+909     else:
+910         value = gettext("%s PB") % filesize_number_format(bytes_ / PB)
+911 
+912     if negative:
+913         value = "-%s" % value
+914     return avoid_wrapping(value)
+915 
+916 
+917 @register.filter(is_safe=False)
+918 def pluralize(value, arg="s"):
+919     """
+920     Return a plural suffix if the value is not 1, '1', or an object of
+921     length 1. By default, use 's' as the suffix:
+922 
+923     * If value is 0, vote{{ value|pluralize }} display "votes".
+924     * If value is 1, vote{{ value|pluralize }} display "vote".
+925     * If value is 2, vote{{ value|pluralize }} display "votes".
+926 
+927     If an argument is provided, use that string instead:
+928 
+929     * If value is 0, class{{ value|pluralize:"es" }} display "classes".
+930     * If value is 1, class{{ value|pluralize:"es" }} display "class".
+931     * If value is 2, class{{ value|pluralize:"es" }} display "classes".
+932 
+933     If the provided argument contains a comma, use the text before the comma
+934     for the singular case and the text after the comma for the plural case:
+935 
+936     * If value is 0, cand{{ value|pluralize:"y,ies" }} display "candies".
+937     * If value is 1, cand{{ value|pluralize:"y,ies" }} display "candy".
+938     * If value is 2, cand{{ value|pluralize:"y,ies" }} display "candies".
+939     """
+940     if "," not in arg:
+941         arg = "," + arg
+942     bits = arg.split(",")
+943     if len(bits) > 2:
+944         return ""
+945     singular_suffix, plural_suffix = bits[:2]
+946 
+947     try:
+948         return singular_suffix if float(value) == 1 else plural_suffix
+949     except ValueError:  # Invalid string that's not a number.
+950         pass
+951     except TypeError:  # Value isn't a string or a number; maybe it's a list?
+952         try:
+953             return singular_suffix if len(value) == 1 else plural_suffix
+954         except TypeError:  # len() of unsized object.
+955             pass
+956     return ""
+957 
+958 
+959 @register.filter("phone2numeric", is_safe=True)
+960 def phone2numeric_filter(value):
+961     """Take a phone number and converts it in to its numerical equivalent."""
+962     return phone2numeric(value)
+963 
+964 
+965 @register.filter(is_safe=True)
+966 def pprint(value):
+967     """A wrapper around pprint.pprint -- for debugging, really."""
+968     try:
+969         return pformat(value)
+970     except Exception as e:
+971         return "Error in formatting: %s: %s" % (e.__class__.__name__, e)
+
+</code><intended_behavior>The `blocktranslate` tag's handling of the `asvar` argument should correctly manage and store variables as `SafeString` instances when the context marks them safe. This ensures that when the variable is reused (e.g., in HTML attributes), it does not undergo double escaping, preserving output fidelity. This could entail adjusting the blocktranslate tag processing code to evaluate the safety of its content when `asvar` is used and ensuring the output is either a `SafeString` (when safe) or is marked appropriately to avoid re-escaping already escaped content.</intended_behavior>, <file>django/utils/html.py</file>
+<class>None</class>
+<method>escape</method>
+<code>
+18 def escape(text):
+19     """
+20     Return the given text with ampersands, quotes and angle brackets encoded
+21     for use in HTML.
+22 
+23     Always escape input, even if it's already escaped and marked as such.
+24     This may result in double-escaping. If this is a concern, use
+25     conditional_escape() instead.
+26     """
+27     return SafeString(html.escape(str(text)))
+
+</code><intended_behavior>While not directly buggy in relation to the issue, ensuring the usage of `escape` within the template processing (and particularly within the `blocktranslate` tag processing) respects the `SafeString` marking is crucial. The method itself provides the mechanism to escape content appropriately and returns `SafeString`, but its application in the context of `blocktranslate` and `asvar` must guarantee that this safety attribute is preserved, avoiding double escapes. This suggests the surrounding logic in template rendering that invokes `escape` needs to respect or leverage the `SafeString` mechanism more explicitly, especially post-variable substitution in `blocktranslate` usage.</intended_behavior>]
+2025-10-18 01:41:14.929 | INFO     | Search completed. Bug locations: [<file>django/template/defaultfilters.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Default variable filters."""
+2 import random as random_module
+3 import re
+4 import types
+5 from decimal import ROUND_HALF_UP, Context, Decimal, InvalidOperation
+6 from functools import wraps
+7 from inspect import unwrap
+8 from operator import itemgetter
+9 from pprint import pformat
+10 from urllib.parse import quote
+11 
+12 from django.utils import formats
+13 from django.utils.dateformat import format, time_format
+14 from django.utils.encoding import iri_to_uri
+15 from django.utils.html import avoid_wrapping, conditional_escape, escape, escapejs
+16 from django.utils.html import json_script as _json_script
+17 from django.utils.html import linebreaks, strip_tags
+18 from django.utils.html import urlize as _urlize
+19 from django.utils.safestring import SafeData, mark_safe
+20 from django.utils.text import Truncator, normalize_newlines, phone2numeric
+21 from django.utils.text import slugify as _slugify
+22 from django.utils.text import wrap
+23 from django.utils.timesince import timesince, timeuntil
+24 from django.utils.translation import gettext, ngettext
+25 
+26 from .base import VARIABLE_ATTRIBUTE_SEPARATOR
+27 from .library import Library
+28 
+29 register = Library()
+30 
+31 
+32 #######################
+33 # STRING DECORATOR    #
+34 #######################
+35 
+36 
+37 def stringfilter(func):
+38     """
+39     Decorator for filters which should only receive strings. The object
+40     passed as the first positional argument will be converted to a string.
+41     """
+42 
+43     @wraps(func)
+44     def _dec(first, *args, **kwargs):
+45         first = str(first)
+46         result = func(first, *args, **kwargs)
+47         if isinstance(first, SafeData) and getattr(unwrap(func), "is_safe", False):
+48             result = mark_safe(result)
+49         return result
+50 
+51     return _dec
+52 
+53 
+54 ###################
+55 # STRINGS         #
+56 ###################
+57 
+58 
+59 @register.filter(is_safe=True)
+60 @stringfilter
+61 def addslashes(value):
+62     """
+63     Add slashes before quotes. Useful for escaping strings in CSV, for
+64     example. Less useful for escaping JavaScript; use the ``escapejs``
+65     filter instead.
+66     """
+67     return value.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+68 
+69 
+70 @register.filter(is_safe=True)
+71 @stringfilter
+72 def capfirst(value):
+73     """Capitalize the first character of the value."""
+74     return value and value[0].upper() + value[1:]
+75 
+76 
+77 @register.filter("escapejs")
+78 @stringfilter
+79 def escapejs_filter(value):
+80     """Hex encode characters for use in JavaScript strings."""
+81     return escapejs(value)
+82 
+83 
+84 @register.filter(is_safe=True)
+85 def json_script(value, element_id=None):
+86     """
+87     Output value JSON-encoded, wrapped in a <script type="application/json">
+88     tag (with an optional id).
+89     """
+90     return _json_script(value, element_id)
+91 
+92 
+93 @register.filter(is_safe=True)
+94 def floatformat(text, arg=-1):
+95     """
+96     Display a float to a specified number of decimal places.
+97 
+98     If called without an argument, display the floating point number with one
+99     decimal place -- but only if there's a decimal place to be displayed:
+100 
+101     * num1 = 34.23234
+102     * num2 = 34.00000
+103     * num3 = 34.26000
+104     * {{ num1|floatformat }} displays "34.2"
+105     * {{ num2|floatformat }} displays "34"
+106     * {{ num3|floatformat }} displays "34.3"
+107 
+108     If arg is positive, always display exactly arg number of decimal places:
+109 
+110     * {{ num1|floatformat:3 }} displays "34.232"
+111     * {{ num2|floatformat:3 }} displays "34.000"
+112     * {{ num3|floatformat:3 }} displays "34.260"
+113 
+114     If arg is negative, display arg number of decimal places -- but only if
+115     there are places to be displayed:
+116 
+117     * {{ num1|floatformat:"-3" }} displays "34.232"
+118     * {{ num2|floatformat:"-3" }} displays "34"
+119     * {{ num3|floatformat:"-3" }} displays "34.260"
+120 
+121     If arg has the 'g' suffix, force the result to be grouped by the
+122     THOUSAND_SEPARATOR for the active locale. When the active locale is
+123     en (English):
+124 
+125     * {{ 6666.6666|floatformat:"2g" }} displays "6,666.67"
+126     * {{ 10000|floatformat:"g" }} displays "10,000"
+127 
+128     If arg has the 'u' suffix, force the result to be unlocalized. When the
+129     active locale is pl (Polish):
+130 
+131     * {{ 66666.6666|floatformat:"2" }} displays "66666,67"
+132     * {{ 66666.6666|floatformat:"2u" }} displays "66666.67"
+133 
+134     If the input float is infinity or NaN, display the string representation
+135     of that value.
+136     """
+137     force_grouping = False
+138     use_l10n = True
+139     if isinstance(arg, str):
+140         last_char = arg[-1]
+141         if arg[-2:] in {"gu", "ug"}:
+142             force_grouping = True
+143             use_l10n = False
+144             arg = arg[:-2] or -1
+145         elif last_char == "g":
+146             force_grouping = True
+147             arg = arg[:-1] or -1
+148         elif last_char == "u":
+149             use_l10n = False
+150             arg = arg[:-1] or -1
+151     try:
+152         input_val = repr(text)
+153         d = Decimal(input_val)
+154     except InvalidOperation:
+155         try:
+156             d = Decimal(str(float(text)))
+157         except (ValueError, InvalidOperation, TypeError):
+158             return ""
+159     try:
+160         p = int(arg)
+161     except ValueError:
+162         return input_val
+163 
+164     try:
+165         m = int(d) - d
+166     except (ValueError, OverflowError, InvalidOperation):
+167         return input_val
+168 
+169     if not m and p < 0:
+170         return mark_safe(
+171             formats.number_format(
+172                 "%d" % (int(d)),
+173                 0,
+174                 use_l10n=use_l10n,
+175                 force_grouping=force_grouping,
+176             )
+177         )
+178 
+179     exp = Decimal(1).scaleb(-abs(p))
+180     # Set the precision high enough to avoid an exception (#15789).
+181     tupl = d.as_tuple()
+182     units = len(tupl[1])
+183     units += -tupl[2] if m else tupl[2]
+184     prec = abs(p) + units + 1
+185 
+186     # Avoid conversion to scientific notation by accessing `sign`, `digits`,
+187     # and `exponent` from Decimal.as_tuple() directly.
+188     rounded_d = d.quantize(exp, ROUND_HALF_UP, Context(prec=prec))
+189     sign, digits, exponent = rounded_d.as_tuple()
+190     digits = [str(digit) for digit in reversed(digits)]
+191     while len(digits) <= abs(exponent):
+192         digits.append("0")
+193     digits.insert(-exponent, ".")
+194     if sign and rounded_d:
+195         digits.append("-")
+196     number = "".join(reversed(digits))
+197     return mark_safe(
+198         formats.number_format(
+199             number,
+200             abs(p),
+201             use_l10n=use_l10n,
+202             force_grouping=force_grouping,
+203         )
+204     )
+205 
+206 
+207 @register.filter(is_safe=True)
+208 @stringfilter
+209 def iriencode(value):
+210     """Escape an IRI value for use in a URL."""
+211     return iri_to_uri(value)
+212 
+213 
+214 @register.filter(is_safe=True, needs_autoescape=True)
+215 @stringfilter
+216 def linenumbers(value, autoescape=True):
+217     """Display text with line numbers."""
+218     lines = value.split("\n")
+219     # Find the maximum width of the line count, for use with zero padding
+220     # string format command
+221     width = str(len(str(len(lines))))
+222     if not autoescape or isinstance(value, SafeData):
+223         for i, line in enumerate(lines):
+224             lines[i] = ("%0" + width + "d. %s") % (i + 1, line)
+225     else:
+226         for i, line in enumerate(lines):
+227             lines[i] = ("%0" + width + "d. %s") % (i + 1, escape(line))
+228     return mark_safe("\n".join(lines))
+229 
+230 
+231 @register.filter(is_safe=True)
+232 @stringfilter
+233 def lower(value):
+234     """Convert a string into all lowercase."""
+235     return value.lower()
+236 
+237 
+238 @register.filter(is_safe=False)
+239 @stringfilter
+240 def make_list(value):
+241     """
+242     Return the value turned into a list.
+243 
+244     For an integer, it's a list of digits.
+245     For a string, it's a list of characters.
+246     """
+247     return list(value)
+248 
+249 
+250 @register.filter(is_safe=True)
+251 @stringfilter
+252 def slugify(value):
+253     """
+254     Convert to ASCII. Convert spaces to hyphens. Remove characters that aren't
+255     alphanumerics, underscores, or hyphens. Convert to lowercase. Also strip
+256     leading and trailing whitespace.
+257     """
+258     return _slugify(value)
+259 
+260 
+261 @register.filter(is_safe=True)
+262 def stringformat(value, arg):
+263     """
+264     Format the variable according to the arg, a string formatting specifier.
+265 
+266     This specifier uses Python string formatting syntax, with the exception
+267     that the leading "%" is dropped.
+268 
+269     See https://docs.python.org/library/stdtypes.html#printf-style-string-formatting
+270     for documentation of Python string formatting.
+271     """
+272     if isinstance(value, tuple):
+273         value = str(value)
+274     try:
+275         return ("%" + str(arg)) % value
+276     except (ValueError, TypeError):
+277         return ""
+278 
+279 
+280 @register.filter(is_safe=True)
+281 @stringfilter
+282 def title(value):
+283     """Convert a string into titlecase."""
+284     t = re.sub("([a-z])'([A-Z])", lambda m: m[0].lower(), value.title())
+285     return re.sub(r"\d([A-Z])", lambda m: m[0].lower(), t)
+286 
+287 
+288 @register.filter(is_safe=True)
+289 @stringfilter
+290 def truncatechars(value, arg):
+291     """Truncate a string after `arg` number of characters."""
+292     try:
+293         length = int(arg)
+294     except ValueError:  # Invalid literal for int().
+295         return value  # Fail silently.
+296     return Truncator(value).chars(length)
+297 
+298 
+299 @register.filter(is_safe=True)
+300 @stringfilter
+301 def truncatechars_html(value, arg):
+302     """
+303     Truncate HTML after `arg` number of chars.
+304     Preserve newlines in the HTML.
+305     """
+306     try:
+307         length = int(arg)
+308     except ValueError:  # invalid literal for int()
+309         return value  # Fail silently.
+310     return Truncator(value).chars(length, html=True)
+311 
+312 
+313 @register.filter(is_safe=True)
+314 @stringfilter
+315 def truncatewords(value, arg):
+316     """
+317     Truncate a string after `arg` number of words.
+318     Remove newlines within the string.
+319     """
+320     try:
+321         length = int(arg)
+322     except ValueError:  # Invalid literal for int().
+323         return value  # Fail silently.
+324     return Truncator(value).words(length, truncate=" …")
+325 
+326 
+327 @register.filter(is_safe=True)
+328 @stringfilter
+329 def truncatewords_html(value, arg):
+330     """
+331     Truncate HTML after `arg` number of words.
+332     Preserve newlines in the HTML.
+333     """
+334     try:
+335         length = int(arg)
+336     except ValueError:  # invalid literal for int()
+337         return value  # Fail silently.
+338     return Truncator(value).words(length, html=True, truncate=" …")
+339 
+340 
+341 @register.filter(is_safe=False)
+342 @stringfilter
+343 def upper(value):
+344     """Convert a string into all uppercase."""
+345     return value.upper()
+346 
+347 
+348 @register.filter(is_safe=False)
+349 @stringfilter
+350 def urlencode(value, safe=None):
+351     """
+352     Escape a value for use in a URL.
+353 
+354     The ``safe`` parameter determines the characters which should not be
+355     escaped by Python's quote() function. If not provided, use the default safe
+356     characters (but an empty string can be provided when *all* characters
+357     should be escaped).
+358     """
+359     kwargs = {}
+360     if safe is not None:
+361         kwargs["safe"] = safe
+362     return quote(value, **kwargs)
+363 
+364 
+365 @register.filter(is_safe=True, needs_autoescape=True)
+366 @stringfilter
+367 def urlize(value, autoescape=True):
+368     """Convert URLs in plain text into clickable links."""
+369     return mark_safe(_urlize(value, nofollow=True, autoescape=autoescape))
+370 
+371 
+372 @register.filter(is_safe=True, needs_autoescape=True)
+373 @stringfilter
+374 def urlizetrunc(value, limit, autoescape=True):
+375     """
+376     Convert URLs into clickable links, truncating URLs to the given character
+377     limit, and adding 'rel=nofollow' attribute to discourage spamming.
+378 
+379     Argument: Length to truncate URLs to.
+380     """
+381     return mark_safe(
+382         _urlize(value, trim_url_limit=int(limit), nofollow=True, autoescape=autoescape)
+383     )
+384 
+385 
+386 @register.filter(is_safe=False)
+387 @stringfilter
+388 def wordcount(value):
+389     """Return the number of words."""
+390     return len(value.split())
+391 
+392 
+393 @register.filter(is_safe=True)
+394 @stringfilter
+395 def wordwrap(value, arg):
+396     """Wrap words at `arg` line length."""
+397     return wrap(value, int(arg))
+398 
+399 
+400 @register.filter(is_safe=True)
+401 @stringfilter
+402 def ljust(value, arg):
+403     """Left-align the value in a field of a given width."""
+404     return value.ljust(int(arg))
+405 
+406 
+407 @register.filter(is_safe=True)
+408 @stringfilter
+409 def rjust(value, arg):
+410     """Right-align the value in a field of a given width."""
+411     return value.rjust(int(arg))
+412 
+413 
+414 @register.filter(is_safe=True)
+415 @stringfilter
+416 def center(value, arg):
+417     """Center the value in a field of a given width."""
+418     return value.center(int(arg))
+419 
+420 
+421 @register.filter
+422 @stringfilter
+423 def cut(value, arg):
+424     """Remove all values of arg from the given string."""
+425     safe = isinstance(value, SafeData)
+426     value = value.replace(arg, "")
+427     if safe and arg != ";":
+428         return mark_safe(value)
+429     return value
+430 
+431 
+432 ###################
+433 # HTML STRINGS    #
+434 ###################
+435 
+436 
+437 @register.filter("escape", is_safe=True)
+438 @stringfilter
+439 def escape_filter(value):
+440     """Mark the value as a string that should be auto-escaped."""
+441     return conditional_escape(value)
+442 
+443 
+444 @register.filter(is_safe=True)
+445 @stringfilter
+446 def force_escape(value):
+447     """
+448     Escape a string's HTML. Return a new string containing the escaped
+449     characters (as opposed to "escape", which marks the content for later
+450     possible escaping).
+451     """
+452     return escape(value)
+453 
+454 
+455 @register.filter("linebreaks", is_safe=True, needs_autoescape=True)
+456 @stringfilter
+457 def linebreaks_filter(value, autoescape=True):
+458     """
+459     Replace line breaks in plain text with appropriate HTML; a single
+460     newline becomes an HTML line break (``<br>``) and a new line
+461     followed by a blank line becomes a paragraph break (``</p>``).
+462     """
+463     autoescape = autoescape and not isinstance(value, SafeData)
+464     return mark_safe(linebreaks(value, autoescape))
+465 
+466 
+467 @register.filter(is_safe=True, needs_autoescape=True)
+468 @stringfilter
+469 def linebreaksbr(value, autoescape=True):
+470     """
+471     Convert all newlines in a piece of plain text to HTML line breaks
+472     (``<br>``).
+473     """
+474     autoescape = autoescape and not isinstance(value, SafeData)
+475     value = normalize_newlines(value)
+476     if autoescape:
+477         value = escape(value)
+478     return mark_safe(value.replace("\n", "<br>"))
+479 
+480 
+481 @register.filter(is_safe=True)
+482 @stringfilter
+483 def safe(value):
+484     """Mark the value as a string that should not be auto-escaped."""
+485     return mark_safe(value)
+486 
+487 
+488 @register.filter(is_safe=True)
+489 def safeseq(value):
+490     """
+491     A "safe" filter for sequences. Mark each element in the sequence,
+492     individually, as safe, after converting them to strings. Return a list
+493     with the results.
+494     """
+495     return [mark_safe(obj) for obj in value]
+496 
+497 
+498 @register.filter(is_safe=True)
+499 @stringfilter
+500 def striptags(value):
+501     """Strip all [X]HTML tags."""
+502     return strip_tags(value)
+503 
+504 
+505 ###################
+506 # LISTS           #
+507 ###################
+508 
+509 
+510 def _property_resolver(arg):
+511     """
+512     When arg is convertible to float, behave like operator.itemgetter(arg)
+513     Otherwise, chain __getitem__() and getattr().
+514 
+515     >>> _property_resolver(1)('abc')
+516     'b'
+517     >>> _property_resolver('1')('abc')
+518     Traceback (most recent call last):
+519     ...
+520     TypeError: string indices must be integers
+521     >>> class Foo:
+522     ...     a = 42
+523     ...     b = 3.14
+524     ...     c = 'Hey!'
+525     >>> _property_resolver('b')(Foo())
+526     3.14
+527     """
+528     try:
+529         float(arg)
+530     except ValueError:
+531         if VARIABLE_ATTRIBUTE_SEPARATOR + "_" in arg or arg[0] == "_":
+532             raise AttributeError("Access to private variables is forbidden.")
+533         parts = arg.split(VARIABLE_ATTRIBUTE_SEPARATOR)
+534 
+535         def resolve(value):
+536             for part in parts:
+537                 try:
+538                     value = value[part]
+539                 except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+540                     value = getattr(value, part)
+541             return value
+542 
+543         return resolve
+544     else:
+545         return itemgetter(arg)
+546 
+547 
+548 @register.filter(is_safe=False)
+549 def dictsort(value, arg):
+550     """
+551     Given a list of dicts, return that list sorted by the property given in
+552     the argument.
+553     """
+554     try:
+555         return sorted(value, key=_property_resolver(arg))
+556     except (AttributeError, TypeError):
+557         return ""
+558 
+559 
+560 @register.filter(is_safe=False)
+561 def dictsortreversed(value, arg):
+562     """
+563     Given a list of dicts, return that list sorted in reverse order by the
+564     property given in the argument.
+565     """
+566     try:
+567         return sorted(value, key=_property_resolver(arg), reverse=True)
+568     except (AttributeError, TypeError):
+569         return ""
+570 
+571 
+572 @register.filter(is_safe=False)
+573 def first(value):
+574     """Return the first item in a list."""
+575     try:
+576         return value[0]
+577     except IndexError:
+578         return ""
+579 
+580 
+581 @register.filter(is_safe=True, needs_autoescape=True)
+582 def join(value, arg, autoescape=True):
+583     """Join a list with a string, like Python's ``str.join(list)``."""
+584     try:
+585         if autoescape:
+586             value = [conditional_escape(v) for v in value]
+587         data = conditional_escape(arg).join(value)
+588     except TypeError:  # Fail silently if arg isn't iterable.
+589         return value
+590     return mark_safe(data)
+591 
+592 
+593 @register.filter(is_safe=True)
+594 def last(value):
+595     """Return the last item in a list."""
+596     try:
+597         return value[-1]
+598     except IndexError:
+599         return ""
+600 
+601 
+602 @register.filter(is_safe=False)
+603 def length(value):
+604     """Return the length of the value - useful for lists."""
+605     try:
+606         return len(value)
+607     except (ValueError, TypeError):
+608         return 0
+609 
+610 
+611 @register.filter(is_safe=False)
+612 def length_is(value, arg):
+613     """Return a boolean of whether the value's length is the argument."""
+614     try:
+615         return len(value) == int(arg)
+616     except (ValueError, TypeError):
+617         return ""
+618 
+619 
+620 @register.filter(is_safe=True)
+621 def random(value):
+622     """Return a random item from the list."""
+623     return random_module.choice(value)
+624 
+625 
+626 @register.filter("slice", is_safe=True)
+627 def slice_filter(value, arg):
+628     """
+629     Return a slice of the list using the same syntax as Python's list slicing.
+630     """
+631     try:
+632         bits = []
+633         for x in str(arg).split(":"):
+634             if not x:
+635                 bits.append(None)
+636             else:
+637                 bits.append(int(x))
+638         return value[slice(*bits)]
+639 
+640     except (ValueError, TypeError):
+641         return value  # Fail silently.
+642 
+643 
+644 @register.filter(is_safe=True, needs_autoescape=True)
+645 def unordered_list(value, autoescape=True):
+646     """
+647     Recursively take a self-nested list and return an HTML unordered list --
+648     WITHOUT opening and closing <ul> tags.
+649 
+650     Assume the list is in the proper format. For example, if ``var`` contains:
+651     ``['States', ['Kansas', ['Lawrence', 'Topeka'], 'Illinois']]``, then
+652     ``{{ var|unordered_list }}`` returns::
+653 
+654         <li>States
+655         <ul>
+656                 <li>Kansas
+657                 <ul>
+658                         <li>Lawrence</li>
+659                         <li>Topeka</li>
+660                 </ul>
+661                 </li>
+662                 <li>Illinois</li>
+663         </ul>
+664         </li>
+665     """
+666     if autoescape:
+667         escaper = conditional_escape
+668     else:
+669 
+670         def escaper(x):
+671             return x
+672 
+673     def walk_items(item_list):
+674         item_iterator = iter(item_list)
+675         try:
+676             item = next(item_iterator)
+677             while True:
+678                 try:
+679                     next_item = next(item_iterator)
+680                 except StopIteration:
+681                     yield item, None
+682                     break
+683                 if isinstance(next_item, (list, tuple, types.GeneratorType)):
+684                     try:
+685                         iter(next_item)
+686                     except TypeError:
+687                         pass
+688                     else:
+689                         yield item, next_item
+690                         item = next(item_iterator)
+691                         continue
+692                 yield item, None
+693                 item = next_item
+694         except StopIteration:
+695             pass
+696 
+697     def list_formatter(item_list, tabs=1):
+698         indent = "\t" * tabs
+699         output = []
+700         for item, children in walk_items(item_list):
+701             sublist = ""
+702             if children:
+703                 sublist = "\n%s<ul>\n%s\n%s</ul>\n%s" % (
+704                     indent,
+705                     list_formatter(children, tabs + 1),
+706                     indent,
+707                     indent,
+708                 )
+709             output.append("%s<li>%s%s</li>" % (indent, escaper(item), sublist))
+710         return "\n".join(output)
+711 
+712     return mark_safe(list_formatter(value))
+713 
+714 
+715 ###################
+716 # INTEGERS        #
+717 ###################
+718 
+719 
+720 @register.filter(is_safe=False)
+721 def add(value, arg):
+722     """Add the arg to the value."""
+723     try:
+724         return int(value) + int(arg)
+725     except (ValueError, TypeError):
+726         try:
+727             return value + arg
+728         except Exception:
+729             return ""
+730 
+731 
+732 @register.filter(is_safe=False)
+733 def get_digit(value, arg):
+734     """
+735     Given a whole number, return the requested digit of it, where 1 is the
+736     right-most digit, 2 is the second-right-most digit, etc. Return the
+737     original value for invalid input (if input or argument is not an integer,
+738     or if argument is less than 1). Otherwise, output is always an integer.
+739     """
+740     try:
+741         arg = int(arg)
+742         value = int(value)
+743     except ValueError:
+744         return value  # Fail silently for an invalid argument
+745     if arg < 1:
+746         return value
+747     try:
+748         return int(str(value)[-arg])
+749     except IndexError:
+750         return 0
+751 
+752 
+753 ###################
+754 # DATES           #
+755 ###################
+756 
+757 
+758 @register.filter(expects_localtime=True, is_safe=False)
+759 def date(value, arg=None):
+760     """Format a date according to the given format."""
+761     if value in (None, ""):
+762         return ""
+763     try:
+764         return formats.date_format(value, arg)
+765     except AttributeError:
+766         try:
+767             return format(value, arg)
+768         except AttributeError:
+769             return ""
+770 
+771 
+772 @register.filter(expects_localtime=True, is_safe=False)
+773 def time(value, arg=None):
+774     """Format a time according to the given format."""
+775     if value in (None, ""):
+776         return ""
+777     try:
+778         return formats.time_format(value, arg)
+779     except (AttributeError, TypeError):
+780         try:
+781             return time_format(value, arg)
+782         except (AttributeError, TypeError):
+783             return ""
+784 
+785 
+786 @register.filter("timesince", is_safe=False)
+787 def timesince_filter(value, arg=None):
+788     """Format a date as the time since that date (i.e. "4 days, 6 hours")."""
+789     if not value:
+790         return ""
+791     try:
+792         if arg:
+793             return timesince(value, arg)
+794         return timesince(value)
+795     except (ValueError, TypeError):
+796         return ""
+797 
+798 
+799 @register.filter("timeuntil", is_safe=False)
+800 def timeuntil_filter(value, arg=None):
+801     """Format a date as the time until that date (i.e. "4 days, 6 hours")."""
+802     if not value:
+803         return ""
+804     try:
+805         return timeuntil(value, arg)
+806     except (ValueError, TypeError):
+807         return ""
+808 
+809 
+810 ###################
+811 # LOGIC           #
+812 ###################
+813 
+814 
+815 @register.filter(is_safe=False)
+816 def default(value, arg):
+817     """If value is unavailable, use given default."""
+818     return value or arg
+819 
+820 
+821 @register.filter(is_safe=False)
+822 def default_if_none(value, arg):
+823     """If value is None, use given default."""
+824     if value is None:
+825         return arg
+826     return value
+827 
+828 
+829 @register.filter(is_safe=False)
+830 def divisibleby(value, arg):
+831     """Return True if the value is divisible by the argument."""
+832     return int(value) % int(arg) == 0
+833 
+834 
+835 @register.filter(is_safe=False)
+836 def yesno(value, arg=None):
+837     """
+838     Given a string mapping values for true, false, and (optionally) None,
+839     return one of those strings according to the value:
+840 
+841     ==========  ======================  ==================================
+842     Value       Argument                Outputs
+843     ==========  ======================  ==================================
+844     ``True``    ``"yeah,no,maybe"``     ``yeah``
+845     ``False``   ``"yeah,no,maybe"``     ``no``
+846     ``None``    ``"yeah,no,maybe"``     ``maybe``
+847     ``None``    ``"yeah,no"``           ``"no"`` (converts None to False
+848                                         if no mapping for None is given.
+849     ==========  ======================  ==================================
+850     """
+851     if arg is None:
+852         # Translators: Please do not add spaces around commas.
+853         arg = gettext("yes,no,maybe")
+854     bits = arg.split(",")
+855     if len(bits) < 2:
+856         return value  # Invalid arg.
+857     try:
+858         yes, no, maybe = bits
+859     except ValueError:
+860         # Unpack list of wrong size (no "maybe" value provided).
+861         yes, no, maybe = bits[0], bits[1], bits[1]
+862     if value is None:
+863         return maybe
+864     if value:
+865         return yes
+866     return no
+867 
+868 
+869 ###################
+870 # MISC            #
+871 ###################
+872 
+873 
+874 @register.filter(is_safe=True)
+875 def filesizeformat(bytes_):
+876     """
+877     Format the value like a 'human-readable' file size (i.e. 13 KB, 4.1 MB,
+878     102 bytes, etc.).
+879     """
+880     try:
+881         bytes_ = int(bytes_)
+882     except (TypeError, ValueError, UnicodeDecodeError):
+883         value = ngettext("%(size)d byte", "%(size)d bytes", 0) % {"size": 0}
+884         return avoid_wrapping(value)
+885 
+886     def filesize_number_format(value):
+887         return formats.number_format(round(value, 1), 1)
+888 
+889     KB = 1 << 10
+890     MB = 1 << 20
+891     GB = 1 << 30
+892     TB = 1 << 40
+893     PB = 1 << 50
+894 
+895     negative = bytes_ < 0
+896     if negative:
+897         bytes_ = -bytes_  # Allow formatting of negative numbers.
+898 
+899     if bytes_ < KB:
+900         value = ngettext("%(size)d byte", "%(size)d bytes", bytes_) % {"size": bytes_}
+901     elif bytes_ < MB:
+902         value = gettext("%s KB") % filesize_number_format(bytes_ / KB)
+903     elif bytes_ < GB:
+904         value = gettext("%s MB") % filesize_number_format(bytes_ / MB)
+905     elif bytes_ < TB:
+906         value = gettext("%s GB") % filesize_number_format(bytes_ / GB)
+907     elif bytes_ < PB:
+908         value = gettext("%s TB") % filesize_number_format(bytes_ / TB)
+909     else:
+910         value = gettext("%s PB") % filesize_number_format(bytes_ / PB)
+911 
+912     if negative:
+913         value = "-%s" % value
+914     return avoid_wrapping(value)
+915 
+916 
+917 @register.filter(is_safe=False)
+918 def pluralize(value, arg="s"):
+919     """
+920     Return a plural suffix if the value is not 1, '1', or an object of
+921     length 1. By default, use 's' as the suffix:
+922 
+923     * If value is 0, vote{{ value|pluralize }} display "votes".
+924     * If value is 1, vote{{ value|pluralize }} display "vote".
+925     * If value is 2, vote{{ value|pluralize }} display "votes".
+926 
+927     If an argument is provided, use that string instead:
+928 
+929     * If value is 0, class{{ value|pluralize:"es" }} display "classes".
+930     * If value is 1, class{{ value|pluralize:"es" }} display "class".
+931     * If value is 2, class{{ value|pluralize:"es" }} display "classes".
+932 
+933     If the provided argument contains a comma, use the text before the comma
+934     for the singular case and the text after the comma for the plural case:
+935 
+936     * If value is 0, cand{{ value|pluralize:"y,ies" }} display "candies".
+937     * If value is 1, cand{{ value|pluralize:"y,ies" }} display "candy".
+938     * If value is 2, cand{{ value|pluralize:"y,ies" }} display "candies".
+939     """
+940     if "," not in arg:
+941         arg = "," + arg
+942     bits = arg.split(",")
+943     if len(bits) > 2:
+944         return ""
+945     singular_suffix, plural_suffix = bits[:2]
+946 
+947     try:
+948         return singular_suffix if float(value) == 1 else plural_suffix
+949     except ValueError:  # Invalid string that's not a number.
+950         pass
+951     except TypeError:  # Value isn't a string or a number; maybe it's a list?
+952         try:
+953             return singular_suffix if len(value) == 1 else plural_suffix
+954         except TypeError:  # len() of unsized object.
+955             pass
+956     return ""
+957 
+958 
+959 @register.filter("phone2numeric", is_safe=True)
+960 def phone2numeric_filter(value):
+961     """Take a phone number and converts it in to its numerical equivalent."""
+962     return phone2numeric(value)
+963 
+964 
+965 @register.filter(is_safe=True)
+966 def pprint(value):
+967     """A wrapper around pprint.pprint -- for debugging, really."""
+968     try:
+969         return pformat(value)
+970     except Exception as e:
+971         return "Error in formatting: %s: %s" % (e.__class__.__name__, e)
+
+</code><intended_behavior>The `blocktranslate` tag's handling of the `asvar` argument should correctly manage and store variables as `SafeString` instances when the context marks them safe. This ensures that when the variable is reused (e.g., in HTML attributes), it does not undergo double escaping, preserving output fidelity. This could entail adjusting the blocktranslate tag processing code to evaluate the safety of its content when `asvar` is used and ensuring the output is either a `SafeString` (when safe) or is marked appropriately to avoid re-escaping already escaped content.</intended_behavior>, <file>django/utils/html.py</file>
+<class>None</class>
+<method>escape</method>
+<code>
+18 def escape(text):
+19     """
+20     Return the given text with ampersands, quotes and angle brackets encoded
+21     for use in HTML.
+22 
+23     Always escape input, even if it's already escaped and marked as such.
+24     This may result in double-escaping. If this is a concern, use
+25     conditional_escape() instead.
+26     """
+27     return SafeString(html.escape(str(text)))
+
+</code><intended_behavior>While not directly buggy in relation to the issue, ensuring the usage of `escape` within the template processing (and particularly within the `blocktranslate` tag processing) respects the `SafeString` marking is crucial. The method itself provides the mechanism to escape content appropriately and returns `SafeString`, but its application in the context of `blocktranslate` and `asvar` must guarantee that this safety attribute is preserved, avoiding double escapes. This suggests the surrounding logic in template rendering that invokes `escape` needs to respect or leverage the `SafeString` mechanism more explicitly, especially post-variable substitution in `blocktranslate` usage.</intended_behavior>]
+2025-10-18 01:41:14.930 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 01:41:14.930 | INFO     | Search-only: skipping patch selection
+2025-10-18 01:41:15.062 | INFO     | Task django__django-15742 completed successfully.
+2025-10-18 01:41:15.063 | INFO     | No patch generated. You can try running ACR again.
