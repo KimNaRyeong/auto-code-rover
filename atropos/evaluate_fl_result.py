@@ -331,7 +331,69 @@ def analysis_result_type():
     print(f"Num only method: {only_method}")
 
 
+def vote_and_ranks_final_answers():
+    def tie_break(task, tie_methods):
+        tie_broken_methods = []
 
+        for i in range(1, 6):
+            filtered_fl_result_file = f'./fl_results/filtered_fl_result_{i}.json'
+            with open(filtered_fl_result_file, 'r') as f:
+                fl_result = json.load(f)
+            answer_list = fl_result[task]
+            for answer in answer_list:
+                signature = f'{answer["rel_file_path"]}::{answer["class_name"]}#{answer["method_name"]}_{answer["start"]}_{answer["end"]}'
+                if signature in tie_methods:
+                    tie_broken_methods.append(signature)
+                    tie_methods.remove(signature)
+
+                    if not tie_methods:
+                        return tie_broken_methods
+
+    
+    voting_score_dict = defaultdict(lambda: defaultdict(float))
+    ranking_dict = dict()
+
+    task_list_file = './sampled_tasks.txt'
+    with open(task_list_file, 'r') as f:
+        task_list = f.read().splitlines()
+
+    for i in range(1, 6):
+        filtered_fl_result_file = f'./fl_results/filtered_fl_result_{i}.json'
+        with open(filtered_fl_result_file, 'r') as f:
+            fl_result = json.load(f)
+        for task in task_list:
+            answer_list = fl_result[task]
+            for answer in answer_list:
+                signature = f'{answer["rel_file_path"]}::{answer["class_name"]}#{answer["method_name"]}_{answer["start"]}_{answer["end"]}'
+                voting_score_dict[task][signature] += 1/len(answer_list)
+
+
+    for task, voting_scores in voting_score_dict.items():
+        ranking = []
+        groups = defaultdict(list)
+        for m, s in voting_scores.items():
+            groups[s].append(m)
+        sorted_groups = sorted(groups.items(), key=lambda x: x[0], reverse=True)
+
+        for s, m in sorted_groups:
+            if len(m) < 2:
+                ranking.extend(m)
+            else:
+                ranking.extend(tie_break(task, m))
+        ranking_dict[task] = ranking
+
+    return ranking_dict
+        
+
+    
+
+        
+
+
+    
+
+
+            
             
 
 
@@ -343,20 +405,20 @@ if __name__ == "__main__":
     # # print(filtered_fl_dict1)
     # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
     # # print(filtered_fl_dict2)
-    filtered_fl_dict3 = extract_fl_results("../only_fl_output3")
-    filtered_fl_dict4 = extract_fl_results("../only_fl_output4")
-    filtered_fl_dict5 = extract_fl_results("../only_fl_output5")
+    # filtered_fl_dict3 = extract_fl_results("../only_fl_output3")
+    # filtered_fl_dict4 = extract_fl_results("../only_fl_output4")
+    # filtered_fl_dict5 = extract_fl_results("../only_fl_output5")
 
     # with open('./fl_results/filtered_fl_result_1.json', 'w') as f:
     #     json.dump(filtered_fl_dict1, f, indent=4)
     # with open('./fl_results/filtered_fl_result_2.json', 'w') as f:
     #     json.dump(filtered_fl_dict2, f, indent=4)
-    with open('./fl_results/filtered_fl_result_3.json', 'w') as f:
-        json.dump(filtered_fl_dict3, f, indent=4)
-    with open('./fl_results/filtered_fl_result_4.json', 'w') as f:
-        json.dump(filtered_fl_dict4, f, indent=4)
-    with open('./fl_results/filtered_fl_result_5.json', 'w') as f:
-        json.dump(filtered_fl_dict5, f, indent=4)
+    # with open('./fl_results/filtered_fl_result_3.json', 'w') as f:
+    #     json.dump(filtered_fl_dict3, f, indent=4)
+    # with open('./fl_results/filtered_fl_result_4.json', 'w') as f:
+    #     json.dump(filtered_fl_dict4, f, indent=4)
+    # with open('./fl_results/filtered_fl_result_5.json', 'w') as f:
+    #     json.dump(filtered_fl_dict5, f, indent=4)
 
     # # save_diff_modif_dict("../only_fl_output")
 
@@ -405,5 +467,10 @@ if __name__ == "__main__":
         
     #     if max_idx > 5:
     #         print(instance)
+
+    ranking_dict = vote_and_ranks_final_answers()
+    with open('./combined_fl_results.json', 'w') as f:
+        json.dump(ranking_dict, f, indent=4)
+    
 
 

@@ -23,11 +23,12 @@ class Data_generater():
         task_list_file = './sampled_tasks.txt'
         with open(task_list_file, 'r') as f:
             self.task_list = f.read().splitlines()
-        self.task_list = ['astropy__astropy-6938']
+        # self.task_list = ['astropy__astropy-6938']
         # self.task_list = ['django__django-17066']
-        self.reasoning_paths_dict = self.get_reasoning_paths_for_all_tasks()
+        # self.reasoning_paths_dict = self.get_reasoning_paths_for_all_tasks()
         # self.reasoning_paths_dict = None
-        self.args_dict = self.get_args_dict_for_k()
+        # self.args_dict = self.get_args_dict_for_k()
+        self.label_dict = self.get_labels_dict()
     
     def get_reasoning_paths_for_all_tasks(self):
         reasoning_paths_dict = defaultdict(dict)
@@ -96,6 +97,34 @@ class Data_generater():
                             args_dict[task][k].add(one_fl["rel_file_path"])
 
         return args_dict
+    
+    def get_labels_dict(self):
+        combined_result_file = './combined_fl_results.json'
+        with open(combined_result_file, 'r') as f:
+            combined_result = json.load(f)
+
+        with open('./modif_from_developer_patch.json', 'r') as f:
+            modif_from_diff_dict = json.load(f)
+
+        labels_dict = dict()
+
+        for task in self.task_list:
+            labels_dict[task] = 0
+        for task, ranking in combined_result.items():
+            if ranking:
+                final_answer = ranking[0]
+                rel_file_path = final_answer.split('::')[0]
+                start, end = final_answer.split('_')[-2:]
+                start, end = int(start), int(end)
+                if rel_file_path in modif_from_diff_dict[task].keys():
+                    for modif in modif_from_diff_dict[task][rel_file_path]:
+                        if start <= modif["start_lineno"] and end >= modif["end_lineno"]:
+                            labels_dict[task] = 1
+        return labels_dict
+
+
+        
+
 
     def draw_length_distribution_graphs(self):
         length_dict_nhot = defaultdict(int)
@@ -231,6 +260,8 @@ if __name__ == '__main__':
     #             print(arg)
 
     # examine_tool_call_layers() 
+    print(len(data_generater.label_dict.values()))
+    print(sum(data_generater.label_dict.values()))
 
     
 
