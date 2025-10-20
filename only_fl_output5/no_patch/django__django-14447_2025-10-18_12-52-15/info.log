@@ -1,0 +1,1250 @@
+2025-10-18 12:52:15.310 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 12:52:18.195 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=786, output_tokens=12, cost=0.008220
+2025-10-18 12:52:18.203 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 12:52:18.207 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 12:52:26.073 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1069, output_tokens=373, cost=0.021880
+2025-10-18 12:52:26.080 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 12:52:27.976 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=727, output_tokens=58, cost=0.009010
+2025-10-18 12:52:27.977 | DEBUG    | Extracted a valid json.
+2025-10-18 12:52:27.977 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method_in_file(\"cull\", \"django/core/cache/backends/db.py\")",
+        "search_code_in_file(\"SELECT COUNT(*) FROM\", \"django/core/cache/backends/db.py\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 12:52:27.995 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 12:52:27.996 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 12:52:46.544 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1869, output_tokens=639, cost=0.037860
+2025-10-18 12:52:46.556 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 12:52:54.034 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2724, output_tokens=327, cost=0.037050
+2025-10-18 12:52:54.042 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 12:53:01.623 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=681, output_tokens=299, cost=0.015780
+2025-10-18 12:53:01.624 | DEBUG    | Extracted a valid json.
+2025-10-18 12:53:01.624 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[
+        {
+            "file": "django/core/cache/backends/db.py",
+            "class": "DatabaseCache",
+            "method": "_base_set",
+            "intended_behavior": "In the `_base_set` method, instead of querying the count of rows twice (before and after culling), optimize by passing the initial count obtained to the `_cull` method. This removes the need for a second `SELECT COUNT(*)` query, reducing database load and improving performance. The method should determine if culling is required based on the cache size exceeding `_max_entries`, and if so, activate the culling process with the current count as a parameter."
+        },
+        {
+            "file": "django/core/cache/backends/db.py",
+            "class": "DatabaseCache",
+            "method": "_cull",
+            "intended_behavior": "Modify the `_cull` method to accept an additional parameter, `pre_cull_count`, representing the count of entries before culling begins. After deletion of expired entries, calculate the new count by subtracting `cursor.rowcount` (the number of rows deleted) from `pre_cull_count`. This approach eliminates the need for a subsequent count query. The method proceeds with further culling if the recalculated count still exceeds `_max_entries`. This change aims to preserve the functionality of maintaining cache size within limits while significantly improving efficiency."
+        }
+    ]
+}
+2025-10-18 12:53:01.631 | DEBUG    | Bug location extracted successfully: [<file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>_base_set</method>
+<code>
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+
+</code><intended_behavior>In the `_base_set` method, instead of querying the count of rows twice (before and after culling), optimize by passing the initial count obtained to the `_cull` method. This removes the need for a second `SELECT COUNT(*)` query, reducing database load and improving performance. The method should determine if culling is required based on the cache size exceeding `_max_entries`, and if so, activate the culling process with the current count as a parameter.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {}
+58         for key in keys:
+59             self.validate_key(key)
+60             key_map[self.make_key(key, version)] = key
+61 
+62         db = router.db_for_read(self.cache_model_class)
+63         connection = connections[db]
+64         quote_name = connection.ops.quote_name
+65         table = quote_name(self._table)
+66 
+67         with connection.cursor() as cursor:
+68             cursor.execute(
+69                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+70                     quote_name('cache_key'),
+71                     quote_name('value'),
+72                     quote_name('expires'),
+73                     table,
+74                     quote_name('cache_key'),
+75                     ', '.join(['%s'] * len(key_map)),
+76                 ),
+77                 list(key_map),
+78             )
+79             rows = cursor.fetchall()
+80 
+81         result = {}
+82         expired_keys = []
+83         expression = models.Expression(output_field=models.DateTimeField())
+84         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+85         for key, value, expires in rows:
+86             for converter in converters:
+87                 expires = converter(expires, expression, connection)
+88             if expires < timezone.now():
+89                 expired_keys.append(key)
+90             else:
+91                 value = connection.ops.process_clob(value)
+92                 value = pickle.loads(base64.b64decode(value.encode()))
+93                 result[key_map.get(key)] = value
+94         self._base_delete_many(expired_keys)
+95         return result
+96 
+97     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+98         key = self.make_key(key, version=version)
+99         self.validate_key(key)
+100         self._base_set('set', key, value, timeout)
+101 
+102     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_key(key, version=version)
+104         self.validate_key(key)
+105         return self._base_set('add', key, value, timeout)
+106 
+107     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+108         key = self.make_key(key, version=version)
+109         self.validate_key(key)
+110         return self._base_set('touch', key, None, timeout)
+111 
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+197 
+198     def delete(self, key, version=None):
+199         self.validate_key(key)
+200         return self._base_delete_many([self.make_key(key, version)])
+201 
+202     def delete_many(self, keys, version=None):
+203         key_list = []
+204         for key in keys:
+205             self.validate_key(key)
+206             key_list.append(self.make_key(key, version))
+207         self._base_delete_many(key_list)
+208 
+209     def _base_delete_many(self, keys):
+210         if not keys:
+211             return False
+212 
+213         db = router.db_for_write(self.cache_model_class)
+214         connection = connections[db]
+215         quote_name = connection.ops.quote_name
+216         table = quote_name(self._table)
+217 
+218         with connection.cursor() as cursor:
+219             cursor.execute(
+220                 'DELETE FROM %s WHERE %s IN (%s)' % (
+221                     table,
+222                     quote_name('cache_key'),
+223                     ', '.join(['%s'] * len(keys)),
+224                 ),
+225                 keys,
+226             )
+227             return bool(cursor.rowcount)
+228 
+229     def has_key(self, key, version=None):
+230         key = self.make_key(key, version=version)
+231         self.validate_key(key)
+232 
+233         db = router.db_for_read(self.cache_model_class)
+234         connection = connections[db]
+235         quote_name = connection.ops.quote_name
+236 
+237         now = timezone.now().replace(microsecond=0, tzinfo=None)
+238 
+239         with connection.cursor() as cursor:
+240             cursor.execute(
+241                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+242                     quote_name('cache_key'),
+243                     quote_name(self._table),
+244                     quote_name('cache_key'),
+245                 ),
+246                 [key, connection.ops.adapt_datetimefield_value(now)]
+247             )
+248             return cursor.fetchone() is not None
+249 
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+271 
+272     def clear(self):
+273         db = router.db_for_write(self.cache_model_class)
+274         connection = connections[db]
+275         table = connection.ops.quote_name(self._table)
+276         with connection.cursor() as cursor:
+277             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>_cull</method>
+<code>
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+
+</code><intended_behavior>Modify the `_cull` method to accept an additional parameter, `pre_cull_count`, representing the count of entries before culling begins. After deletion of expired entries, calculate the new count by subtracting `cursor.rowcount` (the number of rows deleted) from `pre_cull_count`. This approach eliminates the need for a subsequent count query. The method proceeds with further culling if the recalculated count still exceeds `_max_entries`. This change aims to preserve the functionality of maintaining cache size within limits while significantly improving efficiency.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {}
+58         for key in keys:
+59             self.validate_key(key)
+60             key_map[self.make_key(key, version)] = key
+61 
+62         db = router.db_for_read(self.cache_model_class)
+63         connection = connections[db]
+64         quote_name = connection.ops.quote_name
+65         table = quote_name(self._table)
+66 
+67         with connection.cursor() as cursor:
+68             cursor.execute(
+69                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+70                     quote_name('cache_key'),
+71                     quote_name('value'),
+72                     quote_name('expires'),
+73                     table,
+74                     quote_name('cache_key'),
+75                     ', '.join(['%s'] * len(key_map)),
+76                 ),
+77                 list(key_map),
+78             )
+79             rows = cursor.fetchall()
+80 
+81         result = {}
+82         expired_keys = []
+83         expression = models.Expression(output_field=models.DateTimeField())
+84         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+85         for key, value, expires in rows:
+86             for converter in converters:
+87                 expires = converter(expires, expression, connection)
+88             if expires < timezone.now():
+89                 expired_keys.append(key)
+90             else:
+91                 value = connection.ops.process_clob(value)
+92                 value = pickle.loads(base64.b64decode(value.encode()))
+93                 result[key_map.get(key)] = value
+94         self._base_delete_many(expired_keys)
+95         return result
+96 
+97     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+98         key = self.make_key(key, version=version)
+99         self.validate_key(key)
+100         self._base_set('set', key, value, timeout)
+101 
+102     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_key(key, version=version)
+104         self.validate_key(key)
+105         return self._base_set('add', key, value, timeout)
+106 
+107     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+108         key = self.make_key(key, version=version)
+109         self.validate_key(key)
+110         return self._base_set('touch', key, None, timeout)
+111 
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+197 
+198     def delete(self, key, version=None):
+199         self.validate_key(key)
+200         return self._base_delete_many([self.make_key(key, version)])
+201 
+202     def delete_many(self, keys, version=None):
+203         key_list = []
+204         for key in keys:
+205             self.validate_key(key)
+206             key_list.append(self.make_key(key, version))
+207         self._base_delete_many(key_list)
+208 
+209     def _base_delete_many(self, keys):
+210         if not keys:
+211             return False
+212 
+213         db = router.db_for_write(self.cache_model_class)
+214         connection = connections[db]
+215         quote_name = connection.ops.quote_name
+216         table = quote_name(self._table)
+217 
+218         with connection.cursor() as cursor:
+219             cursor.execute(
+220                 'DELETE FROM %s WHERE %s IN (%s)' % (
+221                     table,
+222                     quote_name('cache_key'),
+223                     ', '.join(['%s'] * len(keys)),
+224                 ),
+225                 keys,
+226             )
+227             return bool(cursor.rowcount)
+228 
+229     def has_key(self, key, version=None):
+230         key = self.make_key(key, version=version)
+231         self.validate_key(key)
+232 
+233         db = router.db_for_read(self.cache_model_class)
+234         connection = connections[db]
+235         quote_name = connection.ops.quote_name
+236 
+237         now = timezone.now().replace(microsecond=0, tzinfo=None)
+238 
+239         with connection.cursor() as cursor:
+240             cursor.execute(
+241                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+242                     quote_name('cache_key'),
+243                     quote_name(self._table),
+244                     quote_name('cache_key'),
+245                 ),
+246                 [key, connection.ops.adapt_datetimefield_value(now)]
+247             )
+248             return cursor.fetchone() is not None
+249 
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+271 
+272     def clear(self):
+273         db = router.db_for_write(self.cache_model_class)
+274         connection = connections[db]
+275         table = connection.ops.quote_name(self._table)
+276         with connection.cursor() as cursor:
+277             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 12:53:01.631 | INFO     | Search completed. Bug locations: [<file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>_base_set</method>
+<code>
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+
+</code><intended_behavior>In the `_base_set` method, instead of querying the count of rows twice (before and after culling), optimize by passing the initial count obtained to the `_cull` method. This removes the need for a second `SELECT COUNT(*)` query, reducing database load and improving performance. The method should determine if culling is required based on the cache size exceeding `_max_entries`, and if so, activate the culling process with the current count as a parameter.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {}
+58         for key in keys:
+59             self.validate_key(key)
+60             key_map[self.make_key(key, version)] = key
+61 
+62         db = router.db_for_read(self.cache_model_class)
+63         connection = connections[db]
+64         quote_name = connection.ops.quote_name
+65         table = quote_name(self._table)
+66 
+67         with connection.cursor() as cursor:
+68             cursor.execute(
+69                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+70                     quote_name('cache_key'),
+71                     quote_name('value'),
+72                     quote_name('expires'),
+73                     table,
+74                     quote_name('cache_key'),
+75                     ', '.join(['%s'] * len(key_map)),
+76                 ),
+77                 list(key_map),
+78             )
+79             rows = cursor.fetchall()
+80 
+81         result = {}
+82         expired_keys = []
+83         expression = models.Expression(output_field=models.DateTimeField())
+84         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+85         for key, value, expires in rows:
+86             for converter in converters:
+87                 expires = converter(expires, expression, connection)
+88             if expires < timezone.now():
+89                 expired_keys.append(key)
+90             else:
+91                 value = connection.ops.process_clob(value)
+92                 value = pickle.loads(base64.b64decode(value.encode()))
+93                 result[key_map.get(key)] = value
+94         self._base_delete_many(expired_keys)
+95         return result
+96 
+97     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+98         key = self.make_key(key, version=version)
+99         self.validate_key(key)
+100         self._base_set('set', key, value, timeout)
+101 
+102     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_key(key, version=version)
+104         self.validate_key(key)
+105         return self._base_set('add', key, value, timeout)
+106 
+107     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+108         key = self.make_key(key, version=version)
+109         self.validate_key(key)
+110         return self._base_set('touch', key, None, timeout)
+111 
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+197 
+198     def delete(self, key, version=None):
+199         self.validate_key(key)
+200         return self._base_delete_many([self.make_key(key, version)])
+201 
+202     def delete_many(self, keys, version=None):
+203         key_list = []
+204         for key in keys:
+205             self.validate_key(key)
+206             key_list.append(self.make_key(key, version))
+207         self._base_delete_many(key_list)
+208 
+209     def _base_delete_many(self, keys):
+210         if not keys:
+211             return False
+212 
+213         db = router.db_for_write(self.cache_model_class)
+214         connection = connections[db]
+215         quote_name = connection.ops.quote_name
+216         table = quote_name(self._table)
+217 
+218         with connection.cursor() as cursor:
+219             cursor.execute(
+220                 'DELETE FROM %s WHERE %s IN (%s)' % (
+221                     table,
+222                     quote_name('cache_key'),
+223                     ', '.join(['%s'] * len(keys)),
+224                 ),
+225                 keys,
+226             )
+227             return bool(cursor.rowcount)
+228 
+229     def has_key(self, key, version=None):
+230         key = self.make_key(key, version=version)
+231         self.validate_key(key)
+232 
+233         db = router.db_for_read(self.cache_model_class)
+234         connection = connections[db]
+235         quote_name = connection.ops.quote_name
+236 
+237         now = timezone.now().replace(microsecond=0, tzinfo=None)
+238 
+239         with connection.cursor() as cursor:
+240             cursor.execute(
+241                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+242                     quote_name('cache_key'),
+243                     quote_name(self._table),
+244                     quote_name('cache_key'),
+245                 ),
+246                 [key, connection.ops.adapt_datetimefield_value(now)]
+247             )
+248             return cursor.fetchone() is not None
+249 
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+271 
+272     def clear(self):
+273         db = router.db_for_write(self.cache_model_class)
+274         connection = connections[db]
+275         table = connection.ops.quote_name(self._table)
+276         with connection.cursor() as cursor:
+277             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>_cull</method>
+<code>
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+
+</code><intended_behavior>Modify the `_cull` method to accept an additional parameter, `pre_cull_count`, representing the count of entries before culling begins. After deletion of expired entries, calculate the new count by subtracting `cursor.rowcount` (the number of rows deleted) from `pre_cull_count`. This approach eliminates the need for a subsequent count query. The method proceeds with further culling if the recalculated count still exceeds `_max_entries`. This change aims to preserve the functionality of maintaining cache size within limits while significantly improving efficiency.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {}
+58         for key in keys:
+59             self.validate_key(key)
+60             key_map[self.make_key(key, version)] = key
+61 
+62         db = router.db_for_read(self.cache_model_class)
+63         connection = connections[db]
+64         quote_name = connection.ops.quote_name
+65         table = quote_name(self._table)
+66 
+67         with connection.cursor() as cursor:
+68             cursor.execute(
+69                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+70                     quote_name('cache_key'),
+71                     quote_name('value'),
+72                     quote_name('expires'),
+73                     table,
+74                     quote_name('cache_key'),
+75                     ', '.join(['%s'] * len(key_map)),
+76                 ),
+77                 list(key_map),
+78             )
+79             rows = cursor.fetchall()
+80 
+81         result = {}
+82         expired_keys = []
+83         expression = models.Expression(output_field=models.DateTimeField())
+84         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+85         for key, value, expires in rows:
+86             for converter in converters:
+87                 expires = converter(expires, expression, connection)
+88             if expires < timezone.now():
+89                 expired_keys.append(key)
+90             else:
+91                 value = connection.ops.process_clob(value)
+92                 value = pickle.loads(base64.b64decode(value.encode()))
+93                 result[key_map.get(key)] = value
+94         self._base_delete_many(expired_keys)
+95         return result
+96 
+97     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+98         key = self.make_key(key, version=version)
+99         self.validate_key(key)
+100         self._base_set('set', key, value, timeout)
+101 
+102     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_key(key, version=version)
+104         self.validate_key(key)
+105         return self._base_set('add', key, value, timeout)
+106 
+107     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+108         key = self.make_key(key, version=version)
+109         self.validate_key(key)
+110         return self._base_set('touch', key, None, timeout)
+111 
+112     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+113         timeout = self.get_backend_timeout(timeout)
+114         db = router.db_for_write(self.cache_model_class)
+115         connection = connections[db]
+116         quote_name = connection.ops.quote_name
+117         table = quote_name(self._table)
+118 
+119         with connection.cursor() as cursor:
+120             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+121             num = cursor.fetchone()[0]
+122             now = timezone.now()
+123             now = now.replace(microsecond=0)
+124             if timeout is None:
+125                 exp = datetime.max
+126             else:
+127                 tz = timezone.utc if settings.USE_TZ else None
+128                 exp = datetime.fromtimestamp(timeout, tz=tz)
+129             exp = exp.replace(microsecond=0)
+130             if num > self._max_entries:
+131                 self._cull(db, cursor, now)
+132             pickled = pickle.dumps(value, self.pickle_protocol)
+133             # The DB column is expecting a string, so make sure the value is a
+134             # string, not bytes. Refs #19274.
+135             b64encoded = base64.b64encode(pickled).decode('latin1')
+136             try:
+137                 # Note: typecasting for datetimes is needed by some 3rd party
+138                 # database backends. All core backends work without typecasting,
+139                 # so be careful about changes here - test suite will NOT pick
+140                 # regressions.
+141                 with transaction.atomic(using=db):
+142                     cursor.execute(
+143                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+144                             quote_name('cache_key'),
+145                             quote_name('expires'),
+146                             table,
+147                             quote_name('cache_key'),
+148                         ),
+149                         [key]
+150                     )
+151                     result = cursor.fetchone()
+152 
+153                     if result:
+154                         current_expires = result[1]
+155                         expression = models.Expression(output_field=models.DateTimeField())
+156                         for converter in (connection.ops.get_db_converters(expression) +
+157                                           expression.get_db_converters(connection)):
+158                             current_expires = converter(current_expires, expression, connection)
+159 
+160                     exp = connection.ops.adapt_datetimefield_value(exp)
+161                     if result and mode == 'touch':
+162                         cursor.execute(
+163                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+164                                 table,
+165                                 quote_name('expires'),
+166                                 quote_name('cache_key')
+167                             ),
+168                             [exp, key]
+169                         )
+170                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+171                         cursor.execute(
+172                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+173                                 table,
+174                                 quote_name('value'),
+175                                 quote_name('expires'),
+176                                 quote_name('cache_key'),
+177                             ),
+178                             [b64encoded, exp, key]
+179                         )
+180                     elif mode != 'touch':
+181                         cursor.execute(
+182                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+183                                 table,
+184                                 quote_name('cache_key'),
+185                                 quote_name('value'),
+186                                 quote_name('expires'),
+187                             ),
+188                             [key, b64encoded, exp]
+189                         )
+190                     else:
+191                         return False  # touch failed.
+192             except DatabaseError:
+193                 # To be threadsafe, updates/inserts are allowed to fail silently
+194                 return False
+195             else:
+196                 return True
+197 
+198     def delete(self, key, version=None):
+199         self.validate_key(key)
+200         return self._base_delete_many([self.make_key(key, version)])
+201 
+202     def delete_many(self, keys, version=None):
+203         key_list = []
+204         for key in keys:
+205             self.validate_key(key)
+206             key_list.append(self.make_key(key, version))
+207         self._base_delete_many(key_list)
+208 
+209     def _base_delete_many(self, keys):
+210         if not keys:
+211             return False
+212 
+213         db = router.db_for_write(self.cache_model_class)
+214         connection = connections[db]
+215         quote_name = connection.ops.quote_name
+216         table = quote_name(self._table)
+217 
+218         with connection.cursor() as cursor:
+219             cursor.execute(
+220                 'DELETE FROM %s WHERE %s IN (%s)' % (
+221                     table,
+222                     quote_name('cache_key'),
+223                     ', '.join(['%s'] * len(keys)),
+224                 ),
+225                 keys,
+226             )
+227             return bool(cursor.rowcount)
+228 
+229     def has_key(self, key, version=None):
+230         key = self.make_key(key, version=version)
+231         self.validate_key(key)
+232 
+233         db = router.db_for_read(self.cache_model_class)
+234         connection = connections[db]
+235         quote_name = connection.ops.quote_name
+236 
+237         now = timezone.now().replace(microsecond=0, tzinfo=None)
+238 
+239         with connection.cursor() as cursor:
+240             cursor.execute(
+241                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+242                     quote_name('cache_key'),
+243                     quote_name(self._table),
+244                     quote_name('cache_key'),
+245                 ),
+246                 [key, connection.ops.adapt_datetimefield_value(now)]
+247             )
+248             return cursor.fetchone() is not None
+249 
+250     def _cull(self, db, cursor, now):
+251         if self._cull_frequency == 0:
+252             self.clear()
+253         else:
+254             connection = connections[db]
+255             table = connection.ops.quote_name(self._table)
+256             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+257                            [connection.ops.adapt_datetimefield_value(now)])
+258             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+259             num = cursor.fetchone()[0]
+260             if num > self._max_entries:
+261                 cull_num = num // self._cull_frequency
+262                 cursor.execute(
+263                     connection.ops.cache_key_culling_sql() % table,
+264                     [cull_num])
+265                 last_cache_key = cursor.fetchone()
+266                 if last_cache_key:
+267                     cursor.execute(
+268                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+269                         [last_cache_key[0]],
+270                     )
+271 
+272     def clear(self):
+273         db = router.db_for_write(self.cache_model_class)
+274         connection = connections[db]
+275         table = connection.ops.quote_name(self._table)
+276         with connection.cursor() as cursor:
+277             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 12:53:01.632 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 12:53:01.632 | INFO     | Search-only: skipping patch selection
+2025-10-18 12:53:01.797 | INFO     | Task django__django-14447 completed successfully.
+2025-10-18 12:53:01.798 | INFO     | No patch generated. You can try running ACR again.

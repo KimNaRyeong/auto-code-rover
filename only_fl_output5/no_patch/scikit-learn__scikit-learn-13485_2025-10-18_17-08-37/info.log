@@ -1,0 +1,664 @@
+2025-10-18 17:08:37.307 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 17:08:41.893 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=323, output_tokens=12, cost=0.003590
+2025-10-18 17:08:41.894 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 17:08:41.898 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 17:08:48.685 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=632, output_tokens=263, cost=0.014210
+2025-10-18 17:08:48.736 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 17:08:51.301 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=617, output_tokens=47, cost=0.007580
+2025-10-18 17:08:51.302 | DEBUG    | Extracted a valid json.
+2025-10-18 17:08:51.302 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"CalibratedClassifierCV\")",
+        "search_method(\"check_array\")",
+        "search_code(\"CalibratedClassifierCV\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 17:08:51.388 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 17:08:51.389 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 17:09:06.872 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3880, output_tokens=630, cost=0.057700
+2025-10-18 17:09:06.886 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 17:09:13.141 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=4726, output_tokens=263, cost=0.055150
+2025-10-18 17:09:13.146 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 17:09:20.864 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=617, output_tokens=271, cost=0.014300
+2025-10-18 17:09:20.865 | DEBUG    | Extracted a valid json.
+2025-10-18 17:09:20.865 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "sklearn/calibration.py", "class": "CalibratedClassifierCV", "method": "fit", "intended_behavior": "This method should be modified to handle 3D input arrays for cases where such inputs are relevant (e.g., in pairs or sequences that need calibrating). Currently, the method might be invoking `check_array` with its default parameters (`ensure_2d=True, allow_nd=False`), which restricts inputs to 2D. The intended behavior here would be to adjust the invocation of `check_array` within the `fit` method, allowing 3D arrays when necessary. This could mean setting `allow_nd=True` selectively based on the nature of the base estimator or adding a parameter to `CalibratedClassifierCV`'s initialization, letting users specify when 3D inputs are expected, then using this parameter to conditionally adjust `check_array`'s behavior.\nThe adjustment should preserve existing functionality for all current use cases of `CalibratedClassifierCV`, ensuring compatibility with 2D inputs while extending support to 3D inputs where applicable. This means careful consideration must be given to not disrupt the expected structure and validation of inputs for the vast majority of use cases currently relying on 2D inputs."}]
+}
+2025-10-18 17:09:20.871 | DEBUG    | Bug location extracted successfully: [<file>sklearn/calibration.py</file>
+<class>CalibratedClassifierCV</class>
+<method>fit</method>
+<code>
+114     def fit(self, X, y, sample_weight=None):
+115         """Fit the calibrated model
+116 
+117         Parameters
+118         ----------
+119         X : array-like, shape (n_samples, n_features)
+120             Training data.
+121 
+122         y : array-like, shape (n_samples,)
+123             Target values.
+124 
+125         sample_weight : array-like, shape = [n_samples] or None
+126             Sample weights. If None, then samples are equally weighted.
+127 
+128         Returns
+129         -------
+130         self : object
+131             Returns an instance of self.
+132         """
+133         X, y = check_X_y(X, y, accept_sparse=['csc', 'csr', 'coo'],
+134                          force_all_finite=False)
+135         X, y = indexable(X, y)
+136         le = LabelBinarizer().fit(y)
+137         self.classes_ = le.classes_
+138 
+139         # Check that each cross-validation fold can have at least one
+140         # example per class
+141         n_folds = self.cv if isinstance(self.cv, int) \
+142             else self.cv.n_folds if hasattr(self.cv, "n_folds") else None
+143         if n_folds and \
+144                 np.any([np.sum(y == class_) < n_folds for class_ in
+145                         self.classes_]):
+146             raise ValueError("Requesting %d-fold cross-validation but provided"
+147                              " less than %d examples for at least one class."
+148                              % (n_folds, n_folds))
+149 
+150         self.calibrated_classifiers_ = []
+151         if self.base_estimator is None:
+152             # we want all classifiers that don't expose a random_state
+153             # to be deterministic (and we don't want to expose this one).
+154             base_estimator = LinearSVC(random_state=0)
+155         else:
+156             base_estimator = self.base_estimator
+157 
+158         if self.cv == "prefit":
+159             calibrated_classifier = _CalibratedClassifier(
+160                 base_estimator, method=self.method)
+161             if sample_weight is not None:
+162                 calibrated_classifier.fit(X, y, sample_weight)
+163             else:
+164                 calibrated_classifier.fit(X, y)
+165             self.calibrated_classifiers_.append(calibrated_classifier)
+166         else:
+167             cv = check_cv(self.cv, y, classifier=True)
+168             fit_parameters = signature(base_estimator.fit).parameters
+169             estimator_name = type(base_estimator).__name__
+170             if (sample_weight is not None
+171                     and "sample_weight" not in fit_parameters):
+172                 warnings.warn("%s does not support sample_weight. Samples"
+173                               " weights are only used for the calibration"
+174                               " itself." % estimator_name)
+175                 base_estimator_sample_weight = None
+176             else:
+177                 if sample_weight is not None:
+178                     sample_weight = check_array(sample_weight, ensure_2d=False)
+179                     check_consistent_length(y, sample_weight)
+180                 base_estimator_sample_weight = sample_weight
+181             for train, test in cv.split(X, y):
+182                 this_estimator = clone(base_estimator)
+183                 if base_estimator_sample_weight is not None:
+184                     this_estimator.fit(
+185                         X[train], y[train],
+186                         sample_weight=base_estimator_sample_weight[train])
+187                 else:
+188                     this_estimator.fit(X[train], y[train])
+189 
+190                 calibrated_classifier = _CalibratedClassifier(
+191                     this_estimator, method=self.method,
+192                     classes=self.classes_)
+193                 if sample_weight is not None:
+194                     calibrated_classifier.fit(X[test], y[test],
+195                                               sample_weight[test])
+196                 else:
+197                     calibrated_classifier.fit(X[test], y[test])
+198                 self.calibrated_classifiers_.append(calibrated_classifier)
+199 
+200         return self
+
+</code><intended_behavior>This method should be modified to handle 3D input arrays for cases where such inputs are relevant (e.g., in pairs or sequences that need calibrating). Currently, the method might be invoking `check_array` with its default parameters (`ensure_2d=True, allow_nd=False`), which restricts inputs to 2D. The intended behavior here would be to adjust the invocation of `check_array` within the `fit` method, allowing 3D arrays when necessary. This could mean setting `allow_nd=True` selectively based on the nature of the base estimator or adding a parameter to `CalibratedClassifierCV`'s initialization, letting users specify when 3D inputs are expected, then using this parameter to conditionally adjust `check_array`'s behavior.
+The adjustment should preserve existing functionality for all current use cases of `CalibratedClassifierCV`, ensuring compatibility with 2D inputs while extending support to 3D inputs where applicable. This means careful consideration must be given to not disrupt the expected structure and validation of inputs for the vast majority of use cases currently relying on 2D inputs.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>CalibratedClassifierCV</class>
+<method>None</method>
+<code>
+31 class CalibratedClassifierCV(BaseEstimator, ClassifierMixin):
+32     """Probability calibration with isotonic regression or sigmoid.
+33 
+34     See glossary entry for :term:`cross-validation estimator`.
+35 
+36     With this class, the base_estimator is fit on the train set of the
+37     cross-validation generator and the test set is used for calibration.
+38     The probabilities for each of the folds are then averaged
+39     for prediction. In case that cv="prefit" is passed to __init__,
+40     it is assumed that base_estimator has been fitted already and all
+41     data is used for calibration. Note that data for fitting the
+42     classifier and for calibrating it must be disjoint.
+43 
+44     Read more in the :ref:`User Guide <calibration>`.
+45 
+46     Parameters
+47     ----------
+48     base_estimator : instance BaseEstimator
+49         The classifier whose output decision function needs to be calibrated
+50         to offer more accurate predict_proba outputs. If cv=prefit, the
+51         classifier must have been fit already on data.
+52 
+53     method : 'sigmoid' or 'isotonic'
+54         The method to use for calibration. Can be 'sigmoid' which
+55         corresponds to Platt's method or 'isotonic' which is a
+56         non-parametric approach. It is not advised to use isotonic calibration
+57         with too few calibration samples ``(<<1000)`` since it tends to
+58         overfit.
+59         Use sigmoids (Platt's calibration) in this case.
+60 
+61     cv : integer, cross-validation generator, iterable or "prefit", optional
+62         Determines the cross-validation splitting strategy.
+63         Possible inputs for cv are:
+64 
+65         - None, to use the default 3-fold cross-validation,
+66         - integer, to specify the number of folds.
+67         - :term:`CV splitter`,
+68         - An iterable yielding (train, test) splits as arrays of indices.
+69 
+70         For integer/None inputs, if ``y`` is binary or multiclass,
+71         :class:`sklearn.model_selection.StratifiedKFold` is used. If ``y`` is
+72         neither binary nor multiclass, :class:`sklearn.model_selection.KFold`
+73         is used.
+74 
+75         Refer :ref:`User Guide <cross_validation>` for the various
+76         cross-validation strategies that can be used here.
+77 
+78         If "prefit" is passed, it is assumed that base_estimator has been
+79         fitted already and all data is used for calibration.
+80 
+81         .. versionchanged:: 0.20
+82             ``cv`` default value if None will change from 3-fold to 5-fold
+83             in v0.22.
+84 
+85     Attributes
+86     ----------
+87     classes_ : array, shape (n_classes)
+88         The class labels.
+89 
+90     calibrated_classifiers_ : list (len() equal to cv or 1 if cv == "prefit")
+91         The list of calibrated classifiers, one for each crossvalidation fold,
+92         which has been fitted on all but the validation fold and calibrated
+93         on the validation fold.
+94 
+95     References
+96     ----------
+97     .. [1] Obtaining calibrated probability estimates from decision trees
+98            and naive Bayesian classifiers, B. Zadrozny & C. Elkan, ICML 2001
+99 
+100     .. [2] Transforming Classifier Scores into Accurate Multiclass
+101            Probability Estimates, B. Zadrozny & C. Elkan, (KDD 2002)
+102 
+103     .. [3] Probabilistic Outputs for Support Vector Machines and Comparisons to
+104            Regularized Likelihood Methods, J. Platt, (1999)
+105 
+106     .. [4] Predicting Good Probabilities with Supervised Learning,
+107            A. Niculescu-Mizil & R. Caruana, ICML 2005
+108     """
+109     def __init__(self, base_estimator=None, method='sigmoid', cv='warn'):
+110         self.base_estimator = base_estimator
+111         self.method = method
+112         self.cv = cv
+113 
+114     def fit(self, X, y, sample_weight=None):
+115         """Fit the calibrated model
+116 
+117         Parameters
+118         ----------
+119         X : array-like, shape (n_samples, n_features)
+120             Training data.
+121 
+122         y : array-like, shape (n_samples,)
+123             Target values.
+124 
+125         sample_weight : array-like, shape = [n_samples] or None
+126             Sample weights. If None, then samples are equally weighted.
+127 
+128         Returns
+129         -------
+130         self : object
+131             Returns an instance of self.
+132         """
+133         X, y = check_X_y(X, y, accept_sparse=['csc', 'csr', 'coo'],
+134                          force_all_finite=False)
+135         X, y = indexable(X, y)
+136         le = LabelBinarizer().fit(y)
+137         self.classes_ = le.classes_
+138 
+139         # Check that each cross-validation fold can have at least one
+140         # example per class
+141         n_folds = self.cv if isinstance(self.cv, int) \
+142             else self.cv.n_folds if hasattr(self.cv, "n_folds") else None
+143         if n_folds and \
+144                 np.any([np.sum(y == class_) < n_folds for class_ in
+145                         self.classes_]):
+146             raise ValueError("Requesting %d-fold cross-validation but provided"
+147                              " less than %d examples for at least one class."
+148                              % (n_folds, n_folds))
+149 
+150         self.calibrated_classifiers_ = []
+151         if self.base_estimator is None:
+152             # we want all classifiers that don't expose a random_state
+153             # to be deterministic (and we don't want to expose this one).
+154             base_estimator = LinearSVC(random_state=0)
+155         else:
+156             base_estimator = self.base_estimator
+157 
+158         if self.cv == "prefit":
+159             calibrated_classifier = _CalibratedClassifier(
+160                 base_estimator, method=self.method)
+161             if sample_weight is not None:
+162                 calibrated_classifier.fit(X, y, sample_weight)
+163             else:
+164                 calibrated_classifier.fit(X, y)
+165             self.calibrated_classifiers_.append(calibrated_classifier)
+166         else:
+167             cv = check_cv(self.cv, y, classifier=True)
+168             fit_parameters = signature(base_estimator.fit).parameters
+169             estimator_name = type(base_estimator).__name__
+170             if (sample_weight is not None
+171                     and "sample_weight" not in fit_parameters):
+172                 warnings.warn("%s does not support sample_weight. Samples"
+173                               " weights are only used for the calibration"
+174                               " itself." % estimator_name)
+175                 base_estimator_sample_weight = None
+176             else:
+177                 if sample_weight is not None:
+178                     sample_weight = check_array(sample_weight, ensure_2d=False)
+179                     check_consistent_length(y, sample_weight)
+180                 base_estimator_sample_weight = sample_weight
+181             for train, test in cv.split(X, y):
+182                 this_estimator = clone(base_estimator)
+183                 if base_estimator_sample_weight is not None:
+184                     this_estimator.fit(
+185                         X[train], y[train],
+186                         sample_weight=base_estimator_sample_weight[train])
+187                 else:
+188                     this_estimator.fit(X[train], y[train])
+189 
+190                 calibrated_classifier = _CalibratedClassifier(
+191                     this_estimator, method=self.method,
+192                     classes=self.classes_)
+193                 if sample_weight is not None:
+194                     calibrated_classifier.fit(X[test], y[test],
+195                                               sample_weight[test])
+196                 else:
+197                     calibrated_classifier.fit(X[test], y[test])
+198                 self.calibrated_classifiers_.append(calibrated_classifier)
+199 
+200         return self
+201 
+202     def predict_proba(self, X):
+203         """Posterior probabilities of classification
+204 
+205         This function returns posterior probabilities of classification
+206         according to each class on an array of test vectors X.
+207 
+208         Parameters
+209         ----------
+210         X : array-like, shape (n_samples, n_features)
+211             The samples.
+212 
+213         Returns
+214         -------
+215         C : array, shape (n_samples, n_classes)
+216             The predicted probas.
+217         """
+218         check_is_fitted(self, ["classes_", "calibrated_classifiers_"])
+219         X = check_array(X, accept_sparse=['csc', 'csr', 'coo'],
+220                         force_all_finite=False)
+221         # Compute the arithmetic mean of the predictions of the calibrated
+222         # classifiers
+223         mean_proba = np.zeros((X.shape[0], len(self.classes_)))
+224         for calibrated_classifier in self.calibrated_classifiers_:
+225             proba = calibrated_classifier.predict_proba(X)
+226             mean_proba += proba
+227 
+228         mean_proba /= len(self.calibrated_classifiers_)
+229 
+230         return mean_proba
+231 
+232     def predict(self, X):
+233         """Predict the target of new samples. Can be different from the
+234         prediction of the uncalibrated classifier.
+235 
+236         Parameters
+237         ----------
+238         X : array-like, shape (n_samples, n_features)
+239             The samples.
+240 
+241         Returns
+242         -------
+243         C : array, shape (n_samples,)
+244             The predicted class.
+245         """
+246         check_is_fitted(self, ["classes_", "calibrated_classifiers_"])
+247         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 17:09:20.871 | INFO     | Search completed. Bug locations: [<file>sklearn/calibration.py</file>
+<class>CalibratedClassifierCV</class>
+<method>fit</method>
+<code>
+114     def fit(self, X, y, sample_weight=None):
+115         """Fit the calibrated model
+116 
+117         Parameters
+118         ----------
+119         X : array-like, shape (n_samples, n_features)
+120             Training data.
+121 
+122         y : array-like, shape (n_samples,)
+123             Target values.
+124 
+125         sample_weight : array-like, shape = [n_samples] or None
+126             Sample weights. If None, then samples are equally weighted.
+127 
+128         Returns
+129         -------
+130         self : object
+131             Returns an instance of self.
+132         """
+133         X, y = check_X_y(X, y, accept_sparse=['csc', 'csr', 'coo'],
+134                          force_all_finite=False)
+135         X, y = indexable(X, y)
+136         le = LabelBinarizer().fit(y)
+137         self.classes_ = le.classes_
+138 
+139         # Check that each cross-validation fold can have at least one
+140         # example per class
+141         n_folds = self.cv if isinstance(self.cv, int) \
+142             else self.cv.n_folds if hasattr(self.cv, "n_folds") else None
+143         if n_folds and \
+144                 np.any([np.sum(y == class_) < n_folds for class_ in
+145                         self.classes_]):
+146             raise ValueError("Requesting %d-fold cross-validation but provided"
+147                              " less than %d examples for at least one class."
+148                              % (n_folds, n_folds))
+149 
+150         self.calibrated_classifiers_ = []
+151         if self.base_estimator is None:
+152             # we want all classifiers that don't expose a random_state
+153             # to be deterministic (and we don't want to expose this one).
+154             base_estimator = LinearSVC(random_state=0)
+155         else:
+156             base_estimator = self.base_estimator
+157 
+158         if self.cv == "prefit":
+159             calibrated_classifier = _CalibratedClassifier(
+160                 base_estimator, method=self.method)
+161             if sample_weight is not None:
+162                 calibrated_classifier.fit(X, y, sample_weight)
+163             else:
+164                 calibrated_classifier.fit(X, y)
+165             self.calibrated_classifiers_.append(calibrated_classifier)
+166         else:
+167             cv = check_cv(self.cv, y, classifier=True)
+168             fit_parameters = signature(base_estimator.fit).parameters
+169             estimator_name = type(base_estimator).__name__
+170             if (sample_weight is not None
+171                     and "sample_weight" not in fit_parameters):
+172                 warnings.warn("%s does not support sample_weight. Samples"
+173                               " weights are only used for the calibration"
+174                               " itself." % estimator_name)
+175                 base_estimator_sample_weight = None
+176             else:
+177                 if sample_weight is not None:
+178                     sample_weight = check_array(sample_weight, ensure_2d=False)
+179                     check_consistent_length(y, sample_weight)
+180                 base_estimator_sample_weight = sample_weight
+181             for train, test in cv.split(X, y):
+182                 this_estimator = clone(base_estimator)
+183                 if base_estimator_sample_weight is not None:
+184                     this_estimator.fit(
+185                         X[train], y[train],
+186                         sample_weight=base_estimator_sample_weight[train])
+187                 else:
+188                     this_estimator.fit(X[train], y[train])
+189 
+190                 calibrated_classifier = _CalibratedClassifier(
+191                     this_estimator, method=self.method,
+192                     classes=self.classes_)
+193                 if sample_weight is not None:
+194                     calibrated_classifier.fit(X[test], y[test],
+195                                               sample_weight[test])
+196                 else:
+197                     calibrated_classifier.fit(X[test], y[test])
+198                 self.calibrated_classifiers_.append(calibrated_classifier)
+199 
+200         return self
+
+</code><intended_behavior>This method should be modified to handle 3D input arrays for cases where such inputs are relevant (e.g., in pairs or sequences that need calibrating). Currently, the method might be invoking `check_array` with its default parameters (`ensure_2d=True, allow_nd=False`), which restricts inputs to 2D. The intended behavior here would be to adjust the invocation of `check_array` within the `fit` method, allowing 3D arrays when necessary. This could mean setting `allow_nd=True` selectively based on the nature of the base estimator or adding a parameter to `CalibratedClassifierCV`'s initialization, letting users specify when 3D inputs are expected, then using this parameter to conditionally adjust `check_array`'s behavior.
+The adjustment should preserve existing functionality for all current use cases of `CalibratedClassifierCV`, ensuring compatibility with 2D inputs while extending support to 3D inputs where applicable. This means careful consideration must be given to not disrupt the expected structure and validation of inputs for the vast majority of use cases currently relying on 2D inputs.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>CalibratedClassifierCV</class>
+<method>None</method>
+<code>
+31 class CalibratedClassifierCV(BaseEstimator, ClassifierMixin):
+32     """Probability calibration with isotonic regression or sigmoid.
+33 
+34     See glossary entry for :term:`cross-validation estimator`.
+35 
+36     With this class, the base_estimator is fit on the train set of the
+37     cross-validation generator and the test set is used for calibration.
+38     The probabilities for each of the folds are then averaged
+39     for prediction. In case that cv="prefit" is passed to __init__,
+40     it is assumed that base_estimator has been fitted already and all
+41     data is used for calibration. Note that data for fitting the
+42     classifier and for calibrating it must be disjoint.
+43 
+44     Read more in the :ref:`User Guide <calibration>`.
+45 
+46     Parameters
+47     ----------
+48     base_estimator : instance BaseEstimator
+49         The classifier whose output decision function needs to be calibrated
+50         to offer more accurate predict_proba outputs. If cv=prefit, the
+51         classifier must have been fit already on data.
+52 
+53     method : 'sigmoid' or 'isotonic'
+54         The method to use for calibration. Can be 'sigmoid' which
+55         corresponds to Platt's method or 'isotonic' which is a
+56         non-parametric approach. It is not advised to use isotonic calibration
+57         with too few calibration samples ``(<<1000)`` since it tends to
+58         overfit.
+59         Use sigmoids (Platt's calibration) in this case.
+60 
+61     cv : integer, cross-validation generator, iterable or "prefit", optional
+62         Determines the cross-validation splitting strategy.
+63         Possible inputs for cv are:
+64 
+65         - None, to use the default 3-fold cross-validation,
+66         - integer, to specify the number of folds.
+67         - :term:`CV splitter`,
+68         - An iterable yielding (train, test) splits as arrays of indices.
+69 
+70         For integer/None inputs, if ``y`` is binary or multiclass,
+71         :class:`sklearn.model_selection.StratifiedKFold` is used. If ``y`` is
+72         neither binary nor multiclass, :class:`sklearn.model_selection.KFold`
+73         is used.
+74 
+75         Refer :ref:`User Guide <cross_validation>` for the various
+76         cross-validation strategies that can be used here.
+77 
+78         If "prefit" is passed, it is assumed that base_estimator has been
+79         fitted already and all data is used for calibration.
+80 
+81         .. versionchanged:: 0.20
+82             ``cv`` default value if None will change from 3-fold to 5-fold
+83             in v0.22.
+84 
+85     Attributes
+86     ----------
+87     classes_ : array, shape (n_classes)
+88         The class labels.
+89 
+90     calibrated_classifiers_ : list (len() equal to cv or 1 if cv == "prefit")
+91         The list of calibrated classifiers, one for each crossvalidation fold,
+92         which has been fitted on all but the validation fold and calibrated
+93         on the validation fold.
+94 
+95     References
+96     ----------
+97     .. [1] Obtaining calibrated probability estimates from decision trees
+98            and naive Bayesian classifiers, B. Zadrozny & C. Elkan, ICML 2001
+99 
+100     .. [2] Transforming Classifier Scores into Accurate Multiclass
+101            Probability Estimates, B. Zadrozny & C. Elkan, (KDD 2002)
+102 
+103     .. [3] Probabilistic Outputs for Support Vector Machines and Comparisons to
+104            Regularized Likelihood Methods, J. Platt, (1999)
+105 
+106     .. [4] Predicting Good Probabilities with Supervised Learning,
+107            A. Niculescu-Mizil & R. Caruana, ICML 2005
+108     """
+109     def __init__(self, base_estimator=None, method='sigmoid', cv='warn'):
+110         self.base_estimator = base_estimator
+111         self.method = method
+112         self.cv = cv
+113 
+114     def fit(self, X, y, sample_weight=None):
+115         """Fit the calibrated model
+116 
+117         Parameters
+118         ----------
+119         X : array-like, shape (n_samples, n_features)
+120             Training data.
+121 
+122         y : array-like, shape (n_samples,)
+123             Target values.
+124 
+125         sample_weight : array-like, shape = [n_samples] or None
+126             Sample weights. If None, then samples are equally weighted.
+127 
+128         Returns
+129         -------
+130         self : object
+131             Returns an instance of self.
+132         """
+133         X, y = check_X_y(X, y, accept_sparse=['csc', 'csr', 'coo'],
+134                          force_all_finite=False)
+135         X, y = indexable(X, y)
+136         le = LabelBinarizer().fit(y)
+137         self.classes_ = le.classes_
+138 
+139         # Check that each cross-validation fold can have at least one
+140         # example per class
+141         n_folds = self.cv if isinstance(self.cv, int) \
+142             else self.cv.n_folds if hasattr(self.cv, "n_folds") else None
+143         if n_folds and \
+144                 np.any([np.sum(y == class_) < n_folds for class_ in
+145                         self.classes_]):
+146             raise ValueError("Requesting %d-fold cross-validation but provided"
+147                              " less than %d examples for at least one class."
+148                              % (n_folds, n_folds))
+149 
+150         self.calibrated_classifiers_ = []
+151         if self.base_estimator is None:
+152             # we want all classifiers that don't expose a random_state
+153             # to be deterministic (and we don't want to expose this one).
+154             base_estimator = LinearSVC(random_state=0)
+155         else:
+156             base_estimator = self.base_estimator
+157 
+158         if self.cv == "prefit":
+159             calibrated_classifier = _CalibratedClassifier(
+160                 base_estimator, method=self.method)
+161             if sample_weight is not None:
+162                 calibrated_classifier.fit(X, y, sample_weight)
+163             else:
+164                 calibrated_classifier.fit(X, y)
+165             self.calibrated_classifiers_.append(calibrated_classifier)
+166         else:
+167             cv = check_cv(self.cv, y, classifier=True)
+168             fit_parameters = signature(base_estimator.fit).parameters
+169             estimator_name = type(base_estimator).__name__
+170             if (sample_weight is not None
+171                     and "sample_weight" not in fit_parameters):
+172                 warnings.warn("%s does not support sample_weight. Samples"
+173                               " weights are only used for the calibration"
+174                               " itself." % estimator_name)
+175                 base_estimator_sample_weight = None
+176             else:
+177                 if sample_weight is not None:
+178                     sample_weight = check_array(sample_weight, ensure_2d=False)
+179                     check_consistent_length(y, sample_weight)
+180                 base_estimator_sample_weight = sample_weight
+181             for train, test in cv.split(X, y):
+182                 this_estimator = clone(base_estimator)
+183                 if base_estimator_sample_weight is not None:
+184                     this_estimator.fit(
+185                         X[train], y[train],
+186                         sample_weight=base_estimator_sample_weight[train])
+187                 else:
+188                     this_estimator.fit(X[train], y[train])
+189 
+190                 calibrated_classifier = _CalibratedClassifier(
+191                     this_estimator, method=self.method,
+192                     classes=self.classes_)
+193                 if sample_weight is not None:
+194                     calibrated_classifier.fit(X[test], y[test],
+195                                               sample_weight[test])
+196                 else:
+197                     calibrated_classifier.fit(X[test], y[test])
+198                 self.calibrated_classifiers_.append(calibrated_classifier)
+199 
+200         return self
+201 
+202     def predict_proba(self, X):
+203         """Posterior probabilities of classification
+204 
+205         This function returns posterior probabilities of classification
+206         according to each class on an array of test vectors X.
+207 
+208         Parameters
+209         ----------
+210         X : array-like, shape (n_samples, n_features)
+211             The samples.
+212 
+213         Returns
+214         -------
+215         C : array, shape (n_samples, n_classes)
+216             The predicted probas.
+217         """
+218         check_is_fitted(self, ["classes_", "calibrated_classifiers_"])
+219         X = check_array(X, accept_sparse=['csc', 'csr', 'coo'],
+220                         force_all_finite=False)
+221         # Compute the arithmetic mean of the predictions of the calibrated
+222         # classifiers
+223         mean_proba = np.zeros((X.shape[0], len(self.classes_)))
+224         for calibrated_classifier in self.calibrated_classifiers_:
+225             proba = calibrated_classifier.predict_proba(X)
+226             mean_proba += proba
+227 
+228         mean_proba /= len(self.calibrated_classifiers_)
+229 
+230         return mean_proba
+231 
+232     def predict(self, X):
+233         """Predict the target of new samples. Can be different from the
+234         prediction of the uncalibrated classifier.
+235 
+236         Parameters
+237         ----------
+238         X : array-like, shape (n_samples, n_features)
+239             The samples.
+240 
+241         Returns
+242         -------
+243         C : array, shape (n_samples,)
+244             The predicted class.
+245         """
+246         check_is_fitted(self, ["classes_", "calibrated_classifiers_"])
+247         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 17:09:20.872 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 17:09:20.872 | INFO     | Search-only: skipping patch selection
+2025-10-18 17:09:20.952 | INFO     | Task scikit-learn__scikit-learn-13485 completed successfully.
+2025-10-18 17:09:20.953 | INFO     | No patch generated. You can try running ACR again.

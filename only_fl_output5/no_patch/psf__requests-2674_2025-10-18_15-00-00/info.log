@@ -1,0 +1,2293 @@
+2025-10-18 15:00:00.120 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 15:00:02.611 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=196, output_tokens=12, cost=0.002320
+2025-10-18 15:00:02.612 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 15:00:02.616 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 15:00:11.442 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=505, output_tokens=350, cost=0.015550
+2025-10-18 15:00:11.449 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 15:00:13.884 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=704, output_tokens=62, cost=0.008900
+2025-10-18 15:00:13.886 | DEBUG    | Extracted a valid json.
+2025-10-18 15:00:13.886 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"requests.exceptions\")",
+        "search_class(\"DecodeError\")",
+        "search_class(\"TimeoutError\")",
+        "search_method(\"request\")",
+        "search_code(\"urllib3.exceptions\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 15:00:13.924 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 15:00:13.925 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 15:00:29.755 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1541, output_tokens=650, cost=0.034910
+2025-10-18 15:00:29.769 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 15:00:42.304 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2407, output_tokens=485, cost=0.038620
+2025-10-18 15:00:42.314 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 15:00:52.961 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=839, output_tokens=447, cost=0.021800
+2025-10-18 15:00:52.962 | DEBUG    | Extracted a valid json.
+2025-10-18 15:00:52.962 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "requests/adapters.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "This file is critical as it handles the lower-level requests to `urllib3` and is likely where `urllib3` exceptions are caught and either passed through or wrapped in `requests` exceptions. The intended behavior here should be to ensure that all exceptions from `urllib3`, specifically `DecodeError` and `TimeoutError`, are caught and re-raised as comparable `requests.exceptions`. For `DecodeError`, an appropriate `requests` exception might be a new exception that accurately describes the error (e.g., `ContentDecodeError`), reflecting an issue with decoding response content. For `TimeoutError`, since `requests` already defines timeout exceptions, it could be mapped to `requests.exceptions.ReadTimeout` or a new more specific timeout exception if the existing ones do not accurately capture the scenario (e.g., `ProxyTimeoutError` for proxy timeout issues). This would involve adding or modifying exception handling blocks where `urllib3` exceptions are currently caught."
+        },
+        {
+            "file": "requests/sessions.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Given that this file likely orchestrates higher-level session requests and might also handle exceptions thrown during such operations, ensuring that `DecodeError` and `TimeoutError` from `urllib3` are correctly caught and wrapped here as well is essential. If `adapters.py` is the primary location for direct `urllib3` interactions, then `sessions.py` would be a secondary layer that might still encounter these exceptions if they slip through the first layer of handling. The intended behavior would be similar to `adapters.py`: updating catch blocks to include `urllib3`'s `DecodeError` and `TimeoutError`, wrapping and re-raising them as `requests.exceptions`. This ensures that even if direct interactions with `urllib3` in `sessions.py` might throw these exceptions, they're still handled according to `requests`' design principles."
+        }
+    ]
+}
+2025-10-18 15:00:52.970 | DEBUG    | Bug location extracted successfully: [<file>requests/adapters.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 # -*- coding: utf-8 -*-
+2 
+3 """
+4 requests.adapters
+5 ~~~~~~~~~~~~~~~~~
+6 
+7 This module contains the transport adapters that Requests uses to define
+8 and maintain connections.
+9 """
+10 
+11 import socket
+12 
+13 from .models import Response
+14 from .packages.urllib3.poolmanager import PoolManager, proxy_from_url
+15 from .packages.urllib3.response import HTTPResponse
+16 from .packages.urllib3.util import Timeout as TimeoutSauce
+17 from .packages.urllib3.util.retry import Retry
+18 from .compat import urlparse, basestring
+19 from .utils import (DEFAULT_CA_BUNDLE_PATH, get_encoding_from_headers,
+20                     prepend_scheme_if_needed, get_auth_from_url, urldefragauth)
+21 from .structures import CaseInsensitiveDict
+22 from .packages.urllib3.exceptions import ConnectTimeoutError
+23 from .packages.urllib3.exceptions import HTTPError as _HTTPError
+24 from .packages.urllib3.exceptions import MaxRetryError
+25 from .packages.urllib3.exceptions import ProxyError as _ProxyError
+26 from .packages.urllib3.exceptions import ProtocolError
+27 from .packages.urllib3.exceptions import ReadTimeoutError
+28 from .packages.urllib3.exceptions import SSLError as _SSLError
+29 from .packages.urllib3.exceptions import ResponseError
+30 from .cookies import extract_cookies_to_jar
+31 from .exceptions import (ConnectionError, ConnectTimeout, ReadTimeout, SSLError,
+32                          ProxyError, RetryError)
+33 from .auth import _basic_auth_str
+34 
+35 DEFAULT_POOLBLOCK = False
+36 DEFAULT_POOLSIZE = 10
+37 DEFAULT_RETRIES = 0
+38 DEFAULT_POOL_TIMEOUT = None
+39 
+40 
+41 class BaseAdapter(object):
+42     """The Base Transport Adapter"""
+43 
+44     def __init__(self):
+45         super(BaseAdapter, self).__init__()
+46 
+47     def send(self):
+48         raise NotImplementedError
+49 
+50     def close(self):
+51         raise NotImplementedError
+52 
+53 
+54 class HTTPAdapter(BaseAdapter):
+55     """The built-in HTTP Adapter for urllib3.
+56 
+57     Provides a general-case interface for Requests sessions to contact HTTP and
+58     HTTPS urls by implementing the Transport Adapter interface. This class will
+59     usually be created by the :class:`Session <Session>` class under the
+60     covers.
+61 
+62     :param pool_connections: The number of urllib3 connection pools to cache.
+63     :param pool_maxsize: The maximum number of connections to save in the pool.
+64     :param int max_retries: The maximum number of retries each connection
+65         should attempt. Note, this applies only to failed DNS lookups, socket
+66         connections and connection timeouts, never to requests where data has
+67         made it to the server. By default, Requests does not retry failed
+68         connections. If you need granular control over the conditions under
+69         which we retry a request, import urllib3's ``Retry`` class and pass
+70         that instead.
+71     :param pool_block: Whether the connection pool should block for connections.
+72 
+73     Usage::
+74 
+75       >>> import requests
+76       >>> s = requests.Session()
+77       >>> a = requests.adapters.HTTPAdapter(max_retries=3)
+78       >>> s.mount('http://', a)
+79     """
+80     __attrs__ = ['max_retries', 'config', '_pool_connections', '_pool_maxsize',
+81                  '_pool_block']
+82 
+83     def __init__(self, pool_connections=DEFAULT_POOLSIZE,
+84                  pool_maxsize=DEFAULT_POOLSIZE, max_retries=DEFAULT_RETRIES,
+85                  pool_block=DEFAULT_POOLBLOCK):
+86         if max_retries == DEFAULT_RETRIES:
+87             self.max_retries = Retry(0, read=False)
+88         else:
+89             self.max_retries = Retry.from_int(max_retries)
+90         self.config = {}
+91         self.proxy_manager = {}
+92 
+93         super(HTTPAdapter, self).__init__()
+94 
+95         self._pool_connections = pool_connections
+96         self._pool_maxsize = pool_maxsize
+97         self._pool_block = pool_block
+98 
+99         self.init_poolmanager(pool_connections, pool_maxsize, block=pool_block)
+100 
+101     def __getstate__(self):
+102         return dict((attr, getattr(self, attr, None)) for attr in
+103                     self.__attrs__)
+104 
+105     def __setstate__(self, state):
+106         # Can't handle by adding 'proxy_manager' to self.__attrs__ because
+107         # because self.poolmanager uses a lambda function, which isn't pickleable.
+108         self.proxy_manager = {}
+109         self.config = {}
+110 
+111         for attr, value in state.items():
+112             setattr(self, attr, value)
+113 
+114         self.init_poolmanager(self._pool_connections, self._pool_maxsize,
+115                               block=self._pool_block)
+116 
+117     def init_poolmanager(self, connections, maxsize, block=DEFAULT_POOLBLOCK, **pool_kwargs):
+118         """Initializes a urllib3 PoolManager.
+119 
+120         This method should not be called from user code, and is only
+121         exposed for use when subclassing the
+122         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+123 
+124         :param connections: The number of urllib3 connection pools to cache.
+125         :param maxsize: The maximum number of connections to save in the pool.
+126         :param block: Block when no free connections are available.
+127         :param pool_kwargs: Extra keyword arguments used to initialize the Pool Manager.
+128         """
+129         # save these values for pickling
+130         self._pool_connections = connections
+131         self._pool_maxsize = maxsize
+132         self._pool_block = block
+133 
+134         self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize,
+135                                        block=block, strict=True, **pool_kwargs)
+136 
+137     def proxy_manager_for(self, proxy, **proxy_kwargs):
+138         """Return urllib3 ProxyManager for the given proxy.
+139 
+140         This method should not be called from user code, and is only
+141         exposed for use when subclassing the
+142         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+143 
+144         :param proxy: The proxy to return a urllib3 ProxyManager for.
+145         :param proxy_kwargs: Extra keyword arguments used to configure the Proxy Manager.
+146         :returns: ProxyManager
+147         """
+148         if not proxy in self.proxy_manager:
+149             proxy_headers = self.proxy_headers(proxy)
+150             self.proxy_manager[proxy] = proxy_from_url(
+151                 proxy,
+152                 proxy_headers=proxy_headers,
+153                 num_pools=self._pool_connections,
+154                 maxsize=self._pool_maxsize,
+155                 block=self._pool_block,
+156                 **proxy_kwargs)
+157 
+158         return self.proxy_manager[proxy]
+159 
+160     def cert_verify(self, conn, url, verify, cert):
+161         """Verify a SSL certificate. This method should not be called from user
+162         code, and is only exposed for use when subclassing the
+163         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+164 
+165         :param conn: The urllib3 connection object associated with the cert.
+166         :param url: The requested URL.
+167         :param verify: Whether we should actually verify the certificate.
+168         :param cert: The SSL certificate to verify.
+169         """
+170         if url.lower().startswith('https') and verify:
+171 
+172             cert_loc = None
+173 
+174             # Allow self-specified cert location.
+175             if verify is not True:
+176                 cert_loc = verify
+177 
+178             if not cert_loc:
+179                 cert_loc = DEFAULT_CA_BUNDLE_PATH
+180 
+181             if not cert_loc:
+182                 raise Exception("Could not find a suitable SSL CA certificate bundle.")
+183 
+184             conn.cert_reqs = 'CERT_REQUIRED'
+185             conn.ca_certs = cert_loc
+186         else:
+187             conn.cert_reqs = 'CERT_NONE'
+188             conn.ca_certs = None
+189 
+190         if cert:
+191             if not isinstance(cert, basestring):
+192                 conn.cert_file = cert[0]
+193                 conn.key_file = cert[1]
+194             else:
+195                 conn.cert_file = cert
+196 
+197     def build_response(self, req, resp):
+198         """Builds a :class:`Response <requests.Response>` object from a urllib3
+199         response. This should not be called from user code, and is only exposed
+200         for use when subclassing the
+201         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`
+202 
+203         :param req: The :class:`PreparedRequest <PreparedRequest>` used to generate the response.
+204         :param resp: The urllib3 response object.
+205         """
+206         response = Response()
+207 
+208         # Fallback to None if there's no status_code, for whatever reason.
+209         response.status_code = getattr(resp, 'status', None)
+210 
+211         # Make headers case-insensitive.
+212         response.headers = CaseInsensitiveDict(getattr(resp, 'headers', {}))
+213 
+214         # Set encoding.
+215         response.encoding = get_encoding_from_headers(response.headers)
+216         response.raw = resp
+217         response.reason = response.raw.reason
+218 
+219         if isinstance(req.url, bytes):
+220             response.url = req.url.decode('utf-8')
+221         else:
+222             response.url = req.url
+223 
+224         # Add new cookies from the server.
+225         extract_cookies_to_jar(response.cookies, req, resp)
+226 
+227         # Give the Response some context.
+228         response.request = req
+229         response.connection = self
+230 
+231         return response
+232 
+233     def get_connection(self, url, proxies=None):
+234         """Returns a urllib3 connection for the given URL. This should not be
+235         called from user code, and is only exposed for use when subclassing the
+236         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+237 
+238         :param url: The URL to connect to.
+239         :param proxies: (optional) A Requests-style dictionary of proxies used on this request.
+240         """
+241         proxies = proxies or {}
+242         proxy = proxies.get(urlparse(url.lower()).scheme)
+243 
+244         if proxy:
+245             proxy = prepend_scheme_if_needed(proxy, 'http')
+246             proxy_manager = self.proxy_manager_for(proxy)
+247             conn = proxy_manager.connection_from_url(url)
+248         else:
+249             # Only scheme should be lower case
+250             parsed = urlparse(url)
+251             url = parsed.geturl()
+252             conn = self.poolmanager.connection_from_url(url)
+253 
+254         return conn
+255 
+256     def close(self):
+257         """Disposes of any internal state.
+258 
+259         Currently, this just closes the PoolManager, which closes pooled
+260         connections.
+261         """
+262         self.poolmanager.clear()
+263 
+264     def request_url(self, request, proxies):
+265         """Obtain the url to use when making the final request.
+266 
+267         If the message is being sent through a HTTP proxy, the full URL has to
+268         be used. Otherwise, we should only use the path portion of the URL.
+269 
+270         This should not be called from user code, and is only exposed for use
+271         when subclassing the
+272         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+273 
+274         :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+275         :param proxies: A dictionary of schemes to proxy URLs.
+276         """
+277         proxies = proxies or {}
+278         scheme = urlparse(request.url).scheme
+279         proxy = proxies.get(scheme)
+280 
+281         if proxy and scheme != 'https':
+282             url = urldefragauth(request.url)
+283         else:
+284             url = request.path_url
+285 
+286         return url
+287 
+288     def add_headers(self, request, **kwargs):
+289         """Add any headers needed by the connection. As of v2.0 this does
+290         nothing by default, but is left for overriding by users that subclass
+291         the :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+292 
+293         This should not be called from user code, and is only exposed for use
+294         when subclassing the
+295         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+296 
+297         :param request: The :class:`PreparedRequest <PreparedRequest>` to add headers to.
+298         :param kwargs: The keyword arguments from the call to send().
+299         """
+300         pass
+301 
+302     def proxy_headers(self, proxy):
+303         """Returns a dictionary of the headers to add to any request sent
+304         through a proxy. This works with urllib3 magic to ensure that they are
+305         correctly sent to the proxy, rather than in a tunnelled request if
+306         CONNECT is being used.
+307 
+308         This should not be called from user code, and is only exposed for use
+309         when subclassing the
+310         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+311 
+312         :param proxies: The url of the proxy being used for this request.
+313         :param kwargs: Optional additional keyword arguments.
+314         """
+315         headers = {}
+316         username, password = get_auth_from_url(proxy)
+317 
+318         if username and password:
+319             headers['Proxy-Authorization'] = _basic_auth_str(username,
+320                                                              password)
+321 
+322         return headers
+323 
+324     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+325         """Sends PreparedRequest object. Returns Response object.
+326 
+327         :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+328         :param stream: (optional) Whether to stream the request content.
+329         :param timeout: (optional) How long to wait for the server to send
+330             data before giving up, as a float, or a (`connect timeout, read
+331             timeout <user/advanced.html#timeouts>`_) tuple.
+332         :type timeout: float or tuple
+333         :param verify: (optional) Whether to verify SSL certificates.
+334         :param cert: (optional) Any user-provided SSL certificate to be trusted.
+335         :param proxies: (optional) The proxies dictionary to apply to the request.
+336         """
+337 
+338         conn = self.get_connection(request.url, proxies)
+339 
+340         self.cert_verify(conn, request.url, verify, cert)
+341         url = self.request_url(request, proxies)
+342         self.add_headers(request)
+343 
+344         chunked = not (request.body is None or 'Content-Length' in request.headers)
+345 
+346         if isinstance(timeout, tuple):
+347             try:
+348                 connect, read = timeout
+349                 timeout = TimeoutSauce(connect=connect, read=read)
+350             except ValueError as e:
+351                 # this may raise a string formatting error.
+352                 err = ("Invalid timeout {0}. Pass a (connect, read) "
+353                        "timeout tuple, or a single float to set "
+354                        "both timeouts to the same value".format(timeout))
+355                 raise ValueError(err)
+356         else:
+357             timeout = TimeoutSauce(connect=timeout, read=timeout)
+358 
+359         try:
+360             if not chunked:
+361                 resp = conn.urlopen(
+362                     method=request.method,
+363                     url=url,
+364                     body=request.body,
+365                     headers=request.headers,
+366                     redirect=False,
+367                     assert_same_host=False,
+368                     preload_content=False,
+369                     decode_content=False,
+370                     retries=self.max_retries,
+371                     timeout=timeout
+372                 )
+373 
+374             # Send the request.
+375             else:
+376                 if hasattr(conn, 'proxy_pool'):
+377                     conn = conn.proxy_pool
+378 
+379                 low_conn = conn._get_conn(timeout=DEFAULT_POOL_TIMEOUT)
+380 
+381                 try:
+382                     low_conn.putrequest(request.method,
+383                                         url,
+384                                         skip_accept_encoding=True)
+385 
+386                     for header, value in request.headers.items():
+387                         low_conn.putheader(header, value)
+388 
+389                     low_conn.endheaders()
+390 
+391                     for i in request.body:
+392                         low_conn.send(hex(len(i))[2:].encode('utf-8'))
+393                         low_conn.send(b'\r\n')
+394                         low_conn.send(i)
+395                         low_conn.send(b'\r\n')
+396                     low_conn.send(b'0\r\n\r\n')
+397 
+398                     r = low_conn.getresponse()
+399                     resp = HTTPResponse.from_httplib(
+400                         r,
+401                         pool=conn,
+402                         connection=low_conn,
+403                         preload_content=False,
+404                         decode_content=False
+405                     )
+406                 except:
+407                     # If we hit any problems here, clean up the connection.
+408                     # Then, reraise so that we can handle the actual exception.
+409                     low_conn.close()
+410                     raise
+411 
+412         except (ProtocolError, socket.error) as err:
+413             raise ConnectionError(err, request=request)
+414 
+415         except MaxRetryError as e:
+416             if isinstance(e.reason, ConnectTimeoutError):
+417                 raise ConnectTimeout(e, request=request)
+418 
+419             if isinstance(e.reason, ResponseError):
+420                 raise RetryError(e, request=request)
+421 
+422             raise ConnectionError(e, request=request)
+423 
+424         except _ProxyError as e:
+425             raise ProxyError(e)
+426 
+427         except (_SSLError, _HTTPError) as e:
+428             if isinstance(e, _SSLError):
+429                 raise SSLError(e, request=request)
+430             elif isinstance(e, ReadTimeoutError):
+431                 raise ReadTimeout(e, request=request)
+432             else:
+433                 raise
+434 
+435         return self.build_response(request, resp)
+
+</code><intended_behavior>This file is critical as it handles the lower-level requests to `urllib3` and is likely where `urllib3` exceptions are caught and either passed through or wrapped in `requests` exceptions. The intended behavior here should be to ensure that all exceptions from `urllib3`, specifically `DecodeError` and `TimeoutError`, are caught and re-raised as comparable `requests.exceptions`. For `DecodeError`, an appropriate `requests` exception might be a new exception that accurately describes the error (e.g., `ContentDecodeError`), reflecting an issue with decoding response content. For `TimeoutError`, since `requests` already defines timeout exceptions, it could be mapped to `requests.exceptions.ReadTimeout` or a new more specific timeout exception if the existing ones do not accurately capture the scenario (e.g., `ProxyTimeoutError` for proxy timeout issues). This would involve adding or modifying exception handling blocks where `urllib3` exceptions are currently caught.</intended_behavior>, <file>requests/sessions.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 # -*- coding: utf-8 -*-
+2 
+3 """
+4 requests.session
+5 ~~~~~~~~~~~~~~~~
+6 
+7 This module provides a Session object to manage and persist settings across
+8 requests (cookies, auth, proxies).
+9 
+10 """
+11 import os
+12 from collections import Mapping
+13 from datetime import datetime
+14 
+15 from .auth import _basic_auth_str
+16 from .compat import cookielib, OrderedDict, urljoin, urlparse
+17 from .cookies import (
+18     cookiejar_from_dict, extract_cookies_to_jar, RequestsCookieJar, merge_cookies)
+19 from .models import Request, PreparedRequest, DEFAULT_REDIRECT_LIMIT
+20 from .hooks import default_hooks, dispatch_hook
+21 from .utils import to_key_val_list, default_headers, to_native_string
+22 from .exceptions import (
+23     TooManyRedirects, InvalidSchema, ChunkedEncodingError, ContentDecodingError)
+24 from .packages.urllib3._collections import RecentlyUsedContainer
+25 from .structures import CaseInsensitiveDict
+26 
+27 from .adapters import HTTPAdapter
+28 
+29 from .utils import (
+30     requote_uri, get_environ_proxies, get_netrc_auth, should_bypass_proxies,
+31     get_auth_from_url
+32 )
+33 
+34 from .status_codes import codes
+35 
+36 # formerly defined here, reexposed here for backward compatibility
+37 from .models import REDIRECT_STATI
+38 
+39 REDIRECT_CACHE_SIZE = 1000
+40 
+41 
+42 def merge_setting(request_setting, session_setting, dict_class=OrderedDict):
+43     """
+44     Determines appropriate setting for a given request, taking into account the
+45     explicit setting on that request, and the setting in the session. If a
+46     setting is a dictionary, they will be merged together using `dict_class`
+47     """
+48 
+49     if session_setting is None:
+50         return request_setting
+51 
+52     if request_setting is None:
+53         return session_setting
+54 
+55     # Bypass if not a dictionary (e.g. verify)
+56     if not (
+57             isinstance(session_setting, Mapping) and
+58             isinstance(request_setting, Mapping)
+59     ):
+60         return request_setting
+61 
+62     merged_setting = dict_class(to_key_val_list(session_setting))
+63     merged_setting.update(to_key_val_list(request_setting))
+64 
+65     # Remove keys that are set to None.
+66     for (k, v) in request_setting.items():
+67         if v is None:
+68             del merged_setting[k]
+69 
+70     merged_setting = dict((k, v) for (k, v) in merged_setting.items() if v is not None)
+71 
+72     return merged_setting
+73 
+74 
+75 def merge_hooks(request_hooks, session_hooks, dict_class=OrderedDict):
+76     """
+77     Properly merges both requests and session hooks.
+78 
+79     This is necessary because when request_hooks == {'response': []}, the
+80     merge breaks Session hooks entirely.
+81     """
+82     if session_hooks is None or session_hooks.get('response') == []:
+83         return request_hooks
+84 
+85     if request_hooks is None or request_hooks.get('response') == []:
+86         return session_hooks
+87 
+88     return merge_setting(request_hooks, session_hooks, dict_class)
+89 
+90 
+91 class SessionRedirectMixin(object):
+92     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+93                           verify=True, cert=None, proxies=None, **adapter_kwargs):
+94         """Receives a Response. Returns a generator of Responses."""
+95 
+96         i = 0
+97         hist = [] # keep track of history
+98 
+99         while resp.is_redirect:
+100             prepared_request = req.copy()
+101 
+102             if i > 0:
+103                 # Update history and keep track of redirects.
+104                 hist.append(resp)
+105                 new_hist = list(hist)
+106                 resp.history = new_hist
+107 
+108             try:
+109                 resp.content  # Consume socket so it can be released
+110             except (ChunkedEncodingError, ContentDecodingError, RuntimeError):
+111                 resp.raw.read(decode_content=False)
+112 
+113             if i >= self.max_redirects:
+114                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+115 
+116             # Release the connection back into the pool.
+117             resp.close()
+118 
+119             url = resp.headers['location']
+120             method = req.method
+121 
+122             # Handle redirection without scheme (see: RFC 1808 Section 4)
+123             if url.startswith('//'):
+124                 parsed_rurl = urlparse(resp.url)
+125                 url = '%s:%s' % (parsed_rurl.scheme, url)
+126 
+127             # The scheme should be lower case...
+128             parsed = urlparse(url)
+129             url = parsed.geturl()
+130 
+131             # Facilitate relative 'location' headers, as allowed by RFC 7231.
+132             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+133             # Compliant with RFC3986, we percent encode the url.
+134             if not parsed.netloc:
+135                 url = urljoin(resp.url, requote_uri(url))
+136             else:
+137                 url = requote_uri(url)
+138 
+139             prepared_request.url = to_native_string(url)
+140             # Cache the url, unless it redirects to itself.
+141             if resp.is_permanent_redirect and req.url != prepared_request.url:
+142                 self.redirect_cache[req.url] = prepared_request.url
+143 
+144             # http://tools.ietf.org/html/rfc7231#section-6.4.4
+145             if (resp.status_code == codes.see_other and
+146                     method != 'HEAD'):
+147                 method = 'GET'
+148 
+149             # Do what the browsers do, despite standards...
+150             # First, turn 302s into GETs.
+151             if resp.status_code == codes.found and method != 'HEAD':
+152                 method = 'GET'
+153 
+154             # Second, if a POST is responded to with a 301, turn it into a GET.
+155             # This bizarre behaviour is explained in Issue 1704.
+156             if resp.status_code == codes.moved and method == 'POST':
+157                 method = 'GET'
+158 
+159             prepared_request.method = method
+160 
+161             # https://github.com/kennethreitz/requests/issues/1084
+162             if resp.status_code not in (codes.temporary_redirect, codes.permanent_redirect):
+163                 if 'Content-Length' in prepared_request.headers:
+164                     del prepared_request.headers['Content-Length']
+165 
+166                 prepared_request.body = None
+167 
+168             headers = prepared_request.headers
+169             try:
+170                 del headers['Cookie']
+171             except KeyError:
+172                 pass
+173 
+174             # Extract any cookies sent on the response to the cookiejar
+175             # in the new request. Because we've mutated our copied prepared
+176             # request, use the old one that we haven't yet touched.
+177             extract_cookies_to_jar(prepared_request._cookies, req, resp.raw)
+178             prepared_request._cookies.update(self.cookies)
+179             prepared_request.prepare_cookies(prepared_request._cookies)
+180 
+181             # Rebuild auth and proxy information.
+182             proxies = self.rebuild_proxies(prepared_request, proxies)
+183             self.rebuild_auth(prepared_request, resp)
+184 
+185             # Override the original request.
+186             req = prepared_request
+187 
+188             resp = self.send(
+189                 req,
+190                 stream=stream,
+191                 timeout=timeout,
+192                 verify=verify,
+193                 cert=cert,
+194                 proxies=proxies,
+195                 allow_redirects=False,
+196                 **adapter_kwargs
+197             )
+198 
+199             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+200 
+201             i += 1
+202             yield resp
+203 
+204     def rebuild_auth(self, prepared_request, response):
+205         """
+206         When being redirected we may want to strip authentication from the
+207         request to avoid leaking credentials. This method intelligently removes
+208         and reapplies authentication where possible to avoid credential loss.
+209         """
+210         headers = prepared_request.headers
+211         url = prepared_request.url
+212 
+213         if 'Authorization' in headers:
+214             # If we get redirected to a new host, we should strip out any
+215             # authentication headers.
+216             original_parsed = urlparse(response.request.url)
+217             redirect_parsed = urlparse(url)
+218 
+219             if (original_parsed.hostname != redirect_parsed.hostname):
+220                 del headers['Authorization']
+221 
+222         # .netrc might have more auth for us on our new host.
+223         new_auth = get_netrc_auth(url) if self.trust_env else None
+224         if new_auth is not None:
+225             prepared_request.prepare_auth(new_auth)
+226 
+227         return
+228 
+229     def rebuild_proxies(self, prepared_request, proxies):
+230         """
+231         This method re-evaluates the proxy configuration by considering the
+232         environment variables. If we are redirected to a URL covered by
+233         NO_PROXY, we strip the proxy configuration. Otherwise, we set missing
+234         proxy keys for this URL (in case they were stripped by a previous
+235         redirect).
+236 
+237         This method also replaces the Proxy-Authorization header where
+238         necessary.
+239         """
+240         headers = prepared_request.headers
+241         url = prepared_request.url
+242         scheme = urlparse(url).scheme
+243         new_proxies = proxies.copy() if proxies is not None else {}
+244 
+245         if self.trust_env and not should_bypass_proxies(url):
+246             environ_proxies = get_environ_proxies(url)
+247 
+248             proxy = environ_proxies.get(scheme)
+249 
+250             if proxy:
+251                 new_proxies.setdefault(scheme, environ_proxies[scheme])
+252 
+253         if 'Proxy-Authorization' in headers:
+254             del headers['Proxy-Authorization']
+255 
+256         try:
+257             username, password = get_auth_from_url(new_proxies[scheme])
+258         except KeyError:
+259             username, password = None, None
+260 
+261         if username and password:
+262             headers['Proxy-Authorization'] = _basic_auth_str(username, password)
+263 
+264         return new_proxies
+265 
+266 
+267 class Session(SessionRedirectMixin):
+268     """A Requests session.
+269 
+270     Provides cookie persistence, connection-pooling, and configuration.
+271 
+272     Basic Usage::
+273 
+274       >>> import requests
+275       >>> s = requests.Session()
+276       >>> s.get('http://httpbin.org/get')
+277       200
+278     """
+279 
+280     __attrs__ = [
+281         'headers', 'cookies', 'auth', 'proxies', 'hooks', 'params', 'verify',
+282         'cert', 'prefetch', 'adapters', 'stream', 'trust_env',
+283         'max_redirects',
+284     ]
+285 
+286     def __init__(self):
+287 
+288         #: A case-insensitive dictionary of headers to be sent on each
+289         #: :class:`Request <Request>` sent from this
+290         #: :class:`Session <Session>`.
+291         self.headers = default_headers()
+292 
+293         #: Default Authentication tuple or object to attach to
+294         #: :class:`Request <Request>`.
+295         self.auth = None
+296 
+297         #: Dictionary mapping protocol to the URL of the proxy (e.g.
+298         #: {'http': 'foo.bar:3128'}) to be used on each
+299         #: :class:`Request <Request>`.
+300         self.proxies = {}
+301 
+302         #: Event-handling hooks.
+303         self.hooks = default_hooks()
+304 
+305         #: Dictionary of querystring data to attach to each
+306         #: :class:`Request <Request>`. The dictionary values may be lists for
+307         #: representing multivalued query parameters.
+308         self.params = {}
+309 
+310         #: Stream response content default.
+311         self.stream = False
+312 
+313         #: SSL Verification default.
+314         self.verify = True
+315 
+316         #: SSL certificate default.
+317         self.cert = None
+318 
+319         #: Maximum number of redirects allowed. If the request exceeds this
+320         #: limit, a :class:`TooManyRedirects` exception is raised.
+321         self.max_redirects = DEFAULT_REDIRECT_LIMIT
+322 
+323         #: Should we trust the environment?
+324         self.trust_env = True
+325 
+326         #: A CookieJar containing all currently outstanding cookies set on this
+327         #: session. By default it is a
+328         #: :class:`RequestsCookieJar <requests.cookies.RequestsCookieJar>`, but
+329         #: may be any other ``cookielib.CookieJar`` compatible object.
+330         self.cookies = cookiejar_from_dict({})
+331 
+332         # Default connection adapters.
+333         self.adapters = OrderedDict()
+334         self.mount('https://', HTTPAdapter())
+335         self.mount('http://', HTTPAdapter())
+336 
+337         # Only store 1000 redirects to prevent using infinite memory
+338         self.redirect_cache = RecentlyUsedContainer(REDIRECT_CACHE_SIZE)
+339 
+340     def __enter__(self):
+341         return self
+342 
+343     def __exit__(self, *args):
+344         self.close()
+345 
+346     def prepare_request(self, request):
+347         """Constructs a :class:`PreparedRequest <PreparedRequest>` for
+348         transmission and returns it. The :class:`PreparedRequest` has settings
+349         merged from the :class:`Request <Request>` instance and those of the
+350         :class:`Session`.
+351 
+352         :param request: :class:`Request` instance to prepare with this
+353             session's settings.
+354         """
+355         cookies = request.cookies or {}
+356 
+357         # Bootstrap CookieJar.
+358         if not isinstance(cookies, cookielib.CookieJar):
+359             cookies = cookiejar_from_dict(cookies)
+360 
+361         # Merge with session cookies
+362         merged_cookies = merge_cookies(
+363             merge_cookies(RequestsCookieJar(), self.cookies), cookies)
+364 
+365 
+366         # Set environment's basic authentication if not explicitly set.
+367         auth = request.auth
+368         if self.trust_env and not auth and not self.auth:
+369             auth = get_netrc_auth(request.url)
+370 
+371         p = PreparedRequest()
+372         p.prepare(
+373             method=request.method.upper(),
+374             url=request.url,
+375             files=request.files,
+376             data=request.data,
+377             json=request.json,
+378             headers=merge_setting(request.headers, self.headers, dict_class=CaseInsensitiveDict),
+379             params=merge_setting(request.params, self.params),
+380             auth=merge_setting(auth, self.auth),
+381             cookies=merged_cookies,
+382             hooks=merge_hooks(request.hooks, self.hooks),
+383         )
+384         return p
+385 
+386     def request(self, method, url,
+387         params=None,
+388         data=None,
+389         headers=None,
+390         cookies=None,
+391         files=None,
+392         auth=None,
+393         timeout=None,
+394         allow_redirects=True,
+395         proxies=None,
+396         hooks=None,
+397         stream=None,
+398         verify=None,
+399         cert=None,
+400         json=None):
+401         """Constructs a :class:`Request <Request>`, prepares it and sends it.
+402         Returns :class:`Response <Response>` object.
+403 
+404         :param method: method for the new :class:`Request` object.
+405         :param url: URL for the new :class:`Request` object.
+406         :param params: (optional) Dictionary or bytes to be sent in the query
+407             string for the :class:`Request`.
+408         :param data: (optional) Dictionary or bytes to send in the body of the
+409             :class:`Request`.
+410         :param json: (optional) json to send in the body of the
+411             :class:`Request`.
+412         :param headers: (optional) Dictionary of HTTP Headers to send with the
+413             :class:`Request`.
+414         :param cookies: (optional) Dict or CookieJar object to send with the
+415             :class:`Request`.
+416         :param files: (optional) Dictionary of ``'filename': file-like-objects``
+417             for multipart encoding upload.
+418         :param auth: (optional) Auth tuple or callable to enable
+419             Basic/Digest/Custom HTTP Auth.
+420         :param timeout: (optional) How long to wait for the server to send
+421             data before giving up, as a float, or a (`connect timeout, read
+422             timeout <user/advanced.html#timeouts>`_) tuple.
+423         :type timeout: float or tuple
+424         :param allow_redirects: (optional) Set to True by default.
+425         :type allow_redirects: bool
+426         :param proxies: (optional) Dictionary mapping protocol to the URL of
+427             the proxy.
+428         :param stream: (optional) whether to immediately download the response
+429             content. Defaults to ``False``.
+430         :param verify: (optional) if ``True``, the SSL cert will be verified.
+431             A CA_BUNDLE path can also be provided.
+432         :param cert: (optional) if String, path to ssl client cert file (.pem).
+433             If Tuple, ('cert', 'key') pair.
+434         """
+435 
+436         method = to_native_string(method)
+437 
+438         # Create the Request.
+439         req = Request(
+440             method = method.upper(),
+441             url = url,
+442             headers = headers,
+443             files = files,
+444             data = data or {},
+445             json = json,
+446             params = params or {},
+447             auth = auth,
+448             cookies = cookies,
+449             hooks = hooks,
+450         )
+451         prep = self.prepare_request(req)
+452 
+453         proxies = proxies or {}
+454 
+455         settings = self.merge_environment_settings(
+456             prep.url, proxies, stream, verify, cert
+457         )
+458 
+459         # Send the request.
+460         send_kwargs = {
+461             'timeout': timeout,
+462             'allow_redirects': allow_redirects,
+463         }
+464         send_kwargs.update(settings)
+465         resp = self.send(prep, **send_kwargs)
+466 
+467         return resp
+468 
+469     def get(self, url, **kwargs):
+470         """Sends a GET request. Returns :class:`Response` object.
+471 
+472         :param url: URL for the new :class:`Request` object.
+473         :param \*\*kwargs: Optional arguments that ``request`` takes.
+474         """
+475 
+476         kwargs.setdefault('allow_redirects', True)
+477         return self.request('GET', url, **kwargs)
+478 
+479     def options(self, url, **kwargs):
+480         """Sends a OPTIONS request. Returns :class:`Response` object.
+481 
+482         :param url: URL for the new :class:`Request` object.
+483         :param \*\*kwargs: Optional arguments that ``request`` takes.
+484         """
+485 
+486         kwargs.setdefault('allow_redirects', True)
+487         return self.request('OPTIONS', url, **kwargs)
+488 
+489     def head(self, url, **kwargs):
+490         """Sends a HEAD request. Returns :class:`Response` object.
+491 
+492         :param url: URL for the new :class:`Request` object.
+493         :param \*\*kwargs: Optional arguments that ``request`` takes.
+494         """
+495 
+496         kwargs.setdefault('allow_redirects', False)
+497         return self.request('HEAD', url, **kwargs)
+498 
+499     def post(self, url, data=None, json=None, **kwargs):
+500         """Sends a POST request. Returns :class:`Response` object.
+501 
+502         :param url: URL for the new :class:`Request` object.
+503         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+504         :param json: (optional) json to send in the body of the :class:`Request`.
+505         :param \*\*kwargs: Optional arguments that ``request`` takes.
+506         """
+507 
+508         return self.request('POST', url, data=data, json=json, **kwargs)
+509 
+510     def put(self, url, data=None, **kwargs):
+511         """Sends a PUT request. Returns :class:`Response` object.
+512 
+513         :param url: URL for the new :class:`Request` object.
+514         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+515         :param \*\*kwargs: Optional arguments that ``request`` takes.
+516         """
+517 
+518         return self.request('PUT', url, data=data, **kwargs)
+519 
+520     def patch(self, url, data=None, **kwargs):
+521         """Sends a PATCH request. Returns :class:`Response` object.
+522 
+523         :param url: URL for the new :class:`Request` object.
+524         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+525         :param \*\*kwargs: Optional arguments that ``request`` takes.
+526         """
+527 
+528         return self.request('PATCH', url,  data=data, **kwargs)
+529 
+530     def delete(self, url, **kwargs):
+531         """Sends a DELETE request. Returns :class:`Response` object.
+532 
+533         :param url: URL for the new :class:`Request` object.
+534         :param \*\*kwargs: Optional arguments that ``request`` takes.
+535         """
+536 
+537         return self.request('DELETE', url, **kwargs)
+538 
+539     def send(self, request, **kwargs):
+540         """Send a given PreparedRequest."""
+541         # Set defaults that the hooks can utilize to ensure they always have
+542         # the correct parameters to reproduce the previous request.
+543         kwargs.setdefault('stream', self.stream)
+544         kwargs.setdefault('verify', self.verify)
+545         kwargs.setdefault('cert', self.cert)
+546         kwargs.setdefault('proxies', self.proxies)
+547 
+548         # It's possible that users might accidentally send a Request object.
+549         # Guard against that specific failure case.
+550         if not isinstance(request, PreparedRequest):
+551             raise ValueError('You can only send PreparedRequests.')
+552 
+553         checked_urls = set()
+554         while request.url in self.redirect_cache:
+555             checked_urls.add(request.url)
+556             new_url = self.redirect_cache.get(request.url)
+557             if new_url in checked_urls:
+558                 break
+559             request.url = new_url
+560 
+561         # Set up variables needed for resolve_redirects and dispatching of hooks
+562         allow_redirects = kwargs.pop('allow_redirects', True)
+563         stream = kwargs.get('stream')
+564         hooks = request.hooks
+565 
+566         # Get the appropriate adapter to use
+567         adapter = self.get_adapter(url=request.url)
+568 
+569         # Start time (approximately) of the request
+570         start = datetime.utcnow()
+571 
+572         # Send the request
+573         r = adapter.send(request, **kwargs)
+574 
+575         # Total elapsed time of the request (approximately)
+576         r.elapsed = datetime.utcnow() - start
+577 
+578         # Response manipulation hooks
+579         r = dispatch_hook('response', hooks, r, **kwargs)
+580 
+581         # Persist cookies
+582         if r.history:
+583 
+584             # If the hooks create history then we want those cookies too
+585             for resp in r.history:
+586                 extract_cookies_to_jar(self.cookies, resp.request, resp.raw)
+587 
+588         extract_cookies_to_jar(self.cookies, request, r.raw)
+589 
+590         # Redirect resolving generator.
+591         gen = self.resolve_redirects(r, request, **kwargs)
+592 
+593         # Resolve redirects if allowed.
+594         history = [resp for resp in gen] if allow_redirects else []
+595 
+596         # Shuffle things around if there's history.
+597         if history:
+598             # Insert the first (original) request at the start
+599             history.insert(0, r)
+600             # Get the last request made
+601             r = history.pop()
+602             r.history = history
+603 
+604         if not stream:
+605             r.content
+606 
+607         return r
+608 
+609     def merge_environment_settings(self, url, proxies, stream, verify, cert):
+610         """Check the environment and merge it with some settings."""
+611         # Gather clues from the surrounding environment.
+612         if self.trust_env:
+613             # Set environment's proxies.
+614             env_proxies = get_environ_proxies(url) or {}
+615             for (k, v) in env_proxies.items():
+616                 proxies.setdefault(k, v)
+617 
+618             # Look for requests environment configuration and be compatible
+619             # with cURL.
+620             if verify is True or verify is None:
+621                 verify = (os.environ.get('REQUESTS_CA_BUNDLE') or
+622                           os.environ.get('CURL_CA_BUNDLE'))
+623 
+624         # Merge all the kwargs.
+625         proxies = merge_setting(proxies, self.proxies)
+626         stream = merge_setting(stream, self.stream)
+627         verify = merge_setting(verify, self.verify)
+628         cert = merge_setting(cert, self.cert)
+629 
+630         return {'verify': verify, 'proxies': proxies, 'stream': stream,
+631                 'cert': cert}
+632 
+633     def get_adapter(self, url):
+634         """Returns the appropriate connnection adapter for the given URL."""
+635         for (prefix, adapter) in self.adapters.items():
+636 
+637             if url.lower().startswith(prefix):
+638                 return adapter
+639 
+640         # Nothing matches :-/
+641         raise InvalidSchema("No connection adapters were found for '%s'" % url)
+642 
+643     def close(self):
+644         """Closes all adapters and as such the session"""
+645         for v in self.adapters.values():
+646             v.close()
+647 
+648     def mount(self, prefix, adapter):
+649         """Registers a connection adapter to a prefix.
+650 
+651         Adapters are sorted in descending order by key length."""
+652 
+653         self.adapters[prefix] = adapter
+654         keys_to_move = [k for k in self.adapters if len(k) < len(prefix)]
+655 
+656         for key in keys_to_move:
+657             self.adapters[key] = self.adapters.pop(key)
+658 
+659     def __getstate__(self):
+660         state = dict((attr, getattr(self, attr, None)) for attr in self.__attrs__)
+661         state['redirect_cache'] = dict(self.redirect_cache)
+662         return state
+663 
+664     def __setstate__(self, state):
+665         redirect_cache = state.pop('redirect_cache', {})
+666         for attr, value in state.items():
+667             setattr(self, attr, value)
+668 
+669         self.redirect_cache = RecentlyUsedContainer(REDIRECT_CACHE_SIZE)
+670         for redirect, to in redirect_cache.items():
+671             self.redirect_cache[redirect] = to
+672 
+673 
+674 def session():
+675     """Returns a :class:`Session` for context-management."""
+676 
+677     return Session()
+
+</code><intended_behavior>Given that this file likely orchestrates higher-level session requests and might also handle exceptions thrown during such operations, ensuring that `DecodeError` and `TimeoutError` from `urllib3` are correctly caught and wrapped here as well is essential. If `adapters.py` is the primary location for direct `urllib3` interactions, then `sessions.py` would be a secondary layer that might still encounter these exceptions if they slip through the first layer of handling. The intended behavior would be similar to `adapters.py`: updating catch blocks to include `urllib3`'s `DecodeError` and `TimeoutError`, wrapping and re-raising them as `requests.exceptions`. This ensures that even if direct interactions with `urllib3` in `sessions.py` might throw these exceptions, they're still handled according to `requests`' design principles.</intended_behavior>]
+2025-10-18 15:00:52.970 | INFO     | Search completed. Bug locations: [<file>requests/adapters.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 # -*- coding: utf-8 -*-
+2 
+3 """
+4 requests.adapters
+5 ~~~~~~~~~~~~~~~~~
+6 
+7 This module contains the transport adapters that Requests uses to define
+8 and maintain connections.
+9 """
+10 
+11 import socket
+12 
+13 from .models import Response
+14 from .packages.urllib3.poolmanager import PoolManager, proxy_from_url
+15 from .packages.urllib3.response import HTTPResponse
+16 from .packages.urllib3.util import Timeout as TimeoutSauce
+17 from .packages.urllib3.util.retry import Retry
+18 from .compat import urlparse, basestring
+19 from .utils import (DEFAULT_CA_BUNDLE_PATH, get_encoding_from_headers,
+20                     prepend_scheme_if_needed, get_auth_from_url, urldefragauth)
+21 from .structures import CaseInsensitiveDict
+22 from .packages.urllib3.exceptions import ConnectTimeoutError
+23 from .packages.urllib3.exceptions import HTTPError as _HTTPError
+24 from .packages.urllib3.exceptions import MaxRetryError
+25 from .packages.urllib3.exceptions import ProxyError as _ProxyError
+26 from .packages.urllib3.exceptions import ProtocolError
+27 from .packages.urllib3.exceptions import ReadTimeoutError
+28 from .packages.urllib3.exceptions import SSLError as _SSLError
+29 from .packages.urllib3.exceptions import ResponseError
+30 from .cookies import extract_cookies_to_jar
+31 from .exceptions import (ConnectionError, ConnectTimeout, ReadTimeout, SSLError,
+32                          ProxyError, RetryError)
+33 from .auth import _basic_auth_str
+34 
+35 DEFAULT_POOLBLOCK = False
+36 DEFAULT_POOLSIZE = 10
+37 DEFAULT_RETRIES = 0
+38 DEFAULT_POOL_TIMEOUT = None
+39 
+40 
+41 class BaseAdapter(object):
+42     """The Base Transport Adapter"""
+43 
+44     def __init__(self):
+45         super(BaseAdapter, self).__init__()
+46 
+47     def send(self):
+48         raise NotImplementedError
+49 
+50     def close(self):
+51         raise NotImplementedError
+52 
+53 
+54 class HTTPAdapter(BaseAdapter):
+55     """The built-in HTTP Adapter for urllib3.
+56 
+57     Provides a general-case interface for Requests sessions to contact HTTP and
+58     HTTPS urls by implementing the Transport Adapter interface. This class will
+59     usually be created by the :class:`Session <Session>` class under the
+60     covers.
+61 
+62     :param pool_connections: The number of urllib3 connection pools to cache.
+63     :param pool_maxsize: The maximum number of connections to save in the pool.
+64     :param int max_retries: The maximum number of retries each connection
+65         should attempt. Note, this applies only to failed DNS lookups, socket
+66         connections and connection timeouts, never to requests where data has
+67         made it to the server. By default, Requests does not retry failed
+68         connections. If you need granular control over the conditions under
+69         which we retry a request, import urllib3's ``Retry`` class and pass
+70         that instead.
+71     :param pool_block: Whether the connection pool should block for connections.
+72 
+73     Usage::
+74 
+75       >>> import requests
+76       >>> s = requests.Session()
+77       >>> a = requests.adapters.HTTPAdapter(max_retries=3)
+78       >>> s.mount('http://', a)
+79     """
+80     __attrs__ = ['max_retries', 'config', '_pool_connections', '_pool_maxsize',
+81                  '_pool_block']
+82 
+83     def __init__(self, pool_connections=DEFAULT_POOLSIZE,
+84                  pool_maxsize=DEFAULT_POOLSIZE, max_retries=DEFAULT_RETRIES,
+85                  pool_block=DEFAULT_POOLBLOCK):
+86         if max_retries == DEFAULT_RETRIES:
+87             self.max_retries = Retry(0, read=False)
+88         else:
+89             self.max_retries = Retry.from_int(max_retries)
+90         self.config = {}
+91         self.proxy_manager = {}
+92 
+93         super(HTTPAdapter, self).__init__()
+94 
+95         self._pool_connections = pool_connections
+96         self._pool_maxsize = pool_maxsize
+97         self._pool_block = pool_block
+98 
+99         self.init_poolmanager(pool_connections, pool_maxsize, block=pool_block)
+100 
+101     def __getstate__(self):
+102         return dict((attr, getattr(self, attr, None)) for attr in
+103                     self.__attrs__)
+104 
+105     def __setstate__(self, state):
+106         # Can't handle by adding 'proxy_manager' to self.__attrs__ because
+107         # because self.poolmanager uses a lambda function, which isn't pickleable.
+108         self.proxy_manager = {}
+109         self.config = {}
+110 
+111         for attr, value in state.items():
+112             setattr(self, attr, value)
+113 
+114         self.init_poolmanager(self._pool_connections, self._pool_maxsize,
+115                               block=self._pool_block)
+116 
+117     def init_poolmanager(self, connections, maxsize, block=DEFAULT_POOLBLOCK, **pool_kwargs):
+118         """Initializes a urllib3 PoolManager.
+119 
+120         This method should not be called from user code, and is only
+121         exposed for use when subclassing the
+122         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+123 
+124         :param connections: The number of urllib3 connection pools to cache.
+125         :param maxsize: The maximum number of connections to save in the pool.
+126         :param block: Block when no free connections are available.
+127         :param pool_kwargs: Extra keyword arguments used to initialize the Pool Manager.
+128         """
+129         # save these values for pickling
+130         self._pool_connections = connections
+131         self._pool_maxsize = maxsize
+132         self._pool_block = block
+133 
+134         self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize,
+135                                        block=block, strict=True, **pool_kwargs)
+136 
+137     def proxy_manager_for(self, proxy, **proxy_kwargs):
+138         """Return urllib3 ProxyManager for the given proxy.
+139 
+140         This method should not be called from user code, and is only
+141         exposed for use when subclassing the
+142         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+143 
+144         :param proxy: The proxy to return a urllib3 ProxyManager for.
+145         :param proxy_kwargs: Extra keyword arguments used to configure the Proxy Manager.
+146         :returns: ProxyManager
+147         """
+148         if not proxy in self.proxy_manager:
+149             proxy_headers = self.proxy_headers(proxy)
+150             self.proxy_manager[proxy] = proxy_from_url(
+151                 proxy,
+152                 proxy_headers=proxy_headers,
+153                 num_pools=self._pool_connections,
+154                 maxsize=self._pool_maxsize,
+155                 block=self._pool_block,
+156                 **proxy_kwargs)
+157 
+158         return self.proxy_manager[proxy]
+159 
+160     def cert_verify(self, conn, url, verify, cert):
+161         """Verify a SSL certificate. This method should not be called from user
+162         code, and is only exposed for use when subclassing the
+163         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+164 
+165         :param conn: The urllib3 connection object associated with the cert.
+166         :param url: The requested URL.
+167         :param verify: Whether we should actually verify the certificate.
+168         :param cert: The SSL certificate to verify.
+169         """
+170         if url.lower().startswith('https') and verify:
+171 
+172             cert_loc = None
+173 
+174             # Allow self-specified cert location.
+175             if verify is not True:
+176                 cert_loc = verify
+177 
+178             if not cert_loc:
+179                 cert_loc = DEFAULT_CA_BUNDLE_PATH
+180 
+181             if not cert_loc:
+182                 raise Exception("Could not find a suitable SSL CA certificate bundle.")
+183 
+184             conn.cert_reqs = 'CERT_REQUIRED'
+185             conn.ca_certs = cert_loc
+186         else:
+187             conn.cert_reqs = 'CERT_NONE'
+188             conn.ca_certs = None
+189 
+190         if cert:
+191             if not isinstance(cert, basestring):
+192                 conn.cert_file = cert[0]
+193                 conn.key_file = cert[1]
+194             else:
+195                 conn.cert_file = cert
+196 
+197     def build_response(self, req, resp):
+198         """Builds a :class:`Response <requests.Response>` object from a urllib3
+199         response. This should not be called from user code, and is only exposed
+200         for use when subclassing the
+201         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`
+202 
+203         :param req: The :class:`PreparedRequest <PreparedRequest>` used to generate the response.
+204         :param resp: The urllib3 response object.
+205         """
+206         response = Response()
+207 
+208         # Fallback to None if there's no status_code, for whatever reason.
+209         response.status_code = getattr(resp, 'status', None)
+210 
+211         # Make headers case-insensitive.
+212         response.headers = CaseInsensitiveDict(getattr(resp, 'headers', {}))
+213 
+214         # Set encoding.
+215         response.encoding = get_encoding_from_headers(response.headers)
+216         response.raw = resp
+217         response.reason = response.raw.reason
+218 
+219         if isinstance(req.url, bytes):
+220             response.url = req.url.decode('utf-8')
+221         else:
+222             response.url = req.url
+223 
+224         # Add new cookies from the server.
+225         extract_cookies_to_jar(response.cookies, req, resp)
+226 
+227         # Give the Response some context.
+228         response.request = req
+229         response.connection = self
+230 
+231         return response
+232 
+233     def get_connection(self, url, proxies=None):
+234         """Returns a urllib3 connection for the given URL. This should not be
+235         called from user code, and is only exposed for use when subclassing the
+236         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+237 
+238         :param url: The URL to connect to.
+239         :param proxies: (optional) A Requests-style dictionary of proxies used on this request.
+240         """
+241         proxies = proxies or {}
+242         proxy = proxies.get(urlparse(url.lower()).scheme)
+243 
+244         if proxy:
+245             proxy = prepend_scheme_if_needed(proxy, 'http')
+246             proxy_manager = self.proxy_manager_for(proxy)
+247             conn = proxy_manager.connection_from_url(url)
+248         else:
+249             # Only scheme should be lower case
+250             parsed = urlparse(url)
+251             url = parsed.geturl()
+252             conn = self.poolmanager.connection_from_url(url)
+253 
+254         return conn
+255 
+256     def close(self):
+257         """Disposes of any internal state.
+258 
+259         Currently, this just closes the PoolManager, which closes pooled
+260         connections.
+261         """
+262         self.poolmanager.clear()
+263 
+264     def request_url(self, request, proxies):
+265         """Obtain the url to use when making the final request.
+266 
+267         If the message is being sent through a HTTP proxy, the full URL has to
+268         be used. Otherwise, we should only use the path portion of the URL.
+269 
+270         This should not be called from user code, and is only exposed for use
+271         when subclassing the
+272         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+273 
+274         :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+275         :param proxies: A dictionary of schemes to proxy URLs.
+276         """
+277         proxies = proxies or {}
+278         scheme = urlparse(request.url).scheme
+279         proxy = proxies.get(scheme)
+280 
+281         if proxy and scheme != 'https':
+282             url = urldefragauth(request.url)
+283         else:
+284             url = request.path_url
+285 
+286         return url
+287 
+288     def add_headers(self, request, **kwargs):
+289         """Add any headers needed by the connection. As of v2.0 this does
+290         nothing by default, but is left for overriding by users that subclass
+291         the :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+292 
+293         This should not be called from user code, and is only exposed for use
+294         when subclassing the
+295         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+296 
+297         :param request: The :class:`PreparedRequest <PreparedRequest>` to add headers to.
+298         :param kwargs: The keyword arguments from the call to send().
+299         """
+300         pass
+301 
+302     def proxy_headers(self, proxy):
+303         """Returns a dictionary of the headers to add to any request sent
+304         through a proxy. This works with urllib3 magic to ensure that they are
+305         correctly sent to the proxy, rather than in a tunnelled request if
+306         CONNECT is being used.
+307 
+308         This should not be called from user code, and is only exposed for use
+309         when subclassing the
+310         :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.
+311 
+312         :param proxies: The url of the proxy being used for this request.
+313         :param kwargs: Optional additional keyword arguments.
+314         """
+315         headers = {}
+316         username, password = get_auth_from_url(proxy)
+317 
+318         if username and password:
+319             headers['Proxy-Authorization'] = _basic_auth_str(username,
+320                                                              password)
+321 
+322         return headers
+323 
+324     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
+325         """Sends PreparedRequest object. Returns Response object.
+326 
+327         :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.
+328         :param stream: (optional) Whether to stream the request content.
+329         :param timeout: (optional) How long to wait for the server to send
+330             data before giving up, as a float, or a (`connect timeout, read
+331             timeout <user/advanced.html#timeouts>`_) tuple.
+332         :type timeout: float or tuple
+333         :param verify: (optional) Whether to verify SSL certificates.
+334         :param cert: (optional) Any user-provided SSL certificate to be trusted.
+335         :param proxies: (optional) The proxies dictionary to apply to the request.
+336         """
+337 
+338         conn = self.get_connection(request.url, proxies)
+339 
+340         self.cert_verify(conn, request.url, verify, cert)
+341         url = self.request_url(request, proxies)
+342         self.add_headers(request)
+343 
+344         chunked = not (request.body is None or 'Content-Length' in request.headers)
+345 
+346         if isinstance(timeout, tuple):
+347             try:
+348                 connect, read = timeout
+349                 timeout = TimeoutSauce(connect=connect, read=read)
+350             except ValueError as e:
+351                 # this may raise a string formatting error.
+352                 err = ("Invalid timeout {0}. Pass a (connect, read) "
+353                        "timeout tuple, or a single float to set "
+354                        "both timeouts to the same value".format(timeout))
+355                 raise ValueError(err)
+356         else:
+357             timeout = TimeoutSauce(connect=timeout, read=timeout)
+358 
+359         try:
+360             if not chunked:
+361                 resp = conn.urlopen(
+362                     method=request.method,
+363                     url=url,
+364                     body=request.body,
+365                     headers=request.headers,
+366                     redirect=False,
+367                     assert_same_host=False,
+368                     preload_content=False,
+369                     decode_content=False,
+370                     retries=self.max_retries,
+371                     timeout=timeout
+372                 )
+373 
+374             # Send the request.
+375             else:
+376                 if hasattr(conn, 'proxy_pool'):
+377                     conn = conn.proxy_pool
+378 
+379                 low_conn = conn._get_conn(timeout=DEFAULT_POOL_TIMEOUT)
+380 
+381                 try:
+382                     low_conn.putrequest(request.method,
+383                                         url,
+384                                         skip_accept_encoding=True)
+385 
+386                     for header, value in request.headers.items():
+387                         low_conn.putheader(header, value)
+388 
+389                     low_conn.endheaders()
+390 
+391                     for i in request.body:
+392                         low_conn.send(hex(len(i))[2:].encode('utf-8'))
+393                         low_conn.send(b'\r\n')
+394                         low_conn.send(i)
+395                         low_conn.send(b'\r\n')
+396                     low_conn.send(b'0\r\n\r\n')
+397 
+398                     r = low_conn.getresponse()
+399                     resp = HTTPResponse.from_httplib(
+400                         r,
+401                         pool=conn,
+402                         connection=low_conn,
+403                         preload_content=False,
+404                         decode_content=False
+405                     )
+406                 except:
+407                     # If we hit any problems here, clean up the connection.
+408                     # Then, reraise so that we can handle the actual exception.
+409                     low_conn.close()
+410                     raise
+411 
+412         except (ProtocolError, socket.error) as err:
+413             raise ConnectionError(err, request=request)
+414 
+415         except MaxRetryError as e:
+416             if isinstance(e.reason, ConnectTimeoutError):
+417                 raise ConnectTimeout(e, request=request)
+418 
+419             if isinstance(e.reason, ResponseError):
+420                 raise RetryError(e, request=request)
+421 
+422             raise ConnectionError(e, request=request)
+423 
+424         except _ProxyError as e:
+425             raise ProxyError(e)
+426 
+427         except (_SSLError, _HTTPError) as e:
+428             if isinstance(e, _SSLError):
+429                 raise SSLError(e, request=request)
+430             elif isinstance(e, ReadTimeoutError):
+431                 raise ReadTimeout(e, request=request)
+432             else:
+433                 raise
+434 
+435         return self.build_response(request, resp)
+
+</code><intended_behavior>This file is critical as it handles the lower-level requests to `urllib3` and is likely where `urllib3` exceptions are caught and either passed through or wrapped in `requests` exceptions. The intended behavior here should be to ensure that all exceptions from `urllib3`, specifically `DecodeError` and `TimeoutError`, are caught and re-raised as comparable `requests.exceptions`. For `DecodeError`, an appropriate `requests` exception might be a new exception that accurately describes the error (e.g., `ContentDecodeError`), reflecting an issue with decoding response content. For `TimeoutError`, since `requests` already defines timeout exceptions, it could be mapped to `requests.exceptions.ReadTimeout` or a new more specific timeout exception if the existing ones do not accurately capture the scenario (e.g., `ProxyTimeoutError` for proxy timeout issues). This would involve adding or modifying exception handling blocks where `urllib3` exceptions are currently caught.</intended_behavior>, <file>requests/sessions.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 # -*- coding: utf-8 -*-
+2 
+3 """
+4 requests.session
+5 ~~~~~~~~~~~~~~~~
+6 
+7 This module provides a Session object to manage and persist settings across
+8 requests (cookies, auth, proxies).
+9 
+10 """
+11 import os
+12 from collections import Mapping
+13 from datetime import datetime
+14 
+15 from .auth import _basic_auth_str
+16 from .compat import cookielib, OrderedDict, urljoin, urlparse
+17 from .cookies import (
+18     cookiejar_from_dict, extract_cookies_to_jar, RequestsCookieJar, merge_cookies)
+19 from .models import Request, PreparedRequest, DEFAULT_REDIRECT_LIMIT
+20 from .hooks import default_hooks, dispatch_hook
+21 from .utils import to_key_val_list, default_headers, to_native_string
+22 from .exceptions import (
+23     TooManyRedirects, InvalidSchema, ChunkedEncodingError, ContentDecodingError)
+24 from .packages.urllib3._collections import RecentlyUsedContainer
+25 from .structures import CaseInsensitiveDict
+26 
+27 from .adapters import HTTPAdapter
+28 
+29 from .utils import (
+30     requote_uri, get_environ_proxies, get_netrc_auth, should_bypass_proxies,
+31     get_auth_from_url
+32 )
+33 
+34 from .status_codes import codes
+35 
+36 # formerly defined here, reexposed here for backward compatibility
+37 from .models import REDIRECT_STATI
+38 
+39 REDIRECT_CACHE_SIZE = 1000
+40 
+41 
+42 def merge_setting(request_setting, session_setting, dict_class=OrderedDict):
+43     """
+44     Determines appropriate setting for a given request, taking into account the
+45     explicit setting on that request, and the setting in the session. If a
+46     setting is a dictionary, they will be merged together using `dict_class`
+47     """
+48 
+49     if session_setting is None:
+50         return request_setting
+51 
+52     if request_setting is None:
+53         return session_setting
+54 
+55     # Bypass if not a dictionary (e.g. verify)
+56     if not (
+57             isinstance(session_setting, Mapping) and
+58             isinstance(request_setting, Mapping)
+59     ):
+60         return request_setting
+61 
+62     merged_setting = dict_class(to_key_val_list(session_setting))
+63     merged_setting.update(to_key_val_list(request_setting))
+64 
+65     # Remove keys that are set to None.
+66     for (k, v) in request_setting.items():
+67         if v is None:
+68             del merged_setting[k]
+69 
+70     merged_setting = dict((k, v) for (k, v) in merged_setting.items() if v is not None)
+71 
+72     return merged_setting
+73 
+74 
+75 def merge_hooks(request_hooks, session_hooks, dict_class=OrderedDict):
+76     """
+77     Properly merges both requests and session hooks.
+78 
+79     This is necessary because when request_hooks == {'response': []}, the
+80     merge breaks Session hooks entirely.
+81     """
+82     if session_hooks is None or session_hooks.get('response') == []:
+83         return request_hooks
+84 
+85     if request_hooks is None or request_hooks.get('response') == []:
+86         return session_hooks
+87 
+88     return merge_setting(request_hooks, session_hooks, dict_class)
+89 
+90 
+91 class SessionRedirectMixin(object):
+92     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+93                           verify=True, cert=None, proxies=None, **adapter_kwargs):
+94         """Receives a Response. Returns a generator of Responses."""
+95 
+96         i = 0
+97         hist = [] # keep track of history
+98 
+99         while resp.is_redirect:
+100             prepared_request = req.copy()
+101 
+102             if i > 0:
+103                 # Update history and keep track of redirects.
+104                 hist.append(resp)
+105                 new_hist = list(hist)
+106                 resp.history = new_hist
+107 
+108             try:
+109                 resp.content  # Consume socket so it can be released
+110             except (ChunkedEncodingError, ContentDecodingError, RuntimeError):
+111                 resp.raw.read(decode_content=False)
+112 
+113             if i >= self.max_redirects:
+114                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+115 
+116             # Release the connection back into the pool.
+117             resp.close()
+118 
+119             url = resp.headers['location']
+120             method = req.method
+121 
+122             # Handle redirection without scheme (see: RFC 1808 Section 4)
+123             if url.startswith('//'):
+124                 parsed_rurl = urlparse(resp.url)
+125                 url = '%s:%s' % (parsed_rurl.scheme, url)
+126 
+127             # The scheme should be lower case...
+128             parsed = urlparse(url)
+129             url = parsed.geturl()
+130 
+131             # Facilitate relative 'location' headers, as allowed by RFC 7231.
+132             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+133             # Compliant with RFC3986, we percent encode the url.
+134             if not parsed.netloc:
+135                 url = urljoin(resp.url, requote_uri(url))
+136             else:
+137                 url = requote_uri(url)
+138 
+139             prepared_request.url = to_native_string(url)
+140             # Cache the url, unless it redirects to itself.
+141             if resp.is_permanent_redirect and req.url != prepared_request.url:
+142                 self.redirect_cache[req.url] = prepared_request.url
+143 
+144             # http://tools.ietf.org/html/rfc7231#section-6.4.4
+145             if (resp.status_code == codes.see_other and
+146                     method != 'HEAD'):
+147                 method = 'GET'
+148 
+149             # Do what the browsers do, despite standards...
+150             # First, turn 302s into GETs.
+151             if resp.status_code == codes.found and method != 'HEAD':
+152                 method = 'GET'
+153 
+154             # Second, if a POST is responded to with a 301, turn it into a GET.
+155             # This bizarre behaviour is explained in Issue 1704.
+156             if resp.status_code == codes.moved and method == 'POST':
+157                 method = 'GET'
+158 
+159             prepared_request.method = method
+160 
+161             # https://github.com/kennethreitz/requests/issues/1084
+162             if resp.status_code not in (codes.temporary_redirect, codes.permanent_redirect):
+163                 if 'Content-Length' in prepared_request.headers:
+164                     del prepared_request.headers['Content-Length']
+165 
+166                 prepared_request.body = None
+167 
+168             headers = prepared_request.headers
+169             try:
+170                 del headers['Cookie']
+171             except KeyError:
+172                 pass
+173 
+174             # Extract any cookies sent on the response to the cookiejar
+175             # in the new request. Because we've mutated our copied prepared
+176             # request, use the old one that we haven't yet touched.
+177             extract_cookies_to_jar(prepared_request._cookies, req, resp.raw)
+178             prepared_request._cookies.update(self.cookies)
+179             prepared_request.prepare_cookies(prepared_request._cookies)
+180 
+181             # Rebuild auth and proxy information.
+182             proxies = self.rebuild_proxies(prepared_request, proxies)
+183             self.rebuild_auth(prepared_request, resp)
+184 
+185             # Override the original request.
+186             req = prepared_request
+187 
+188             resp = self.send(
+189                 req,
+190                 stream=stream,
+191                 timeout=timeout,
+192                 verify=verify,
+193                 cert=cert,
+194                 proxies=proxies,
+195                 allow_redirects=False,
+196                 **adapter_kwargs
+197             )
+198 
+199             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+200 
+201             i += 1
+202             yield resp
+203 
+204     def rebuild_auth(self, prepared_request, response):
+205         """
+206         When being redirected we may want to strip authentication from the
+207         request to avoid leaking credentials. This method intelligently removes
+208         and reapplies authentication where possible to avoid credential loss.
+209         """
+210         headers = prepared_request.headers
+211         url = prepared_request.url
+212 
+213         if 'Authorization' in headers:
+214             # If we get redirected to a new host, we should strip out any
+215             # authentication headers.
+216             original_parsed = urlparse(response.request.url)
+217             redirect_parsed = urlparse(url)
+218 
+219             if (original_parsed.hostname != redirect_parsed.hostname):
+220                 del headers['Authorization']
+221 
+222         # .netrc might have more auth for us on our new host.
+223         new_auth = get_netrc_auth(url) if self.trust_env else None
+224         if new_auth is not None:
+225             prepared_request.prepare_auth(new_auth)
+226 
+227         return
+228 
+229     def rebuild_proxies(self, prepared_request, proxies):
+230         """
+231         This method re-evaluates the proxy configuration by considering the
+232         environment variables. If we are redirected to a URL covered by
+233         NO_PROXY, we strip the proxy configuration. Otherwise, we set missing
+234         proxy keys for this URL (in case they were stripped by a previous
+235         redirect).
+236 
+237         This method also replaces the Proxy-Authorization header where
+238         necessary.
+239         """
+240         headers = prepared_request.headers
+241         url = prepared_request.url
+242         scheme = urlparse(url).scheme
+243         new_proxies = proxies.copy() if proxies is not None else {}
+244 
+245         if self.trust_env and not should_bypass_proxies(url):
+246             environ_proxies = get_environ_proxies(url)
+247 
+248             proxy = environ_proxies.get(scheme)
+249 
+250             if proxy:
+251                 new_proxies.setdefault(scheme, environ_proxies[scheme])
+252 
+253         if 'Proxy-Authorization' in headers:
+254             del headers['Proxy-Authorization']
+255 
+256         try:
+257             username, password = get_auth_from_url(new_proxies[scheme])
+258         except KeyError:
+259             username, password = None, None
+260 
+261         if username and password:
+262             headers['Proxy-Authorization'] = _basic_auth_str(username, password)
+263 
+264         return new_proxies
+265 
+266 
+267 class Session(SessionRedirectMixin):
+268     """A Requests session.
+269 
+270     Provides cookie persistence, connection-pooling, and configuration.
+271 
+272     Basic Usage::
+273 
+274       >>> import requests
+275       >>> s = requests.Session()
+276       >>> s.get('http://httpbin.org/get')
+277       200
+278     """
+279 
+280     __attrs__ = [
+281         'headers', 'cookies', 'auth', 'proxies', 'hooks', 'params', 'verify',
+282         'cert', 'prefetch', 'adapters', 'stream', 'trust_env',
+283         'max_redirects',
+284     ]
+285 
+286     def __init__(self):
+287 
+288         #: A case-insensitive dictionary of headers to be sent on each
+289         #: :class:`Request <Request>` sent from this
+290         #: :class:`Session <Session>`.
+291         self.headers = default_headers()
+292 
+293         #: Default Authentication tuple or object to attach to
+294         #: :class:`Request <Request>`.
+295         self.auth = None
+296 
+297         #: Dictionary mapping protocol to the URL of the proxy (e.g.
+298         #: {'http': 'foo.bar:3128'}) to be used on each
+299         #: :class:`Request <Request>`.
+300         self.proxies = {}
+301 
+302         #: Event-handling hooks.
+303         self.hooks = default_hooks()
+304 
+305         #: Dictionary of querystring data to attach to each
+306         #: :class:`Request <Request>`. The dictionary values may be lists for
+307         #: representing multivalued query parameters.
+308         self.params = {}
+309 
+310         #: Stream response content default.
+311         self.stream = False
+312 
+313         #: SSL Verification default.
+314         self.verify = True
+315 
+316         #: SSL certificate default.
+317         self.cert = None
+318 
+319         #: Maximum number of redirects allowed. If the request exceeds this
+320         #: limit, a :class:`TooManyRedirects` exception is raised.
+321         self.max_redirects = DEFAULT_REDIRECT_LIMIT
+322 
+323         #: Should we trust the environment?
+324         self.trust_env = True
+325 
+326         #: A CookieJar containing all currently outstanding cookies set on this
+327         #: session. By default it is a
+328         #: :class:`RequestsCookieJar <requests.cookies.RequestsCookieJar>`, but
+329         #: may be any other ``cookielib.CookieJar`` compatible object.
+330         self.cookies = cookiejar_from_dict({})
+331 
+332         # Default connection adapters.
+333         self.adapters = OrderedDict()
+334         self.mount('https://', HTTPAdapter())
+335         self.mount('http://', HTTPAdapter())
+336 
+337         # Only store 1000 redirects to prevent using infinite memory
+338         self.redirect_cache = RecentlyUsedContainer(REDIRECT_CACHE_SIZE)
+339 
+340     def __enter__(self):
+341         return self
+342 
+343     def __exit__(self, *args):
+344         self.close()
+345 
+346     def prepare_request(self, request):
+347         """Constructs a :class:`PreparedRequest <PreparedRequest>` for
+348         transmission and returns it. The :class:`PreparedRequest` has settings
+349         merged from the :class:`Request <Request>` instance and those of the
+350         :class:`Session`.
+351 
+352         :param request: :class:`Request` instance to prepare with this
+353             session's settings.
+354         """
+355         cookies = request.cookies or {}
+356 
+357         # Bootstrap CookieJar.
+358         if not isinstance(cookies, cookielib.CookieJar):
+359             cookies = cookiejar_from_dict(cookies)
+360 
+361         # Merge with session cookies
+362         merged_cookies = merge_cookies(
+363             merge_cookies(RequestsCookieJar(), self.cookies), cookies)
+364 
+365 
+366         # Set environment's basic authentication if not explicitly set.
+367         auth = request.auth
+368         if self.trust_env and not auth and not self.auth:
+369             auth = get_netrc_auth(request.url)
+370 
+371         p = PreparedRequest()
+372         p.prepare(
+373             method=request.method.upper(),
+374             url=request.url,
+375             files=request.files,
+376             data=request.data,
+377             json=request.json,
+378             headers=merge_setting(request.headers, self.headers, dict_class=CaseInsensitiveDict),
+379             params=merge_setting(request.params, self.params),
+380             auth=merge_setting(auth, self.auth),
+381             cookies=merged_cookies,
+382             hooks=merge_hooks(request.hooks, self.hooks),
+383         )
+384         return p
+385 
+386     def request(self, method, url,
+387         params=None,
+388         data=None,
+389         headers=None,
+390         cookies=None,
+391         files=None,
+392         auth=None,
+393         timeout=None,
+394         allow_redirects=True,
+395         proxies=None,
+396         hooks=None,
+397         stream=None,
+398         verify=None,
+399         cert=None,
+400         json=None):
+401         """Constructs a :class:`Request <Request>`, prepares it and sends it.
+402         Returns :class:`Response <Response>` object.
+403 
+404         :param method: method for the new :class:`Request` object.
+405         :param url: URL for the new :class:`Request` object.
+406         :param params: (optional) Dictionary or bytes to be sent in the query
+407             string for the :class:`Request`.
+408         :param data: (optional) Dictionary or bytes to send in the body of the
+409             :class:`Request`.
+410         :param json: (optional) json to send in the body of the
+411             :class:`Request`.
+412         :param headers: (optional) Dictionary of HTTP Headers to send with the
+413             :class:`Request`.
+414         :param cookies: (optional) Dict or CookieJar object to send with the
+415             :class:`Request`.
+416         :param files: (optional) Dictionary of ``'filename': file-like-objects``
+417             for multipart encoding upload.
+418         :param auth: (optional) Auth tuple or callable to enable
+419             Basic/Digest/Custom HTTP Auth.
+420         :param timeout: (optional) How long to wait for the server to send
+421             data before giving up, as a float, or a (`connect timeout, read
+422             timeout <user/advanced.html#timeouts>`_) tuple.
+423         :type timeout: float or tuple
+424         :param allow_redirects: (optional) Set to True by default.
+425         :type allow_redirects: bool
+426         :param proxies: (optional) Dictionary mapping protocol to the URL of
+427             the proxy.
+428         :param stream: (optional) whether to immediately download the response
+429             content. Defaults to ``False``.
+430         :param verify: (optional) if ``True``, the SSL cert will be verified.
+431             A CA_BUNDLE path can also be provided.
+432         :param cert: (optional) if String, path to ssl client cert file (.pem).
+433             If Tuple, ('cert', 'key') pair.
+434         """
+435 
+436         method = to_native_string(method)
+437 
+438         # Create the Request.
+439         req = Request(
+440             method = method.upper(),
+441             url = url,
+442             headers = headers,
+443             files = files,
+444             data = data or {},
+445             json = json,
+446             params = params or {},
+447             auth = auth,
+448             cookies = cookies,
+449             hooks = hooks,
+450         )
+451         prep = self.prepare_request(req)
+452 
+453         proxies = proxies or {}
+454 
+455         settings = self.merge_environment_settings(
+456             prep.url, proxies, stream, verify, cert
+457         )
+458 
+459         # Send the request.
+460         send_kwargs = {
+461             'timeout': timeout,
+462             'allow_redirects': allow_redirects,
+463         }
+464         send_kwargs.update(settings)
+465         resp = self.send(prep, **send_kwargs)
+466 
+467         return resp
+468 
+469     def get(self, url, **kwargs):
+470         """Sends a GET request. Returns :class:`Response` object.
+471 
+472         :param url: URL for the new :class:`Request` object.
+473         :param \*\*kwargs: Optional arguments that ``request`` takes.
+474         """
+475 
+476         kwargs.setdefault('allow_redirects', True)
+477         return self.request('GET', url, **kwargs)
+478 
+479     def options(self, url, **kwargs):
+480         """Sends a OPTIONS request. Returns :class:`Response` object.
+481 
+482         :param url: URL for the new :class:`Request` object.
+483         :param \*\*kwargs: Optional arguments that ``request`` takes.
+484         """
+485 
+486         kwargs.setdefault('allow_redirects', True)
+487         return self.request('OPTIONS', url, **kwargs)
+488 
+489     def head(self, url, **kwargs):
+490         """Sends a HEAD request. Returns :class:`Response` object.
+491 
+492         :param url: URL for the new :class:`Request` object.
+493         :param \*\*kwargs: Optional arguments that ``request`` takes.
+494         """
+495 
+496         kwargs.setdefault('allow_redirects', False)
+497         return self.request('HEAD', url, **kwargs)
+498 
+499     def post(self, url, data=None, json=None, **kwargs):
+500         """Sends a POST request. Returns :class:`Response` object.
+501 
+502         :param url: URL for the new :class:`Request` object.
+503         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+504         :param json: (optional) json to send in the body of the :class:`Request`.
+505         :param \*\*kwargs: Optional arguments that ``request`` takes.
+506         """
+507 
+508         return self.request('POST', url, data=data, json=json, **kwargs)
+509 
+510     def put(self, url, data=None, **kwargs):
+511         """Sends a PUT request. Returns :class:`Response` object.
+512 
+513         :param url: URL for the new :class:`Request` object.
+514         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+515         :param \*\*kwargs: Optional arguments that ``request`` takes.
+516         """
+517 
+518         return self.request('PUT', url, data=data, **kwargs)
+519 
+520     def patch(self, url, data=None, **kwargs):
+521         """Sends a PATCH request. Returns :class:`Response` object.
+522 
+523         :param url: URL for the new :class:`Request` object.
+524         :param data: (optional) Dictionary, bytes, or file-like object to send in the body of the :class:`Request`.
+525         :param \*\*kwargs: Optional arguments that ``request`` takes.
+526         """
+527 
+528         return self.request('PATCH', url,  data=data, **kwargs)
+529 
+530     def delete(self, url, **kwargs):
+531         """Sends a DELETE request. Returns :class:`Response` object.
+532 
+533         :param url: URL for the new :class:`Request` object.
+534         :param \*\*kwargs: Optional arguments that ``request`` takes.
+535         """
+536 
+537         return self.request('DELETE', url, **kwargs)
+538 
+539     def send(self, request, **kwargs):
+540         """Send a given PreparedRequest."""
+541         # Set defaults that the hooks can utilize to ensure they always have
+542         # the correct parameters to reproduce the previous request.
+543         kwargs.setdefault('stream', self.stream)
+544         kwargs.setdefault('verify', self.verify)
+545         kwargs.setdefault('cert', self.cert)
+546         kwargs.setdefault('proxies', self.proxies)
+547 
+548         # It's possible that users might accidentally send a Request object.
+549         # Guard against that specific failure case.
+550         if not isinstance(request, PreparedRequest):
+551             raise ValueError('You can only send PreparedRequests.')
+552 
+553         checked_urls = set()
+554         while request.url in self.redirect_cache:
+555             checked_urls.add(request.url)
+556             new_url = self.redirect_cache.get(request.url)
+557             if new_url in checked_urls:
+558                 break
+559             request.url = new_url
+560 
+561         # Set up variables needed for resolve_redirects and dispatching of hooks
+562         allow_redirects = kwargs.pop('allow_redirects', True)
+563         stream = kwargs.get('stream')
+564         hooks = request.hooks
+565 
+566         # Get the appropriate adapter to use
+567         adapter = self.get_adapter(url=request.url)
+568 
+569         # Start time (approximately) of the request
+570         start = datetime.utcnow()
+571 
+572         # Send the request
+573         r = adapter.send(request, **kwargs)
+574 
+575         # Total elapsed time of the request (approximately)
+576         r.elapsed = datetime.utcnow() - start
+577 
+578         # Response manipulation hooks
+579         r = dispatch_hook('response', hooks, r, **kwargs)
+580 
+581         # Persist cookies
+582         if r.history:
+583 
+584             # If the hooks create history then we want those cookies too
+585             for resp in r.history:
+586                 extract_cookies_to_jar(self.cookies, resp.request, resp.raw)
+587 
+588         extract_cookies_to_jar(self.cookies, request, r.raw)
+589 
+590         # Redirect resolving generator.
+591         gen = self.resolve_redirects(r, request, **kwargs)
+592 
+593         # Resolve redirects if allowed.
+594         history = [resp for resp in gen] if allow_redirects else []
+595 
+596         # Shuffle things around if there's history.
+597         if history:
+598             # Insert the first (original) request at the start
+599             history.insert(0, r)
+600             # Get the last request made
+601             r = history.pop()
+602             r.history = history
+603 
+604         if not stream:
+605             r.content
+606 
+607         return r
+608 
+609     def merge_environment_settings(self, url, proxies, stream, verify, cert):
+610         """Check the environment and merge it with some settings."""
+611         # Gather clues from the surrounding environment.
+612         if self.trust_env:
+613             # Set environment's proxies.
+614             env_proxies = get_environ_proxies(url) or {}
+615             for (k, v) in env_proxies.items():
+616                 proxies.setdefault(k, v)
+617 
+618             # Look for requests environment configuration and be compatible
+619             # with cURL.
+620             if verify is True or verify is None:
+621                 verify = (os.environ.get('REQUESTS_CA_BUNDLE') or
+622                           os.environ.get('CURL_CA_BUNDLE'))
+623 
+624         # Merge all the kwargs.
+625         proxies = merge_setting(proxies, self.proxies)
+626         stream = merge_setting(stream, self.stream)
+627         verify = merge_setting(verify, self.verify)
+628         cert = merge_setting(cert, self.cert)
+629 
+630         return {'verify': verify, 'proxies': proxies, 'stream': stream,
+631                 'cert': cert}
+632 
+633     def get_adapter(self, url):
+634         """Returns the appropriate connnection adapter for the given URL."""
+635         for (prefix, adapter) in self.adapters.items():
+636 
+637             if url.lower().startswith(prefix):
+638                 return adapter
+639 
+640         # Nothing matches :-/
+641         raise InvalidSchema("No connection adapters were found for '%s'" % url)
+642 
+643     def close(self):
+644         """Closes all adapters and as such the session"""
+645         for v in self.adapters.values():
+646             v.close()
+647 
+648     def mount(self, prefix, adapter):
+649         """Registers a connection adapter to a prefix.
+650 
+651         Adapters are sorted in descending order by key length."""
+652 
+653         self.adapters[prefix] = adapter
+654         keys_to_move = [k for k in self.adapters if len(k) < len(prefix)]
+655 
+656         for key in keys_to_move:
+657             self.adapters[key] = self.adapters.pop(key)
+658 
+659     def __getstate__(self):
+660         state = dict((attr, getattr(self, attr, None)) for attr in self.__attrs__)
+661         state['redirect_cache'] = dict(self.redirect_cache)
+662         return state
+663 
+664     def __setstate__(self, state):
+665         redirect_cache = state.pop('redirect_cache', {})
+666         for attr, value in state.items():
+667             setattr(self, attr, value)
+668 
+669         self.redirect_cache = RecentlyUsedContainer(REDIRECT_CACHE_SIZE)
+670         for redirect, to in redirect_cache.items():
+671             self.redirect_cache[redirect] = to
+672 
+673 
+674 def session():
+675     """Returns a :class:`Session` for context-management."""
+676 
+677     return Session()
+
+</code><intended_behavior>Given that this file likely orchestrates higher-level session requests and might also handle exceptions thrown during such operations, ensuring that `DecodeError` and `TimeoutError` from `urllib3` are correctly caught and wrapped here as well is essential. If `adapters.py` is the primary location for direct `urllib3` interactions, then `sessions.py` would be a secondary layer that might still encounter these exceptions if they slip through the first layer of handling. The intended behavior would be similar to `adapters.py`: updating catch blocks to include `urllib3`'s `DecodeError` and `TimeoutError`, wrapping and re-raising them as `requests.exceptions`. This ensures that even if direct interactions with `urllib3` in `sessions.py` might throw these exceptions, they're still handled according to `requests`' design principles.</intended_behavior>]
+2025-10-18 15:00:52.971 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 15:00:52.971 | INFO     | Search-only: skipping patch selection
+2025-10-18 15:00:53.034 | INFO     | Task psf__requests-2674 completed successfully.
+2025-10-18 15:00:53.035 | INFO     | No patch generated. You can try running ACR again.

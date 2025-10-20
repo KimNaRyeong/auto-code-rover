@@ -1,0 +1,816 @@
+2025-10-18 10:29:24.839 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 10:29:29.427 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=267, output_tokens=12, cost=0.003030
+2025-10-18 10:29:29.428 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 10:29:29.432 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:29:37.910 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=572, output_tokens=353, cost=0.016310
+2025-10-18 10:29:37.961 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:29:40.793 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=707, output_tokens=58, cost=0.008810
+2025-10-18 10:29:40.794 | DEBUG    | Extracted a valid json.
+2025-10-18 10:29:40.794 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"runserver --nothreading\")",
+        "search_code(\"WSGI server configuration\")",
+        "search_code(\"socket\")",
+        "search_code(\"keep-alive\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 10:29:40.899 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 10:29:40.900 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 10:29:55.903 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1291, output_tokens=708, cost=0.034150
+2025-10-18 10:29:55.910 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:30:02.120 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2215, output_tokens=266, cost=0.030130
+2025-10-18 10:30:02.123 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:30:10.338 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=620, output_tokens=286, cost=0.014780
+2025-10-18 10:30:10.339 | DEBUG    | Extracted a valid json.
+2025-10-18 10:30:10.339 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/core/management/commands/runserver.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "This file's handling of the `--nothreading` option needs to ensure that connections are properly managed. Specifically, when running with `--nothreading`, the server must be capable of terminating or recycling keep-alive connections to prevent a single connection from monopolizing the server. This could involve checking if a connection should be closed after a request completes and explicitly closing it if necessary, while still preserving the ability for a developer to use keep-alive for performance reasons during development."
+        },
+        {
+            "file": "django/core/servers/basehttp.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "In the context of non-threaded server operation, this file should implement a strategy for efficiently managing keep-alive connections, preventing the server from hanging when multiple keep-alive connections are initiated by modern web browsers. This might involve setting a timeout on idle keep-alive connections in the non-threaded mode or implementing a mechanism to prioritize accepting new connections when the server is operating without threading. The solution should maintain server responsiveness and ensure that new incoming connections can be served even when older connections are kept alive by the client."
+        }
+    ]
+}
+2025-10-18 10:30:10.345 | DEBUG    | Bug location extracted successfully: [<file>django/core/management/commands/runserver.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import errno
+2 import os
+3 import re
+4 import socket
+5 import sys
+6 from datetime import datetime
+7 
+8 from django.conf import settings
+9 from django.core.management.base import BaseCommand, CommandError
+10 from django.core.servers.basehttp import (
+11     WSGIServer, get_internal_wsgi_application, run,
+12 )
+13 from django.utils import autoreload
+14 
+15 naiveip_re = re.compile(r"""^(?:
+16 (?P<addr>
+17     (?P<ipv4>\d{1,3}(?:\.\d{1,3}){3}) |         # IPv4 address
+18     (?P<ipv6>\[[a-fA-F0-9:]+\]) |               # IPv6 address
+19     (?P<fqdn>[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*) # FQDN
+20 ):)?(?P<port>\d+)$""", re.X)
+21 
+22 
+23 class Command(BaseCommand):
+24     help = "Starts a lightweight Web server for development."
+25 
+26     # Validation is called explicitly each time the server is reloaded.
+27     requires_system_checks = False
+28     stealth_options = ('shutdown_message',)
+29 
+30     default_addr = '127.0.0.1'
+31     default_addr_ipv6 = '::1'
+32     default_port = '8000'
+33     protocol = 'http'
+34     server_cls = WSGIServer
+35 
+36     def add_arguments(self, parser):
+37         parser.add_argument(
+38             'addrport', nargs='?',
+39             help='Optional port number, or ipaddr:port'
+40         )
+41         parser.add_argument(
+42             '--ipv6', '-6', action='store_true', dest='use_ipv6',
+43             help='Tells Django to use an IPv6 address.',
+44         )
+45         parser.add_argument(
+46             '--nothreading', action='store_false', dest='use_threading',
+47             help='Tells Django to NOT use threading.',
+48         )
+49         parser.add_argument(
+50             '--noreload', action='store_false', dest='use_reloader',
+51             help='Tells Django to NOT use the auto-reloader.',
+52         )
+53 
+54     def execute(self, *args, **options):
+55         if options['no_color']:
+56             # We rely on the environment because it's currently the only
+57             # way to reach WSGIRequestHandler. This seems an acceptable
+58             # compromise considering `runserver` runs indefinitely.
+59             os.environ["DJANGO_COLORS"] = "nocolor"
+60         super().execute(*args, **options)
+61 
+62     def get_handler(self, *args, **options):
+63         """Return the default WSGI handler for the runner."""
+64         return get_internal_wsgi_application()
+65 
+66     def handle(self, *args, **options):
+67         if not settings.DEBUG and not settings.ALLOWED_HOSTS:
+68             raise CommandError('You must set settings.ALLOWED_HOSTS if DEBUG is False.')
+69 
+70         self.use_ipv6 = options['use_ipv6']
+71         if self.use_ipv6 and not socket.has_ipv6:
+72             raise CommandError('Your Python does not support IPv6.')
+73         self._raw_ipv6 = False
+74         if not options['addrport']:
+75             self.addr = ''
+76             self.port = self.default_port
+77         else:
+78             m = re.match(naiveip_re, options['addrport'])
+79             if m is None:
+80                 raise CommandError('"%s" is not a valid port number '
+81                                    'or address:port pair.' % options['addrport'])
+82             self.addr, _ipv4, _ipv6, _fqdn, self.port = m.groups()
+83             if not self.port.isdigit():
+84                 raise CommandError("%r is not a valid port number." % self.port)
+85             if self.addr:
+86                 if _ipv6:
+87                     self.addr = self.addr[1:-1]
+88                     self.use_ipv6 = True
+89                     self._raw_ipv6 = True
+90                 elif self.use_ipv6 and not _fqdn:
+91                     raise CommandError('"%s" is not a valid IPv6 address.' % self.addr)
+92         if not self.addr:
+93             self.addr = self.default_addr_ipv6 if self.use_ipv6 else self.default_addr
+94             self._raw_ipv6 = self.use_ipv6
+95         self.run(**options)
+96 
+97     def run(self, **options):
+98         """Run the server, using the autoreloader if needed."""
+99         use_reloader = options['use_reloader']
+100 
+101         if use_reloader:
+102             autoreload.run_with_reloader(self.inner_run, **options)
+103         else:
+104             self.inner_run(None, **options)
+105 
+106     def inner_run(self, *args, **options):
+107         # If an exception was silenced in ManagementUtility.execute in order
+108         # to be raised in the child process, raise it now.
+109         autoreload.raise_last_exception()
+110 
+111         threading = options['use_threading']
+112         # 'shutdown_message' is a stealth option.
+113         shutdown_message = options.get('shutdown_message', '')
+114         quit_command = 'CTRL-BREAK' if sys.platform == 'win32' else 'CONTROL-C'
+115 
+116         self.stdout.write("Performing system checks...\n\n")
+117         self.check(display_num_errors=True)
+118         # Need to check migrations here, so can't use the
+119         # requires_migrations_check attribute.
+120         self.check_migrations()
+121         now = datetime.now().strftime('%B %d, %Y - %X')
+122         self.stdout.write(now)
+123         self.stdout.write((
+124             "Django version %(version)s, using settings %(settings)r\n"
+125             "Starting development server at %(protocol)s://%(addr)s:%(port)s/\n"
+126             "Quit the server with %(quit_command)s.\n"
+127         ) % {
+128             "version": self.get_version(),
+129             "settings": settings.SETTINGS_MODULE,
+130             "protocol": self.protocol,
+131             "addr": '[%s]' % self.addr if self._raw_ipv6 else self.addr,
+132             "port": self.port,
+133             "quit_command": quit_command,
+134         })
+135 
+136         try:
+137             handler = self.get_handler(*args, **options)
+138             run(self.addr, int(self.port), handler,
+139                 ipv6=self.use_ipv6, threading=threading, server_cls=self.server_cls)
+140         except OSError as e:
+141             # Use helpful error messages instead of ugly tracebacks.
+142             ERRORS = {
+143                 errno.EACCES: "You don't have permission to access that port.",
+144                 errno.EADDRINUSE: "That port is already in use.",
+145                 errno.EADDRNOTAVAIL: "That IP address can't be assigned to.",
+146             }
+147             try:
+148                 error_text = ERRORS[e.errno]
+149             except KeyError:
+150                 error_text = e
+151             self.stderr.write("Error: %s" % error_text)
+152             # Need to use an OS exit because sys.exit doesn't work in a thread
+153             os._exit(1)
+154         except KeyboardInterrupt:
+155             if shutdown_message:
+156                 self.stdout.write(shutdown_message)
+157             sys.exit(0)
+158 
+159 
+160 # Kept for backward compatibility
+161 BaseRunserverCommand = Command
+
+</code><intended_behavior>This file's handling of the `--nothreading` option needs to ensure that connections are properly managed. Specifically, when running with `--nothreading`, the server must be capable of terminating or recycling keep-alive connections to prevent a single connection from monopolizing the server. This could involve checking if a connection should be closed after a request completes and explicitly closing it if necessary, while still preserving the ability for a developer to use keep-alive for performance reasons during development.</intended_behavior>, <file>django/core/servers/basehttp.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 HTTP server that implements the Python WSGI protocol (PEP 333, rev 1.21).
+3 
+4 Based on wsgiref.simple_server which is part of the standard library since 2.5.
+5 
+6 This is a simple server for use in testing or debugging Django apps. It hasn't
+7 been reviewed for security issues. DON'T USE IT FOR PRODUCTION USE!
+8 """
+9 
+10 import logging
+11 import socket
+12 import socketserver
+13 import sys
+14 from wsgiref import simple_server
+15 
+16 from django.core.exceptions import ImproperlyConfigured
+17 from django.core.handlers.wsgi import LimitedStream
+18 from django.core.wsgi import get_wsgi_application
+19 from django.utils.module_loading import import_string
+20 
+21 __all__ = ('WSGIServer', 'WSGIRequestHandler')
+22 
+23 logger = logging.getLogger('django.server')
+24 
+25 
+26 def get_internal_wsgi_application():
+27     """
+28     Load and return the WSGI application as configured by the user in
+29     ``settings.WSGI_APPLICATION``. With the default ``startproject`` layout,
+30     this will be the ``application`` object in ``projectname/wsgi.py``.
+31 
+32     This function, and the ``WSGI_APPLICATION`` setting itself, are only useful
+33     for Django's internal server (runserver); external WSGI servers should just
+34     be configured to point to the correct application object directly.
+35 
+36     If settings.WSGI_APPLICATION is not set (is ``None``), return
+37     whatever ``django.core.wsgi.get_wsgi_application`` returns.
+38     """
+39     from django.conf import settings
+40     app_path = getattr(settings, 'WSGI_APPLICATION')
+41     if app_path is None:
+42         return get_wsgi_application()
+43 
+44     try:
+45         return import_string(app_path)
+46     except ImportError as err:
+47         raise ImproperlyConfigured(
+48             "WSGI application '%s' could not be loaded; "
+49             "Error importing module." % app_path
+50         ) from err
+51 
+52 
+53 def is_broken_pipe_error():
+54     exc_type, _, _ = sys.exc_info()
+55     return issubclass(exc_type, BrokenPipeError)
+56 
+57 
+58 class WSGIServer(simple_server.WSGIServer):
+59     """BaseHTTPServer that implements the Python WSGI protocol"""
+60 
+61     request_queue_size = 10
+62 
+63     def __init__(self, *args, ipv6=False, allow_reuse_address=True, **kwargs):
+64         if ipv6:
+65             self.address_family = socket.AF_INET6
+66         self.allow_reuse_address = allow_reuse_address
+67         super().__init__(*args, **kwargs)
+68 
+69     def handle_error(self, request, client_address):
+70         if is_broken_pipe_error():
+71             logger.info("- Broken pipe from %s\n", client_address)
+72         else:
+73             super().handle_error(request, client_address)
+74 
+75 
+76 class ThreadedWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+77     """A threaded version of the WSGIServer"""
+78     daemon_threads = True
+79 
+80 
+81 class ServerHandler(simple_server.ServerHandler):
+82     http_version = '1.1'
+83 
+84     def __init__(self, stdin, stdout, stderr, environ, **kwargs):
+85         """
+86         Use a LimitedStream so that unread request data will be ignored at
+87         the end of the request. WSGIRequest uses a LimitedStream but it
+88         shouldn't discard the data since the upstream servers usually do this.
+89         This fix applies only for testserver/runserver.
+90         """
+91         try:
+92             content_length = int(environ.get('CONTENT_LENGTH'))
+93         except (ValueError, TypeError):
+94             content_length = 0
+95         super().__init__(LimitedStream(stdin, content_length), stdout, stderr, environ, **kwargs)
+96 
+97     def cleanup_headers(self):
+98         super().cleanup_headers()
+99         # HTTP/1.1 requires support for persistent connections. Send 'close' if
+100         # the content length is unknown to prevent clients from reusing the
+101         # connection.
+102         if 'Content-Length' not in self.headers:
+103             self.headers['Connection'] = 'close'
+104         # Mark the connection for closing if it's set as such above or if the
+105         # application sent the header.
+106         if self.headers.get('Connection') == 'close':
+107             self.request_handler.close_connection = True
+108 
+109     def close(self):
+110         self.get_stdin()._read_limited()
+111         super().close()
+112 
+113     def handle_error(self):
+114         # Ignore broken pipe errors, otherwise pass on
+115         if not is_broken_pipe_error():
+116             super().handle_error()
+117 
+118 
+119 class WSGIRequestHandler(simple_server.WSGIRequestHandler):
+120     protocol_version = 'HTTP/1.1'
+121 
+122     def address_string(self):
+123         # Short-circuit parent method to not call socket.getfqdn
+124         return self.client_address[0]
+125 
+126     def log_message(self, format, *args):
+127         extra = {
+128             'request': self.request,
+129             'server_time': self.log_date_time_string(),
+130         }
+131         if args[1][0] == '4':
+132             # 0x16 = Handshake, 0x03 = SSL 3.0 or TLS 1.x
+133             if args[0].startswith('\x16\x03'):
+134                 extra['status_code'] = 500
+135                 logger.error(
+136                     "You're accessing the development server over HTTPS, but "
+137                     "it only supports HTTP.\n", extra=extra,
+138                 )
+139                 return
+140 
+141         if args[1].isdigit() and len(args[1]) == 3:
+142             status_code = int(args[1])
+143             extra['status_code'] = status_code
+144 
+145             if status_code >= 500:
+146                 level = logger.error
+147             elif status_code >= 400:
+148                 level = logger.warning
+149             else:
+150                 level = logger.info
+151         else:
+152             level = logger.info
+153 
+154         level(format, *args, extra=extra)
+155 
+156     def get_environ(self):
+157         # Strip all headers with underscores in the name before constructing
+158         # the WSGI environ. This prevents header-spoofing based on ambiguity
+159         # between underscores and dashes both normalized to underscores in WSGI
+160         # env vars. Nginx and Apache 2.4+ both do this as well.
+161         for k in self.headers:
+162             if '_' in k:
+163                 del self.headers[k]
+164 
+165         return super().get_environ()
+166 
+167     def handle(self):
+168         self.close_connection = True
+169         self.handle_one_request()
+170         while not self.close_connection:
+171             self.handle_one_request()
+172         try:
+173             self.connection.shutdown(socket.SHUT_WR)
+174         except (AttributeError, OSError):
+175             pass
+176 
+177     def handle_one_request(self):
+178         """Copy of WSGIRequestHandler.handle() but with different ServerHandler"""
+179         self.raw_requestline = self.rfile.readline(65537)
+180         if len(self.raw_requestline) > 65536:
+181             self.requestline = ''
+182             self.request_version = ''
+183             self.command = ''
+184             self.send_error(414)
+185             return
+186 
+187         if not self.parse_request():  # An error code has been sent, just exit
+188             return
+189 
+190         handler = ServerHandler(
+191             self.rfile, self.wfile, self.get_stderr(), self.get_environ()
+192         )
+193         handler.request_handler = self      # backpointer for logging & connection closing
+194         handler.run(self.server.get_app())
+195 
+196 
+197 def run(addr, port, wsgi_handler, ipv6=False, threading=False, server_cls=WSGIServer):
+198     server_address = (addr, port)
+199     if threading:
+200         httpd_cls = type('WSGIServer', (socketserver.ThreadingMixIn, server_cls), {})
+201     else:
+202         httpd_cls = server_cls
+203     httpd = httpd_cls(server_address, WSGIRequestHandler, ipv6=ipv6)
+204     if threading:
+205         # ThreadingMixIn.daemon_threads indicates how threads will behave on an
+206         # abrupt shutdown; like quitting the server by the user or restarting
+207         # by the auto-reloader. True means the server will not wait for thread
+208         # termination before it quits. This will make auto-reloader faster
+209         # and will prevent the need to kill the server manually if a thread
+210         # isn't terminating correctly.
+211         httpd.daemon_threads = True
+212     httpd.set_app(wsgi_handler)
+213     httpd.serve_forever()
+
+</code><intended_behavior>In the context of non-threaded server operation, this file should implement a strategy for efficiently managing keep-alive connections, preventing the server from hanging when multiple keep-alive connections are initiated by modern web browsers. This might involve setting a timeout on idle keep-alive connections in the non-threaded mode or implementing a mechanism to prioritize accepting new connections when the server is operating without threading. The solution should maintain server responsiveness and ensure that new incoming connections can be served even when older connections are kept alive by the client.</intended_behavior>]
+2025-10-18 10:30:10.345 | INFO     | Search completed. Bug locations: [<file>django/core/management/commands/runserver.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import errno
+2 import os
+3 import re
+4 import socket
+5 import sys
+6 from datetime import datetime
+7 
+8 from django.conf import settings
+9 from django.core.management.base import BaseCommand, CommandError
+10 from django.core.servers.basehttp import (
+11     WSGIServer, get_internal_wsgi_application, run,
+12 )
+13 from django.utils import autoreload
+14 
+15 naiveip_re = re.compile(r"""^(?:
+16 (?P<addr>
+17     (?P<ipv4>\d{1,3}(?:\.\d{1,3}){3}) |         # IPv4 address
+18     (?P<ipv6>\[[a-fA-F0-9:]+\]) |               # IPv6 address
+19     (?P<fqdn>[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*) # FQDN
+20 ):)?(?P<port>\d+)$""", re.X)
+21 
+22 
+23 class Command(BaseCommand):
+24     help = "Starts a lightweight Web server for development."
+25 
+26     # Validation is called explicitly each time the server is reloaded.
+27     requires_system_checks = False
+28     stealth_options = ('shutdown_message',)
+29 
+30     default_addr = '127.0.0.1'
+31     default_addr_ipv6 = '::1'
+32     default_port = '8000'
+33     protocol = 'http'
+34     server_cls = WSGIServer
+35 
+36     def add_arguments(self, parser):
+37         parser.add_argument(
+38             'addrport', nargs='?',
+39             help='Optional port number, or ipaddr:port'
+40         )
+41         parser.add_argument(
+42             '--ipv6', '-6', action='store_true', dest='use_ipv6',
+43             help='Tells Django to use an IPv6 address.',
+44         )
+45         parser.add_argument(
+46             '--nothreading', action='store_false', dest='use_threading',
+47             help='Tells Django to NOT use threading.',
+48         )
+49         parser.add_argument(
+50             '--noreload', action='store_false', dest='use_reloader',
+51             help='Tells Django to NOT use the auto-reloader.',
+52         )
+53 
+54     def execute(self, *args, **options):
+55         if options['no_color']:
+56             # We rely on the environment because it's currently the only
+57             # way to reach WSGIRequestHandler. This seems an acceptable
+58             # compromise considering `runserver` runs indefinitely.
+59             os.environ["DJANGO_COLORS"] = "nocolor"
+60         super().execute(*args, **options)
+61 
+62     def get_handler(self, *args, **options):
+63         """Return the default WSGI handler for the runner."""
+64         return get_internal_wsgi_application()
+65 
+66     def handle(self, *args, **options):
+67         if not settings.DEBUG and not settings.ALLOWED_HOSTS:
+68             raise CommandError('You must set settings.ALLOWED_HOSTS if DEBUG is False.')
+69 
+70         self.use_ipv6 = options['use_ipv6']
+71         if self.use_ipv6 and not socket.has_ipv6:
+72             raise CommandError('Your Python does not support IPv6.')
+73         self._raw_ipv6 = False
+74         if not options['addrport']:
+75             self.addr = ''
+76             self.port = self.default_port
+77         else:
+78             m = re.match(naiveip_re, options['addrport'])
+79             if m is None:
+80                 raise CommandError('"%s" is not a valid port number '
+81                                    'or address:port pair.' % options['addrport'])
+82             self.addr, _ipv4, _ipv6, _fqdn, self.port = m.groups()
+83             if not self.port.isdigit():
+84                 raise CommandError("%r is not a valid port number." % self.port)
+85             if self.addr:
+86                 if _ipv6:
+87                     self.addr = self.addr[1:-1]
+88                     self.use_ipv6 = True
+89                     self._raw_ipv6 = True
+90                 elif self.use_ipv6 and not _fqdn:
+91                     raise CommandError('"%s" is not a valid IPv6 address.' % self.addr)
+92         if not self.addr:
+93             self.addr = self.default_addr_ipv6 if self.use_ipv6 else self.default_addr
+94             self._raw_ipv6 = self.use_ipv6
+95         self.run(**options)
+96 
+97     def run(self, **options):
+98         """Run the server, using the autoreloader if needed."""
+99         use_reloader = options['use_reloader']
+100 
+101         if use_reloader:
+102             autoreload.run_with_reloader(self.inner_run, **options)
+103         else:
+104             self.inner_run(None, **options)
+105 
+106     def inner_run(self, *args, **options):
+107         # If an exception was silenced in ManagementUtility.execute in order
+108         # to be raised in the child process, raise it now.
+109         autoreload.raise_last_exception()
+110 
+111         threading = options['use_threading']
+112         # 'shutdown_message' is a stealth option.
+113         shutdown_message = options.get('shutdown_message', '')
+114         quit_command = 'CTRL-BREAK' if sys.platform == 'win32' else 'CONTROL-C'
+115 
+116         self.stdout.write("Performing system checks...\n\n")
+117         self.check(display_num_errors=True)
+118         # Need to check migrations here, so can't use the
+119         # requires_migrations_check attribute.
+120         self.check_migrations()
+121         now = datetime.now().strftime('%B %d, %Y - %X')
+122         self.stdout.write(now)
+123         self.stdout.write((
+124             "Django version %(version)s, using settings %(settings)r\n"
+125             "Starting development server at %(protocol)s://%(addr)s:%(port)s/\n"
+126             "Quit the server with %(quit_command)s.\n"
+127         ) % {
+128             "version": self.get_version(),
+129             "settings": settings.SETTINGS_MODULE,
+130             "protocol": self.protocol,
+131             "addr": '[%s]' % self.addr if self._raw_ipv6 else self.addr,
+132             "port": self.port,
+133             "quit_command": quit_command,
+134         })
+135 
+136         try:
+137             handler = self.get_handler(*args, **options)
+138             run(self.addr, int(self.port), handler,
+139                 ipv6=self.use_ipv6, threading=threading, server_cls=self.server_cls)
+140         except OSError as e:
+141             # Use helpful error messages instead of ugly tracebacks.
+142             ERRORS = {
+143                 errno.EACCES: "You don't have permission to access that port.",
+144                 errno.EADDRINUSE: "That port is already in use.",
+145                 errno.EADDRNOTAVAIL: "That IP address can't be assigned to.",
+146             }
+147             try:
+148                 error_text = ERRORS[e.errno]
+149             except KeyError:
+150                 error_text = e
+151             self.stderr.write("Error: %s" % error_text)
+152             # Need to use an OS exit because sys.exit doesn't work in a thread
+153             os._exit(1)
+154         except KeyboardInterrupt:
+155             if shutdown_message:
+156                 self.stdout.write(shutdown_message)
+157             sys.exit(0)
+158 
+159 
+160 # Kept for backward compatibility
+161 BaseRunserverCommand = Command
+
+</code><intended_behavior>This file's handling of the `--nothreading` option needs to ensure that connections are properly managed. Specifically, when running with `--nothreading`, the server must be capable of terminating or recycling keep-alive connections to prevent a single connection from monopolizing the server. This could involve checking if a connection should be closed after a request completes and explicitly closing it if necessary, while still preserving the ability for a developer to use keep-alive for performance reasons during development.</intended_behavior>, <file>django/core/servers/basehttp.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 HTTP server that implements the Python WSGI protocol (PEP 333, rev 1.21).
+3 
+4 Based on wsgiref.simple_server which is part of the standard library since 2.5.
+5 
+6 This is a simple server for use in testing or debugging Django apps. It hasn't
+7 been reviewed for security issues. DON'T USE IT FOR PRODUCTION USE!
+8 """
+9 
+10 import logging
+11 import socket
+12 import socketserver
+13 import sys
+14 from wsgiref import simple_server
+15 
+16 from django.core.exceptions import ImproperlyConfigured
+17 from django.core.handlers.wsgi import LimitedStream
+18 from django.core.wsgi import get_wsgi_application
+19 from django.utils.module_loading import import_string
+20 
+21 __all__ = ('WSGIServer', 'WSGIRequestHandler')
+22 
+23 logger = logging.getLogger('django.server')
+24 
+25 
+26 def get_internal_wsgi_application():
+27     """
+28     Load and return the WSGI application as configured by the user in
+29     ``settings.WSGI_APPLICATION``. With the default ``startproject`` layout,
+30     this will be the ``application`` object in ``projectname/wsgi.py``.
+31 
+32     This function, and the ``WSGI_APPLICATION`` setting itself, are only useful
+33     for Django's internal server (runserver); external WSGI servers should just
+34     be configured to point to the correct application object directly.
+35 
+36     If settings.WSGI_APPLICATION is not set (is ``None``), return
+37     whatever ``django.core.wsgi.get_wsgi_application`` returns.
+38     """
+39     from django.conf import settings
+40     app_path = getattr(settings, 'WSGI_APPLICATION')
+41     if app_path is None:
+42         return get_wsgi_application()
+43 
+44     try:
+45         return import_string(app_path)
+46     except ImportError as err:
+47         raise ImproperlyConfigured(
+48             "WSGI application '%s' could not be loaded; "
+49             "Error importing module." % app_path
+50         ) from err
+51 
+52 
+53 def is_broken_pipe_error():
+54     exc_type, _, _ = sys.exc_info()
+55     return issubclass(exc_type, BrokenPipeError)
+56 
+57 
+58 class WSGIServer(simple_server.WSGIServer):
+59     """BaseHTTPServer that implements the Python WSGI protocol"""
+60 
+61     request_queue_size = 10
+62 
+63     def __init__(self, *args, ipv6=False, allow_reuse_address=True, **kwargs):
+64         if ipv6:
+65             self.address_family = socket.AF_INET6
+66         self.allow_reuse_address = allow_reuse_address
+67         super().__init__(*args, **kwargs)
+68 
+69     def handle_error(self, request, client_address):
+70         if is_broken_pipe_error():
+71             logger.info("- Broken pipe from %s\n", client_address)
+72         else:
+73             super().handle_error(request, client_address)
+74 
+75 
+76 class ThreadedWSGIServer(socketserver.ThreadingMixIn, WSGIServer):
+77     """A threaded version of the WSGIServer"""
+78     daemon_threads = True
+79 
+80 
+81 class ServerHandler(simple_server.ServerHandler):
+82     http_version = '1.1'
+83 
+84     def __init__(self, stdin, stdout, stderr, environ, **kwargs):
+85         """
+86         Use a LimitedStream so that unread request data will be ignored at
+87         the end of the request. WSGIRequest uses a LimitedStream but it
+88         shouldn't discard the data since the upstream servers usually do this.
+89         This fix applies only for testserver/runserver.
+90         """
+91         try:
+92             content_length = int(environ.get('CONTENT_LENGTH'))
+93         except (ValueError, TypeError):
+94             content_length = 0
+95         super().__init__(LimitedStream(stdin, content_length), stdout, stderr, environ, **kwargs)
+96 
+97     def cleanup_headers(self):
+98         super().cleanup_headers()
+99         # HTTP/1.1 requires support for persistent connections. Send 'close' if
+100         # the content length is unknown to prevent clients from reusing the
+101         # connection.
+102         if 'Content-Length' not in self.headers:
+103             self.headers['Connection'] = 'close'
+104         # Mark the connection for closing if it's set as such above or if the
+105         # application sent the header.
+106         if self.headers.get('Connection') == 'close':
+107             self.request_handler.close_connection = True
+108 
+109     def close(self):
+110         self.get_stdin()._read_limited()
+111         super().close()
+112 
+113     def handle_error(self):
+114         # Ignore broken pipe errors, otherwise pass on
+115         if not is_broken_pipe_error():
+116             super().handle_error()
+117 
+118 
+119 class WSGIRequestHandler(simple_server.WSGIRequestHandler):
+120     protocol_version = 'HTTP/1.1'
+121 
+122     def address_string(self):
+123         # Short-circuit parent method to not call socket.getfqdn
+124         return self.client_address[0]
+125 
+126     def log_message(self, format, *args):
+127         extra = {
+128             'request': self.request,
+129             'server_time': self.log_date_time_string(),
+130         }
+131         if args[1][0] == '4':
+132             # 0x16 = Handshake, 0x03 = SSL 3.0 or TLS 1.x
+133             if args[0].startswith('\x16\x03'):
+134                 extra['status_code'] = 500
+135                 logger.error(
+136                     "You're accessing the development server over HTTPS, but "
+137                     "it only supports HTTP.\n", extra=extra,
+138                 )
+139                 return
+140 
+141         if args[1].isdigit() and len(args[1]) == 3:
+142             status_code = int(args[1])
+143             extra['status_code'] = status_code
+144 
+145             if status_code >= 500:
+146                 level = logger.error
+147             elif status_code >= 400:
+148                 level = logger.warning
+149             else:
+150                 level = logger.info
+151         else:
+152             level = logger.info
+153 
+154         level(format, *args, extra=extra)
+155 
+156     def get_environ(self):
+157         # Strip all headers with underscores in the name before constructing
+158         # the WSGI environ. This prevents header-spoofing based on ambiguity
+159         # between underscores and dashes both normalized to underscores in WSGI
+160         # env vars. Nginx and Apache 2.4+ both do this as well.
+161         for k in self.headers:
+162             if '_' in k:
+163                 del self.headers[k]
+164 
+165         return super().get_environ()
+166 
+167     def handle(self):
+168         self.close_connection = True
+169         self.handle_one_request()
+170         while not self.close_connection:
+171             self.handle_one_request()
+172         try:
+173             self.connection.shutdown(socket.SHUT_WR)
+174         except (AttributeError, OSError):
+175             pass
+176 
+177     def handle_one_request(self):
+178         """Copy of WSGIRequestHandler.handle() but with different ServerHandler"""
+179         self.raw_requestline = self.rfile.readline(65537)
+180         if len(self.raw_requestline) > 65536:
+181             self.requestline = ''
+182             self.request_version = ''
+183             self.command = ''
+184             self.send_error(414)
+185             return
+186 
+187         if not self.parse_request():  # An error code has been sent, just exit
+188             return
+189 
+190         handler = ServerHandler(
+191             self.rfile, self.wfile, self.get_stderr(), self.get_environ()
+192         )
+193         handler.request_handler = self      # backpointer for logging & connection closing
+194         handler.run(self.server.get_app())
+195 
+196 
+197 def run(addr, port, wsgi_handler, ipv6=False, threading=False, server_cls=WSGIServer):
+198     server_address = (addr, port)
+199     if threading:
+200         httpd_cls = type('WSGIServer', (socketserver.ThreadingMixIn, server_cls), {})
+201     else:
+202         httpd_cls = server_cls
+203     httpd = httpd_cls(server_address, WSGIRequestHandler, ipv6=ipv6)
+204     if threading:
+205         # ThreadingMixIn.daemon_threads indicates how threads will behave on an
+206         # abrupt shutdown; like quitting the server by the user or restarting
+207         # by the auto-reloader. True means the server will not wait for thread
+208         # termination before it quits. This will make auto-reloader faster
+209         # and will prevent the need to kill the server manually if a thread
+210         # isn't terminating correctly.
+211         httpd.daemon_threads = True
+212     httpd.set_app(wsgi_handler)
+213     httpd.serve_forever()
+
+</code><intended_behavior>In the context of non-threaded server operation, this file should implement a strategy for efficiently managing keep-alive connections, preventing the server from hanging when multiple keep-alive connections are initiated by modern web browsers. This might involve setting a timeout on idle keep-alive connections in the non-threaded mode or implementing a mechanism to prioritize accepting new connections when the server is operating without threading. The solution should maintain server responsiveness and ensure that new incoming connections can be served even when older connections are kept alive by the client.</intended_behavior>]
+2025-10-18 10:30:10.346 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 10:30:10.346 | INFO     | Search-only: skipping patch selection
+2025-10-18 10:30:10.491 | INFO     | Task django__django-11543 completed successfully.
+2025-10-18 10:30:10.492 | INFO     | No patch generated. You can try running ACR again.

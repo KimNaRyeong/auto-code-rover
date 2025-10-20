@@ -1,0 +1,951 @@
+2025-10-18 10:53:11.553 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 10:53:14.472 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=197, output_tokens=12, cost=0.002330
+2025-10-18 10:53:14.473 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 10:53:14.477 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:53:21.752 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=504, output_tokens=196, cost=0.010920
+2025-10-18 10:53:21.756 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:53:25.362 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=550, output_tokens=46, cost=0.006880
+2025-10-18 10:53:25.363 | DEBUG    | Extracted a valid json.
+2025-10-18 10:53:25.363 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method(\"delete\")",
+        "search_method(\"send_pre_delete_signal\")",
+        "search_method(\"send_post_delete_signal\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 10:53:25.382 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 10:53:25.383 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 10:53:37.891 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1295, output_tokens=628, cost=0.031790
+2025-10-18 10:53:37.904 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:53:38.993 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2139, output_tokens=18, cost=0.021930
+2025-10-18 10:53:38.996 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:53:42.753 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=372, output_tokens=36, cost=0.004800
+2025-10-18 10:53:42.754 | DEBUG    | Extracted a valid json.
+2025-10-18 10:53:42.754 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"pre_delete.send\")",
+        "search_code(\"post_delete.send\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 10:53:42.819 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 10:53:42.819 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 10:53:54.705 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2499, output_tokens=508, cost=0.040230
+2025-10-18 10:53:54.711 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:54:00.244 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3223, output_tokens=245, cost=0.039580
+2025-10-18 10:54:00.248 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:54:08.293 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=599, output_tokens=231, cost=0.012920
+2025-10-18 10:54:08.294 | DEBUG    | Extracted a valid json.
+2025-10-18 10:54:08.294 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "django/db/models/deletion.py", "class": "Collector", "method": "delete", "intended_behavior": "The `delete` method within the `Collector` class should be enhanced to include additional context when dispatching both `pre_delete` and `post_delete` signals. Specifically, the method should be modified to carry information about the deletion's origin, differentiating between deletions initiated via a model instance (`model.delete()`) versus those initiated via a queryset (`queryset.delete()`). This could be accomplished by introducing a new parameter to the signal, such as `deletion_origin` that could be set to an appropriate value based on the context of the deletion call within the `delete` method workflow. This enhancement should be implemented in a way that ensures backward compatibility with existing signal receivers that might not expect the new parameter. As such, the addition should be optional or managed in a way that non-expecting receivers can ignore it without issues. The primary goal is to enrich the context provided by deletion signals without disrupting existing functionalities or signal handling implementations."}]
+}
+2025-10-18 10:54:08.300 | DEBUG    | Bug location extracted successfully: [<file>django/db/models/deletion.py</file>
+<class>Collector</class>
+<method>delete</method>
+<code>
+381     def delete(self):
+382         # sort instance collections
+383         for model, instances in self.data.items():
+384             self.data[model] = sorted(instances, key=attrgetter("pk"))
+385 
+386         # if possible, bring the models in an order suitable for databases that
+387         # don't support transactions or cannot defer constraint checks until the
+388         # end of a transaction.
+389         self.sort()
+390         # number of objects deleted for each model label
+391         deleted_counter = Counter()
+392 
+393         # Optimize for the case with a single obj and no dependencies
+394         if len(self.data) == 1 and len(instances) == 1:
+395             instance = list(instances)[0]
+396             if self.can_fast_delete(instance):
+397                 with transaction.mark_for_rollback_on_error(self.using):
+398                     count = sql.DeleteQuery(model).delete_batch([instance.pk], self.using)
+399                 setattr(instance, model._meta.pk.attname, None)
+400                 return count, {model._meta.label: count}
+401 
+402         with transaction.atomic(using=self.using, savepoint=False):
+403             # send pre_delete signals
+404             for model, obj in self.instances_with_model():
+405                 if not model._meta.auto_created:
+406                     signals.pre_delete.send(
+407                         sender=model, instance=obj, using=self.using
+408                     )
+409 
+410             # fast deletes
+411             for qs in self.fast_deletes:
+412                 count = qs._raw_delete(using=self.using)
+413                 if count:
+414                     deleted_counter[qs.model._meta.label] += count
+415 
+416             # update fields
+417             for model, instances_for_fieldvalues in self.field_updates.items():
+418                 for (field, value), instances in instances_for_fieldvalues.items():
+419                     query = sql.UpdateQuery(model)
+420                     query.update_batch([obj.pk for obj in instances],
+421                                        {field.name: value}, self.using)
+422 
+423             # reverse instance collections
+424             for instances in self.data.values():
+425                 instances.reverse()
+426 
+427             # delete instances
+428             for model, instances in self.data.items():
+429                 query = sql.DeleteQuery(model)
+430                 pk_list = [obj.pk for obj in instances]
+431                 count = query.delete_batch(pk_list, self.using)
+432                 if count:
+433                     deleted_counter[model._meta.label] += count
+434 
+435                 if not model._meta.auto_created:
+436                     for obj in instances:
+437                         signals.post_delete.send(
+438                             sender=model, instance=obj, using=self.using
+439                         )
+440 
+441         # update collected instances
+442         for instances_for_fieldvalues in self.field_updates.values():
+443             for (field, value), instances in instances_for_fieldvalues.items():
+444                 for obj in instances:
+445                     setattr(obj, field.attname, value)
+446         for model, instances in self.data.items():
+447             for instance in instances:
+448                 setattr(instance, model._meta.pk.attname, None)
+449         return sum(deleted_counter.values()), dict(deleted_counter)
+
+</code><intended_behavior>The `delete` method within the `Collector` class should be enhanced to include additional context when dispatching both `pre_delete` and `post_delete` signals. Specifically, the method should be modified to carry information about the deletion's origin, differentiating between deletions initiated via a model instance (`model.delete()`) versus those initiated via a queryset (`queryset.delete()`). This could be accomplished by introducing a new parameter to the signal, such as `deletion_origin` that could be set to an appropriate value based on the context of the deletion call within the `delete` method workflow. This enhancement should be implemented in a way that ensures backward compatibility with existing signal receivers that might not expect the new parameter. As such, the addition should be optional or managed in a way that non-expecting receivers can ignore it without issues. The primary goal is to enrich the context provided by deletion signals without disrupting existing functionalities or signal handling implementations.</intended_behavior>, <file>django/db/models/deletion.py</file>
+<class>Collector</class>
+<method>None</method>
+<code>
+78 class Collector:
+79     def __init__(self, using):
+80         self.using = using
+81         # Initially, {model: {instances}}, later values become lists.
+82         self.data = defaultdict(set)
+83         # {model: {(field, value): {instances}}}
+84         self.field_updates = defaultdict(partial(defaultdict, set))
+85         # {model: {field: {instances}}}
+86         self.restricted_objects = defaultdict(partial(defaultdict, set))
+87         # fast_deletes is a list of queryset-likes that can be deleted without
+88         # fetching the objects into memory.
+89         self.fast_deletes = []
+90 
+91         # Tracks deletion-order dependency for databases without transactions
+92         # or ability to defer constraint checks. Only concrete model classes
+93         # should be included, as the dependencies exist only between actual
+94         # database tables; proxy models are represented here by their concrete
+95         # parent.
+96         self.dependencies = defaultdict(set)  # {model: {models}}
+97 
+98     def add(self, objs, source=None, nullable=False, reverse_dependency=False):
+99         """
+100         Add 'objs' to the collection of objects to be deleted.  If the call is
+101         the result of a cascade, 'source' should be the model that caused it,
+102         and 'nullable' should be set to True if the relation can be null.
+103 
+104         Return a list of all objects that were not already collected.
+105         """
+106         if not objs:
+107             return []
+108         new_objs = []
+109         model = objs[0].__class__
+110         instances = self.data[model]
+111         for obj in objs:
+112             if obj not in instances:
+113                 new_objs.append(obj)
+114         instances.update(new_objs)
+115         # Nullable relationships can be ignored -- they are nulled out before
+116         # deleting, and therefore do not affect the order in which objects have
+117         # to be deleted.
+118         if source is not None and not nullable:
+119             self.add_dependency(source, model, reverse_dependency=reverse_dependency)
+120         return new_objs
+121 
+122     def add_dependency(self, model, dependency, reverse_dependency=False):
+123         if reverse_dependency:
+124             model, dependency = dependency, model
+125         self.dependencies[model._meta.concrete_model].add(dependency._meta.concrete_model)
+126         self.data.setdefault(dependency, self.data.default_factory())
+127 
+128     def add_field_update(self, field, value, objs):
+129         """
+130         Schedule a field update. 'objs' must be a homogeneous iterable
+131         collection of model instances (e.g. a QuerySet).
+132         """
+133         if not objs:
+134             return
+135         model = objs[0].__class__
+136         self.field_updates[model][field, value].update(objs)
+137 
+138     def add_restricted_objects(self, field, objs):
+139         if objs:
+140             model = objs[0].__class__
+141             self.restricted_objects[model][field].update(objs)
+142 
+143     def clear_restricted_objects_from_set(self, model, objs):
+144         if model in self.restricted_objects:
+145             self.restricted_objects[model] = {
+146                 field: items - objs
+147                 for field, items in self.restricted_objects[model].items()
+148             }
+149 
+150     def clear_restricted_objects_from_queryset(self, model, qs):
+151         if model in self.restricted_objects:
+152             objs = set(qs.filter(pk__in=[
+153                 obj.pk
+154                 for objs in self.restricted_objects[model].values() for obj in objs
+155             ]))
+156             self.clear_restricted_objects_from_set(model, objs)
+157 
+158     def _has_signal_listeners(self, model):
+159         return (
+160             signals.pre_delete.has_listeners(model) or
+161             signals.post_delete.has_listeners(model)
+162         )
+163 
+164     def can_fast_delete(self, objs, from_field=None):
+165         """
+166         Determine if the objects in the given queryset-like or single object
+167         can be fast-deleted. This can be done if there are no cascades, no
+168         parents and no signal listeners for the object class.
+169 
+170         The 'from_field' tells where we are coming from - we need this to
+171         determine if the objects are in fact to be deleted. Allow also
+172         skipping parent -> child -> parent chain preventing fast delete of
+173         the child.
+174         """
+175         if from_field and from_field.remote_field.on_delete is not CASCADE:
+176             return False
+177         if hasattr(objs, '_meta'):
+178             model = objs._meta.model
+179         elif hasattr(objs, 'model') and hasattr(objs, '_raw_delete'):
+180             model = objs.model
+181         else:
+182             return False
+183         if self._has_signal_listeners(model):
+184             return False
+185         # The use of from_field comes from the need to avoid cascade back to
+186         # parent when parent delete is cascading to child.
+187         opts = model._meta
+188         return (
+189             all(link == from_field for link in opts.concrete_model._meta.parents.values()) and
+190             # Foreign keys pointing to this model.
+191             all(
+192                 related.field.remote_field.on_delete is DO_NOTHING
+193                 for related in get_candidate_relations_to_delete(opts)
+194             ) and (
+195                 # Something like generic foreign key.
+196                 not any(hasattr(field, 'bulk_related_objects') for field in opts.private_fields)
+197             )
+198         )
+199 
+200     def get_del_batches(self, objs, fields):
+201         """
+202         Return the objs in suitably sized batches for the used connection.
+203         """
+204         field_names = [field.name for field in fields]
+205         conn_batch_size = max(
+206             connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+207         if len(objs) > conn_batch_size:
+208             return [objs[i:i + conn_batch_size]
+209                     for i in range(0, len(objs), conn_batch_size)]
+210         else:
+211             return [objs]
+212 
+213     def collect(self, objs, source=None, nullable=False, collect_related=True,
+214                 source_attr=None, reverse_dependency=False, keep_parents=False,
+215                 fail_on_restricted=True):
+216         """
+217         Add 'objs' to the collection of objects to be deleted as well as all
+218         parent instances.  'objs' must be a homogeneous iterable collection of
+219         model instances (e.g. a QuerySet).  If 'collect_related' is True,
+220         related objects will be handled by their respective on_delete handler.
+221 
+222         If the call is the result of a cascade, 'source' should be the model
+223         that caused it and 'nullable' should be set to True, if the relation
+224         can be null.
+225 
+226         If 'reverse_dependency' is True, 'source' will be deleted before the
+227         current model, rather than after. (Needed for cascading to parent
+228         models, the one case in which the cascade follows the forwards
+229         direction of an FK rather than the reverse direction.)
+230 
+231         If 'keep_parents' is True, data of parent model's will be not deleted.
+232 
+233         If 'fail_on_restricted' is False, error won't be raised even if it's
+234         prohibited to delete such objects due to RESTRICT, that defers
+235         restricted object checking in recursive calls where the top-level call
+236         may need to collect more objects to determine whether restricted ones
+237         can be deleted.
+238         """
+239         if self.can_fast_delete(objs):
+240             self.fast_deletes.append(objs)
+241             return
+242         new_objs = self.add(objs, source, nullable,
+243                             reverse_dependency=reverse_dependency)
+244         if not new_objs:
+245             return
+246 
+247         model = new_objs[0].__class__
+248 
+249         if not keep_parents:
+250             # Recursively collect concrete model's parent models, but not their
+251             # related objects. These will be found by meta.get_fields()
+252             concrete_model = model._meta.concrete_model
+253             for ptr in concrete_model._meta.parents.values():
+254                 if ptr:
+255                     parent_objs = [getattr(obj, ptr.name) for obj in new_objs]
+256                     self.collect(parent_objs, source=model,
+257                                  source_attr=ptr.remote_field.related_name,
+258                                  collect_related=False,
+259                                  reverse_dependency=True,
+260                                  fail_on_restricted=False)
+261         if not collect_related:
+262             return
+263 
+264         if keep_parents:
+265             parents = set(model._meta.get_parent_list())
+266         model_fast_deletes = defaultdict(list)
+267         protected_objects = defaultdict(list)
+268         for related in get_candidate_relations_to_delete(model._meta):
+269             # Preserve parent reverse relationships if keep_parents=True.
+270             if keep_parents and related.model in parents:
+271                 continue
+272             field = related.field
+273             if field.remote_field.on_delete == DO_NOTHING:
+274                 continue
+275             related_model = related.related_model
+276             if self.can_fast_delete(related_model, from_field=field):
+277                 model_fast_deletes[related_model].append(field)
+278                 continue
+279             batches = self.get_del_batches(new_objs, [field])
+280             for batch in batches:
+281                 sub_objs = self.related_objects(related_model, [field], batch)
+282                 # Non-referenced fields can be deferred if no signal receivers
+283                 # are connected for the related model as they'll never be
+284                 # exposed to the user. Skip field deferring when some
+285                 # relationships are select_related as interactions between both
+286                 # features are hard to get right. This should only happen in
+287                 # the rare cases where .related_objects is overridden anyway.
+288                 if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
+289                     referenced_fields = set(chain.from_iterable(
+290                         (rf.attname for rf in rel.field.foreign_related_fields)
+291                         for rel in get_candidate_relations_to_delete(related_model._meta)
+292                     ))
+293                     sub_objs = sub_objs.only(*tuple(referenced_fields))
+294                 if sub_objs:
+295                     try:
+296                         field.remote_field.on_delete(self, field, sub_objs, self.using)
+297                     except ProtectedError as error:
+298                         key = "'%s.%s'" % (field.model.__name__, field.name)
+299                         protected_objects[key] += error.protected_objects
+300         if protected_objects:
+301             raise ProtectedError(
+302                 'Cannot delete some instances of model %r because they are '
+303                 'referenced through protected foreign keys: %s.' % (
+304                     model.__name__,
+305                     ', '.join(protected_objects),
+306                 ),
+307                 set(chain.from_iterable(protected_objects.values())),
+308             )
+309         for related_model, related_fields in model_fast_deletes.items():
+310             batches = self.get_del_batches(new_objs, related_fields)
+311             for batch in batches:
+312                 sub_objs = self.related_objects(related_model, related_fields, batch)
+313                 self.fast_deletes.append(sub_objs)
+314         for field in model._meta.private_fields:
+315             if hasattr(field, 'bulk_related_objects'):
+316                 # It's something like generic foreign key.
+317                 sub_objs = field.bulk_related_objects(new_objs, self.using)
+318                 self.collect(sub_objs, source=model, nullable=True, fail_on_restricted=False)
+319 
+320         if fail_on_restricted:
+321             # Raise an error if collected restricted objects (RESTRICT) aren't
+322             # candidates for deletion also collected via CASCADE.
+323             for related_model, instances in self.data.items():
+324                 self.clear_restricted_objects_from_set(related_model, instances)
+325             for qs in self.fast_deletes:
+326                 self.clear_restricted_objects_from_queryset(qs.model, qs)
+327             if self.restricted_objects.values():
+328                 restricted_objects = defaultdict(list)
+329                 for related_model, fields in self.restricted_objects.items():
+330                     for field, objs in fields.items():
+331                         if objs:
+332                             key = "'%s.%s'" % (related_model.__name__, field.name)
+333                             restricted_objects[key] += objs
+334                 if restricted_objects:
+335                     raise RestrictedError(
+336                         'Cannot delete some instances of model %r because '
+337                         'they are referenced through restricted foreign keys: '
+338                         '%s.' % (
+339                             model.__name__,
+340                             ', '.join(restricted_objects),
+341                         ),
+342                         set(chain.from_iterable(restricted_objects.values())),
+343                     )
+344 
+345     def related_objects(self, related_model, related_fields, objs):
+346         """
+347         Get a QuerySet of the related model to objs via related fields.
+348         """
+349         predicate = query_utils.Q(
+350             *(
+351                 (f'{related_field.name}__in', objs)
+352                 for related_field in related_fields
+353             ),
+354             _connector=query_utils.Q.OR,
+355         )
+356         return related_model._base_manager.using(self.using).filter(predicate)
+357 
+358     def instances_with_model(self):
+359         for model, instances in self.data.items():
+360             for obj in instances:
+361                 yield model, obj
+362 
+363     def sort(self):
+364         sorted_models = []
+365         concrete_models = set()
+366         models = list(self.data)
+367         while len(sorted_models) < len(models):
+368             found = False
+369             for model in models:
+370                 if model in sorted_models:
+371                     continue
+372                 dependencies = self.dependencies.get(model._meta.concrete_model)
+373                 if not (dependencies and dependencies.difference(concrete_models)):
+374                     sorted_models.append(model)
+375                     concrete_models.add(model._meta.concrete_model)
+376                     found = True
+377             if not found:
+378                 return
+379         self.data = {model: self.data[model] for model in sorted_models}
+380 
+381     def delete(self):
+382         # sort instance collections
+383         for model, instances in self.data.items():
+384             self.data[model] = sorted(instances, key=attrgetter("pk"))
+385 
+386         # if possible, bring the models in an order suitable for databases that
+387         # don't support transactions or cannot defer constraint checks until the
+388         # end of a transaction.
+389         self.sort()
+390         # number of objects deleted for each model label
+391         deleted_counter = Counter()
+392 
+393         # Optimize for the case with a single obj and no dependencies
+394         if len(self.data) == 1 and len(instances) == 1:
+395             instance = list(instances)[0]
+396             if self.can_fast_delete(instance):
+397                 with transaction.mark_for_rollback_on_error(self.using):
+398                     count = sql.DeleteQuery(model).delete_batch([instance.pk], self.using)
+399                 setattr(instance, model._meta.pk.attname, None)
+400                 return count, {model._meta.label: count}
+401 
+402         with transaction.atomic(using=self.using, savepoint=False):
+403             # send pre_delete signals
+404             for model, obj in self.instances_with_model():
+405                 if not model._meta.auto_created:
+406                     signals.pre_delete.send(
+407                         sender=model, instance=obj, using=self.using
+408                     )
+409 
+410             # fast deletes
+411             for qs in self.fast_deletes:
+412                 count = qs._raw_delete(using=self.using)
+413                 if count:
+414                     deleted_counter[qs.model._meta.label] += count
+415 
+416             # update fields
+417             for model, instances_for_fieldvalues in self.field_updates.items():
+418                 for (field, value), instances in instances_for_fieldvalues.items():
+419                     query = sql.UpdateQuery(model)
+420                     query.update_batch([obj.pk for obj in instances],
+421                                        {field.name: value}, self.using)
+422 
+423             # reverse instance collections
+424             for instances in self.data.values():
+425                 instances.reverse()
+426 
+427             # delete instances
+428             for model, instances in self.data.items():
+429                 query = sql.DeleteQuery(model)
+430                 pk_list = [obj.pk for obj in instances]
+431                 count = query.delete_batch(pk_list, self.using)
+432                 if count:
+433                     deleted_counter[model._meta.label] += count
+434 
+435                 if not model._meta.auto_created:
+436                     for obj in instances:
+437                         signals.post_delete.send(
+438                             sender=model, instance=obj, using=self.using
+439                         )
+440 
+441         # update collected instances
+442         for instances_for_fieldvalues in self.field_updates.values():
+443             for (field, value), instances in instances_for_fieldvalues.items():
+444                 for obj in instances:
+445                     setattr(obj, field.attname, value)
+446         for model, instances in self.data.items():
+447             for instance in instances:
+448                 setattr(instance, model._meta.pk.attname, None)
+449         return sum(deleted_counter.values()), dict(deleted_counter)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 10:54:08.300 | INFO     | Search completed. Bug locations: [<file>django/db/models/deletion.py</file>
+<class>Collector</class>
+<method>delete</method>
+<code>
+381     def delete(self):
+382         # sort instance collections
+383         for model, instances in self.data.items():
+384             self.data[model] = sorted(instances, key=attrgetter("pk"))
+385 
+386         # if possible, bring the models in an order suitable for databases that
+387         # don't support transactions or cannot defer constraint checks until the
+388         # end of a transaction.
+389         self.sort()
+390         # number of objects deleted for each model label
+391         deleted_counter = Counter()
+392 
+393         # Optimize for the case with a single obj and no dependencies
+394         if len(self.data) == 1 and len(instances) == 1:
+395             instance = list(instances)[0]
+396             if self.can_fast_delete(instance):
+397                 with transaction.mark_for_rollback_on_error(self.using):
+398                     count = sql.DeleteQuery(model).delete_batch([instance.pk], self.using)
+399                 setattr(instance, model._meta.pk.attname, None)
+400                 return count, {model._meta.label: count}
+401 
+402         with transaction.atomic(using=self.using, savepoint=False):
+403             # send pre_delete signals
+404             for model, obj in self.instances_with_model():
+405                 if not model._meta.auto_created:
+406                     signals.pre_delete.send(
+407                         sender=model, instance=obj, using=self.using
+408                     )
+409 
+410             # fast deletes
+411             for qs in self.fast_deletes:
+412                 count = qs._raw_delete(using=self.using)
+413                 if count:
+414                     deleted_counter[qs.model._meta.label] += count
+415 
+416             # update fields
+417             for model, instances_for_fieldvalues in self.field_updates.items():
+418                 for (field, value), instances in instances_for_fieldvalues.items():
+419                     query = sql.UpdateQuery(model)
+420                     query.update_batch([obj.pk for obj in instances],
+421                                        {field.name: value}, self.using)
+422 
+423             # reverse instance collections
+424             for instances in self.data.values():
+425                 instances.reverse()
+426 
+427             # delete instances
+428             for model, instances in self.data.items():
+429                 query = sql.DeleteQuery(model)
+430                 pk_list = [obj.pk for obj in instances]
+431                 count = query.delete_batch(pk_list, self.using)
+432                 if count:
+433                     deleted_counter[model._meta.label] += count
+434 
+435                 if not model._meta.auto_created:
+436                     for obj in instances:
+437                         signals.post_delete.send(
+438                             sender=model, instance=obj, using=self.using
+439                         )
+440 
+441         # update collected instances
+442         for instances_for_fieldvalues in self.field_updates.values():
+443             for (field, value), instances in instances_for_fieldvalues.items():
+444                 for obj in instances:
+445                     setattr(obj, field.attname, value)
+446         for model, instances in self.data.items():
+447             for instance in instances:
+448                 setattr(instance, model._meta.pk.attname, None)
+449         return sum(deleted_counter.values()), dict(deleted_counter)
+
+</code><intended_behavior>The `delete` method within the `Collector` class should be enhanced to include additional context when dispatching both `pre_delete` and `post_delete` signals. Specifically, the method should be modified to carry information about the deletion's origin, differentiating between deletions initiated via a model instance (`model.delete()`) versus those initiated via a queryset (`queryset.delete()`). This could be accomplished by introducing a new parameter to the signal, such as `deletion_origin` that could be set to an appropriate value based on the context of the deletion call within the `delete` method workflow. This enhancement should be implemented in a way that ensures backward compatibility with existing signal receivers that might not expect the new parameter. As such, the addition should be optional or managed in a way that non-expecting receivers can ignore it without issues. The primary goal is to enrich the context provided by deletion signals without disrupting existing functionalities or signal handling implementations.</intended_behavior>, <file>django/db/models/deletion.py</file>
+<class>Collector</class>
+<method>None</method>
+<code>
+78 class Collector:
+79     def __init__(self, using):
+80         self.using = using
+81         # Initially, {model: {instances}}, later values become lists.
+82         self.data = defaultdict(set)
+83         # {model: {(field, value): {instances}}}
+84         self.field_updates = defaultdict(partial(defaultdict, set))
+85         # {model: {field: {instances}}}
+86         self.restricted_objects = defaultdict(partial(defaultdict, set))
+87         # fast_deletes is a list of queryset-likes that can be deleted without
+88         # fetching the objects into memory.
+89         self.fast_deletes = []
+90 
+91         # Tracks deletion-order dependency for databases without transactions
+92         # or ability to defer constraint checks. Only concrete model classes
+93         # should be included, as the dependencies exist only between actual
+94         # database tables; proxy models are represented here by their concrete
+95         # parent.
+96         self.dependencies = defaultdict(set)  # {model: {models}}
+97 
+98     def add(self, objs, source=None, nullable=False, reverse_dependency=False):
+99         """
+100         Add 'objs' to the collection of objects to be deleted.  If the call is
+101         the result of a cascade, 'source' should be the model that caused it,
+102         and 'nullable' should be set to True if the relation can be null.
+103 
+104         Return a list of all objects that were not already collected.
+105         """
+106         if not objs:
+107             return []
+108         new_objs = []
+109         model = objs[0].__class__
+110         instances = self.data[model]
+111         for obj in objs:
+112             if obj not in instances:
+113                 new_objs.append(obj)
+114         instances.update(new_objs)
+115         # Nullable relationships can be ignored -- they are nulled out before
+116         # deleting, and therefore do not affect the order in which objects have
+117         # to be deleted.
+118         if source is not None and not nullable:
+119             self.add_dependency(source, model, reverse_dependency=reverse_dependency)
+120         return new_objs
+121 
+122     def add_dependency(self, model, dependency, reverse_dependency=False):
+123         if reverse_dependency:
+124             model, dependency = dependency, model
+125         self.dependencies[model._meta.concrete_model].add(dependency._meta.concrete_model)
+126         self.data.setdefault(dependency, self.data.default_factory())
+127 
+128     def add_field_update(self, field, value, objs):
+129         """
+130         Schedule a field update. 'objs' must be a homogeneous iterable
+131         collection of model instances (e.g. a QuerySet).
+132         """
+133         if not objs:
+134             return
+135         model = objs[0].__class__
+136         self.field_updates[model][field, value].update(objs)
+137 
+138     def add_restricted_objects(self, field, objs):
+139         if objs:
+140             model = objs[0].__class__
+141             self.restricted_objects[model][field].update(objs)
+142 
+143     def clear_restricted_objects_from_set(self, model, objs):
+144         if model in self.restricted_objects:
+145             self.restricted_objects[model] = {
+146                 field: items - objs
+147                 for field, items in self.restricted_objects[model].items()
+148             }
+149 
+150     def clear_restricted_objects_from_queryset(self, model, qs):
+151         if model in self.restricted_objects:
+152             objs = set(qs.filter(pk__in=[
+153                 obj.pk
+154                 for objs in self.restricted_objects[model].values() for obj in objs
+155             ]))
+156             self.clear_restricted_objects_from_set(model, objs)
+157 
+158     def _has_signal_listeners(self, model):
+159         return (
+160             signals.pre_delete.has_listeners(model) or
+161             signals.post_delete.has_listeners(model)
+162         )
+163 
+164     def can_fast_delete(self, objs, from_field=None):
+165         """
+166         Determine if the objects in the given queryset-like or single object
+167         can be fast-deleted. This can be done if there are no cascades, no
+168         parents and no signal listeners for the object class.
+169 
+170         The 'from_field' tells where we are coming from - we need this to
+171         determine if the objects are in fact to be deleted. Allow also
+172         skipping parent -> child -> parent chain preventing fast delete of
+173         the child.
+174         """
+175         if from_field and from_field.remote_field.on_delete is not CASCADE:
+176             return False
+177         if hasattr(objs, '_meta'):
+178             model = objs._meta.model
+179         elif hasattr(objs, 'model') and hasattr(objs, '_raw_delete'):
+180             model = objs.model
+181         else:
+182             return False
+183         if self._has_signal_listeners(model):
+184             return False
+185         # The use of from_field comes from the need to avoid cascade back to
+186         # parent when parent delete is cascading to child.
+187         opts = model._meta
+188         return (
+189             all(link == from_field for link in opts.concrete_model._meta.parents.values()) and
+190             # Foreign keys pointing to this model.
+191             all(
+192                 related.field.remote_field.on_delete is DO_NOTHING
+193                 for related in get_candidate_relations_to_delete(opts)
+194             ) and (
+195                 # Something like generic foreign key.
+196                 not any(hasattr(field, 'bulk_related_objects') for field in opts.private_fields)
+197             )
+198         )
+199 
+200     def get_del_batches(self, objs, fields):
+201         """
+202         Return the objs in suitably sized batches for the used connection.
+203         """
+204         field_names = [field.name for field in fields]
+205         conn_batch_size = max(
+206             connections[self.using].ops.bulk_batch_size(field_names, objs), 1)
+207         if len(objs) > conn_batch_size:
+208             return [objs[i:i + conn_batch_size]
+209                     for i in range(0, len(objs), conn_batch_size)]
+210         else:
+211             return [objs]
+212 
+213     def collect(self, objs, source=None, nullable=False, collect_related=True,
+214                 source_attr=None, reverse_dependency=False, keep_parents=False,
+215                 fail_on_restricted=True):
+216         """
+217         Add 'objs' to the collection of objects to be deleted as well as all
+218         parent instances.  'objs' must be a homogeneous iterable collection of
+219         model instances (e.g. a QuerySet).  If 'collect_related' is True,
+220         related objects will be handled by their respective on_delete handler.
+221 
+222         If the call is the result of a cascade, 'source' should be the model
+223         that caused it and 'nullable' should be set to True, if the relation
+224         can be null.
+225 
+226         If 'reverse_dependency' is True, 'source' will be deleted before the
+227         current model, rather than after. (Needed for cascading to parent
+228         models, the one case in which the cascade follows the forwards
+229         direction of an FK rather than the reverse direction.)
+230 
+231         If 'keep_parents' is True, data of parent model's will be not deleted.
+232 
+233         If 'fail_on_restricted' is False, error won't be raised even if it's
+234         prohibited to delete such objects due to RESTRICT, that defers
+235         restricted object checking in recursive calls where the top-level call
+236         may need to collect more objects to determine whether restricted ones
+237         can be deleted.
+238         """
+239         if self.can_fast_delete(objs):
+240             self.fast_deletes.append(objs)
+241             return
+242         new_objs = self.add(objs, source, nullable,
+243                             reverse_dependency=reverse_dependency)
+244         if not new_objs:
+245             return
+246 
+247         model = new_objs[0].__class__
+248 
+249         if not keep_parents:
+250             # Recursively collect concrete model's parent models, but not their
+251             # related objects. These will be found by meta.get_fields()
+252             concrete_model = model._meta.concrete_model
+253             for ptr in concrete_model._meta.parents.values():
+254                 if ptr:
+255                     parent_objs = [getattr(obj, ptr.name) for obj in new_objs]
+256                     self.collect(parent_objs, source=model,
+257                                  source_attr=ptr.remote_field.related_name,
+258                                  collect_related=False,
+259                                  reverse_dependency=True,
+260                                  fail_on_restricted=False)
+261         if not collect_related:
+262             return
+263 
+264         if keep_parents:
+265             parents = set(model._meta.get_parent_list())
+266         model_fast_deletes = defaultdict(list)
+267         protected_objects = defaultdict(list)
+268         for related in get_candidate_relations_to_delete(model._meta):
+269             # Preserve parent reverse relationships if keep_parents=True.
+270             if keep_parents and related.model in parents:
+271                 continue
+272             field = related.field
+273             if field.remote_field.on_delete == DO_NOTHING:
+274                 continue
+275             related_model = related.related_model
+276             if self.can_fast_delete(related_model, from_field=field):
+277                 model_fast_deletes[related_model].append(field)
+278                 continue
+279             batches = self.get_del_batches(new_objs, [field])
+280             for batch in batches:
+281                 sub_objs = self.related_objects(related_model, [field], batch)
+282                 # Non-referenced fields can be deferred if no signal receivers
+283                 # are connected for the related model as they'll never be
+284                 # exposed to the user. Skip field deferring when some
+285                 # relationships are select_related as interactions between both
+286                 # features are hard to get right. This should only happen in
+287                 # the rare cases where .related_objects is overridden anyway.
+288                 if not (sub_objs.query.select_related or self._has_signal_listeners(related_model)):
+289                     referenced_fields = set(chain.from_iterable(
+290                         (rf.attname for rf in rel.field.foreign_related_fields)
+291                         for rel in get_candidate_relations_to_delete(related_model._meta)
+292                     ))
+293                     sub_objs = sub_objs.only(*tuple(referenced_fields))
+294                 if sub_objs:
+295                     try:
+296                         field.remote_field.on_delete(self, field, sub_objs, self.using)
+297                     except ProtectedError as error:
+298                         key = "'%s.%s'" % (field.model.__name__, field.name)
+299                         protected_objects[key] += error.protected_objects
+300         if protected_objects:
+301             raise ProtectedError(
+302                 'Cannot delete some instances of model %r because they are '
+303                 'referenced through protected foreign keys: %s.' % (
+304                     model.__name__,
+305                     ', '.join(protected_objects),
+306                 ),
+307                 set(chain.from_iterable(protected_objects.values())),
+308             )
+309         for related_model, related_fields in model_fast_deletes.items():
+310             batches = self.get_del_batches(new_objs, related_fields)
+311             for batch in batches:
+312                 sub_objs = self.related_objects(related_model, related_fields, batch)
+313                 self.fast_deletes.append(sub_objs)
+314         for field in model._meta.private_fields:
+315             if hasattr(field, 'bulk_related_objects'):
+316                 # It's something like generic foreign key.
+317                 sub_objs = field.bulk_related_objects(new_objs, self.using)
+318                 self.collect(sub_objs, source=model, nullable=True, fail_on_restricted=False)
+319 
+320         if fail_on_restricted:
+321             # Raise an error if collected restricted objects (RESTRICT) aren't
+322             # candidates for deletion also collected via CASCADE.
+323             for related_model, instances in self.data.items():
+324                 self.clear_restricted_objects_from_set(related_model, instances)
+325             for qs in self.fast_deletes:
+326                 self.clear_restricted_objects_from_queryset(qs.model, qs)
+327             if self.restricted_objects.values():
+328                 restricted_objects = defaultdict(list)
+329                 for related_model, fields in self.restricted_objects.items():
+330                     for field, objs in fields.items():
+331                         if objs:
+332                             key = "'%s.%s'" % (related_model.__name__, field.name)
+333                             restricted_objects[key] += objs
+334                 if restricted_objects:
+335                     raise RestrictedError(
+336                         'Cannot delete some instances of model %r because '
+337                         'they are referenced through restricted foreign keys: '
+338                         '%s.' % (
+339                             model.__name__,
+340                             ', '.join(restricted_objects),
+341                         ),
+342                         set(chain.from_iterable(restricted_objects.values())),
+343                     )
+344 
+345     def related_objects(self, related_model, related_fields, objs):
+346         """
+347         Get a QuerySet of the related model to objs via related fields.
+348         """
+349         predicate = query_utils.Q(
+350             *(
+351                 (f'{related_field.name}__in', objs)
+352                 for related_field in related_fields
+353             ),
+354             _connector=query_utils.Q.OR,
+355         )
+356         return related_model._base_manager.using(self.using).filter(predicate)
+357 
+358     def instances_with_model(self):
+359         for model, instances in self.data.items():
+360             for obj in instances:
+361                 yield model, obj
+362 
+363     def sort(self):
+364         sorted_models = []
+365         concrete_models = set()
+366         models = list(self.data)
+367         while len(sorted_models) < len(models):
+368             found = False
+369             for model in models:
+370                 if model in sorted_models:
+371                     continue
+372                 dependencies = self.dependencies.get(model._meta.concrete_model)
+373                 if not (dependencies and dependencies.difference(concrete_models)):
+374                     sorted_models.append(model)
+375                     concrete_models.add(model._meta.concrete_model)
+376                     found = True
+377             if not found:
+378                 return
+379         self.data = {model: self.data[model] for model in sorted_models}
+380 
+381     def delete(self):
+382         # sort instance collections
+383         for model, instances in self.data.items():
+384             self.data[model] = sorted(instances, key=attrgetter("pk"))
+385 
+386         # if possible, bring the models in an order suitable for databases that
+387         # don't support transactions or cannot defer constraint checks until the
+388         # end of a transaction.
+389         self.sort()
+390         # number of objects deleted for each model label
+391         deleted_counter = Counter()
+392 
+393         # Optimize for the case with a single obj and no dependencies
+394         if len(self.data) == 1 and len(instances) == 1:
+395             instance = list(instances)[0]
+396             if self.can_fast_delete(instance):
+397                 with transaction.mark_for_rollback_on_error(self.using):
+398                     count = sql.DeleteQuery(model).delete_batch([instance.pk], self.using)
+399                 setattr(instance, model._meta.pk.attname, None)
+400                 return count, {model._meta.label: count}
+401 
+402         with transaction.atomic(using=self.using, savepoint=False):
+403             # send pre_delete signals
+404             for model, obj in self.instances_with_model():
+405                 if not model._meta.auto_created:
+406                     signals.pre_delete.send(
+407                         sender=model, instance=obj, using=self.using
+408                     )
+409 
+410             # fast deletes
+411             for qs in self.fast_deletes:
+412                 count = qs._raw_delete(using=self.using)
+413                 if count:
+414                     deleted_counter[qs.model._meta.label] += count
+415 
+416             # update fields
+417             for model, instances_for_fieldvalues in self.field_updates.items():
+418                 for (field, value), instances in instances_for_fieldvalues.items():
+419                     query = sql.UpdateQuery(model)
+420                     query.update_batch([obj.pk for obj in instances],
+421                                        {field.name: value}, self.using)
+422 
+423             # reverse instance collections
+424             for instances in self.data.values():
+425                 instances.reverse()
+426 
+427             # delete instances
+428             for model, instances in self.data.items():
+429                 query = sql.DeleteQuery(model)
+430                 pk_list = [obj.pk for obj in instances]
+431                 count = query.delete_batch(pk_list, self.using)
+432                 if count:
+433                     deleted_counter[model._meta.label] += count
+434 
+435                 if not model._meta.auto_created:
+436                     for obj in instances:
+437                         signals.post_delete.send(
+438                             sender=model, instance=obj, using=self.using
+439                         )
+440 
+441         # update collected instances
+442         for instances_for_fieldvalues in self.field_updates.values():
+443             for (field, value), instances in instances_for_fieldvalues.items():
+444                 for obj in instances:
+445                     setattr(obj, field.attname, value)
+446         for model, instances in self.data.items():
+447             for instance in instances:
+448                 setattr(instance, model._meta.pk.attname, None)
+449         return sum(deleted_counter.values()), dict(deleted_counter)
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 10:54:08.300 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 10:54:08.300 | INFO     | Search-only: skipping patch selection
+2025-10-18 10:54:08.452 | INFO     | Task django__django-15248 completed successfully.
+2025-10-18 10:54:08.453 | INFO     | No patch generated. You can try running ACR again.

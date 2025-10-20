@@ -1,0 +1,835 @@
+2025-10-18 15:05:32.358 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 15:05:35.311 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=267, output_tokens=12, cost=0.003030
+2025-10-18 15:05:35.312 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 15:05:35.316 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 15:05:43.615 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=576, output_tokens=307, cost=0.014970
+2025-10-18 15:05:43.618 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 15:05:46.839 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=661, output_tokens=67, cost=0.008620
+2025-10-18 15:05:46.841 | DEBUG    | Extracted a valid json.
+2025-10-18 15:05:46.841 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"Session\")",
+        "search_method_in_class(\"prepare_request\", \"Session\")",
+        "search_method(\"prepare_url\")",
+        "search_code(\"scheme not in\")",
+        "search_code(\"http+unix\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 15:05:46.917 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 15:05:46.918 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 15:06:02.510 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3803, output_tokens=677, cost=0.058340
+2025-10-18 15:06:02.525 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 15:06:09.437 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=4696, output_tokens=262, cost=0.054820
+2025-10-18 15:06:09.443 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 15:06:16.177 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=616, output_tokens=264, cost=0.014080
+2025-10-18 15:06:16.178 | DEBUG    | Extracted a valid json.
+2025-10-18 15:06:16.178 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "requests/models.py",
+            "class": "PreparedRequest",
+            "method": "prepare_url",
+            "intended_behavior": "This method should be modified to allow URL preparation for non-HTTP schemes if they are explicitly allowed or registered by the user. This means extending the functionality to not just bypass URLs with schemes other than `http://` or `https://`. A registry or configuration setting could be introduced at the `Session` level, allowing users to specify which schemes should be treated like HTTP schemes for the purpose of URL preparation. This would involve adding a check against this new registry/configuration within the `if` condition that currently skips URL preparation for non-HTTP schemes. The condition at lines 349-352 needs to be adjusted to account for the new mechanism, allowing specified non-HTTP schemes to undergo the same preparation process as HTTP URLs, including parameter encoding and normalization. The solution should preserve the existing functionality for all standard HTTP and HTTPS URLs and add new functionality for user-defined schemes without altering the behavior for truly unsupported or unknown schemes not explicitly marked by the user for HTTP-like processing. This approach ensures backward compatibility while providing flexibility for cases like `http+unix`."
+        }
+    ]
+}
+2025-10-18 15:06:16.184 | DEBUG    | Bug location extracted successfully: [<file>requests/models.py</file>
+<class>PreparedRequest</class>
+<method>prepare_url</method>
+<code>
+334     def prepare_url(self, url, params):
+335         """Prepares the given HTTP URL."""
+336         #: Accept objects that have string representations.
+337         #: We're unable to blindly call unicode/str functions
+338         #: as this will include the bytestring indicator (b'')
+339         #: on python 3.x.
+340         #: https://github.com/kennethreitz/requests/pull/2238
+341         if isinstance(url, bytes):
+342             url = url.decode('utf8')
+343         else:
+344             url = unicode(url) if is_py2 else str(url)
+345 
+346         # Remove leading whitespaces from url
+347         url = url.lstrip()
+348 
+349         # Don't do any URL preparation for non-HTTP schemes like `mailto`,
+350         # `data`, `http+unix` etc to work around exceptions from `url_parse`,
+351         # which handles RFC 3986 only.
+352         if ':' in url and not url.lower().startswith(('http://', 'https://')):
+353             self.url = url
+354             return
+355 
+356         # Support for unicode domain names and paths.
+357         try:
+358             scheme, auth, host, port, path, query, fragment = parse_url(url)
+359         except LocationParseError as e:
+360             raise InvalidURL(*e.args)
+361 
+362         if not scheme:
+363             error = ("Invalid URL {0!r}: No schema supplied. Perhaps you meant http://{0}?")
+364             error = error.format(to_native_string(url, 'utf8'))
+365 
+366             raise MissingSchema(error)
+367 
+368         if not host:
+369             raise InvalidURL("Invalid URL %r: No host supplied" % url)
+370 
+371         # In general, we want to try IDNA encoding every hostname, as that
+372         # allows users to automatically get the correct behaviour. However,
+373         # we’re quite strict about IDNA encoding, so certain valid hostnames
+374         # may fail to encode. On failure, we verify the hostname meets a
+375         # minimum standard of only containing ASCII characters, and not starting
+376         # with a wildcard (*), before allowing the unencoded hostname through.
+377         try:
+378             host = idna.encode(host, uts46=True).decode('utf-8')
+379         except (UnicodeError, idna.IDNAError):
+380             if not unicode_is_ascii(host) or host.startswith(u'*'):
+381                 raise InvalidURL('URL has an invalid label.')
+382 
+383         # Carefully reconstruct the network location
+384         netloc = auth or ''
+385         if netloc:
+386             netloc += '@'
+387         netloc += host
+388         if port:
+389             netloc += ':' + str(port)
+390 
+391         # Bare domains aren't valid URLs.
+392         if not path:
+393             path = '/'
+394 
+395         if is_py2:
+396             if isinstance(scheme, str):
+397                 scheme = scheme.encode('utf-8')
+398             if isinstance(netloc, str):
+399                 netloc = netloc.encode('utf-8')
+400             if isinstance(path, str):
+401                 path = path.encode('utf-8')
+402             if isinstance(query, str):
+403                 query = query.encode('utf-8')
+404             if isinstance(fragment, str):
+405                 fragment = fragment.encode('utf-8')
+406 
+407         if isinstance(params, (str, bytes)):
+408             params = to_native_string(params)
+409 
+410         enc_params = self._encode_params(params)
+411         if enc_params:
+412             if query:
+413                 query = '%s&%s' % (query, enc_params)
+414             else:
+415                 query = enc_params
+416 
+417         url = requote_uri(urlunparse([scheme, netloc, path, None, query, fragment]))
+418         self.url = url
+
+</code><intended_behavior>This method should be modified to allow URL preparation for non-HTTP schemes if they are explicitly allowed or registered by the user. This means extending the functionality to not just bypass URLs with schemes other than `http://` or `https://`. A registry or configuration setting could be introduced at the `Session` level, allowing users to specify which schemes should be treated like HTTP schemes for the purpose of URL preparation. This would involve adding a check against this new registry/configuration within the `if` condition that currently skips URL preparation for non-HTTP schemes. The condition at lines 349-352 needs to be adjusted to account for the new mechanism, allowing specified non-HTTP schemes to undergo the same preparation process as HTTP URLs, including parameter encoding and normalization. The solution should preserve the existing functionality for all standard HTTP and HTTPS URLs and add new functionality for user-defined schemes without altering the behavior for truly unsupported or unknown schemes not explicitly marked by the user for HTTP-like processing. This approach ensures backward compatibility while providing flexibility for cases like `http+unix`.</intended_behavior>, <file>requests/models.py</file>
+<class>PreparedRequest</class>
+<method>None</method>
+<code>
+262 class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+263     """The fully mutable :class:`PreparedRequest <PreparedRequest>` object,
+264     containing the exact bytes that will be sent to the server.
+265 
+266     Generated from either a :class:`Request <Request>` object or manually.
+267 
+268     Usage::
+269 
+270       >>> import requests
+271       >>> req = requests.Request('GET', 'http://httpbin.org/get')
+272       >>> r = req.prepare()
+273       <PreparedRequest [GET]>
+274 
+275       >>> s = requests.Session()
+276       >>> s.send(r)
+277       <Response [200]>
+278     """
+279 
+280     def __init__(self):
+281         #: HTTP verb to send to the server.
+282         self.method = None
+283         #: HTTP URL to send the request to.
+284         self.url = None
+285         #: dictionary of HTTP headers.
+286         self.headers = None
+287         # The `CookieJar` used to create the Cookie header will be stored here
+288         # after prepare_cookies is called
+289         self._cookies = None
+290         #: request body to send to the server.
+291         self.body = None
+292         #: dictionary of callback hooks, for internal usage.
+293         self.hooks = default_hooks()
+294         #: integer denoting starting position of a readable file-like body.
+295         self._body_position = None
+296 
+297     def prepare(self, method=None, url=None, headers=None, files=None,
+298         data=None, params=None, auth=None, cookies=None, hooks=None, json=None):
+299         """Prepares the entire request with the given parameters."""
+300 
+301         self.prepare_method(method)
+302         self.prepare_url(url, params)
+303         self.prepare_headers(headers)
+304         self.prepare_cookies(cookies)
+305         self.prepare_body(data, files, json)
+306         self.prepare_auth(auth, url)
+307 
+308         # Note that prepare_auth must be last to enable authentication schemes
+309         # such as OAuth to work on a fully prepared request.
+310 
+311         # This MUST go after prepare_auth. Authenticators could add a hook
+312         self.prepare_hooks(hooks)
+313 
+314     def __repr__(self):
+315         return '<PreparedRequest [%s]>' % (self.method)
+316 
+317     def copy(self):
+318         p = PreparedRequest()
+319         p.method = self.method
+320         p.url = self.url
+321         p.headers = self.headers.copy() if self.headers is not None else None
+322         p._cookies = _copy_cookie_jar(self._cookies)
+323         p.body = self.body
+324         p.hooks = self.hooks
+325         p._body_position = self._body_position
+326         return p
+327 
+328     def prepare_method(self, method):
+329         """Prepares the given HTTP method."""
+330         self.method = method
+331         if self.method is not None:
+332             self.method = to_native_string(self.method.upper())
+333 
+334     def prepare_url(self, url, params):
+335         """Prepares the given HTTP URL."""
+336         #: Accept objects that have string representations.
+337         #: We're unable to blindly call unicode/str functions
+338         #: as this will include the bytestring indicator (b'')
+339         #: on python 3.x.
+340         #: https://github.com/kennethreitz/requests/pull/2238
+341         if isinstance(url, bytes):
+342             url = url.decode('utf8')
+343         else:
+344             url = unicode(url) if is_py2 else str(url)
+345 
+346         # Remove leading whitespaces from url
+347         url = url.lstrip()
+348 
+349         # Don't do any URL preparation for non-HTTP schemes like `mailto`,
+350         # `data`, `http+unix` etc to work around exceptions from `url_parse`,
+351         # which handles RFC 3986 only.
+352         if ':' in url and not url.lower().startswith(('http://', 'https://')):
+353             self.url = url
+354             return
+355 
+356         # Support for unicode domain names and paths.
+357         try:
+358             scheme, auth, host, port, path, query, fragment = parse_url(url)
+359         except LocationParseError as e:
+360             raise InvalidURL(*e.args)
+361 
+362         if not scheme:
+363             error = ("Invalid URL {0!r}: No schema supplied. Perhaps you meant http://{0}?")
+364             error = error.format(to_native_string(url, 'utf8'))
+365 
+366             raise MissingSchema(error)
+367 
+368         if not host:
+369             raise InvalidURL("Invalid URL %r: No host supplied" % url)
+370 
+371         # In general, we want to try IDNA encoding every hostname, as that
+372         # allows users to automatically get the correct behaviour. However,
+373         # we’re quite strict about IDNA encoding, so certain valid hostnames
+374         # may fail to encode. On failure, we verify the hostname meets a
+375         # minimum standard of only containing ASCII characters, and not starting
+376         # with a wildcard (*), before allowing the unencoded hostname through.
+377         try:
+378             host = idna.encode(host, uts46=True).decode('utf-8')
+379         except (UnicodeError, idna.IDNAError):
+380             if not unicode_is_ascii(host) or host.startswith(u'*'):
+381                 raise InvalidURL('URL has an invalid label.')
+382 
+383         # Carefully reconstruct the network location
+384         netloc = auth or ''
+385         if netloc:
+386             netloc += '@'
+387         netloc += host
+388         if port:
+389             netloc += ':' + str(port)
+390 
+391         # Bare domains aren't valid URLs.
+392         if not path:
+393             path = '/'
+394 
+395         if is_py2:
+396             if isinstance(scheme, str):
+397                 scheme = scheme.encode('utf-8')
+398             if isinstance(netloc, str):
+399                 netloc = netloc.encode('utf-8')
+400             if isinstance(path, str):
+401                 path = path.encode('utf-8')
+402             if isinstance(query, str):
+403                 query = query.encode('utf-8')
+404             if isinstance(fragment, str):
+405                 fragment = fragment.encode('utf-8')
+406 
+407         if isinstance(params, (str, bytes)):
+408             params = to_native_string(params)
+409 
+410         enc_params = self._encode_params(params)
+411         if enc_params:
+412             if query:
+413                 query = '%s&%s' % (query, enc_params)
+414             else:
+415                 query = enc_params
+416 
+417         url = requote_uri(urlunparse([scheme, netloc, path, None, query, fragment]))
+418         self.url = url
+419 
+420     def prepare_headers(self, headers):
+421         """Prepares the given HTTP headers."""
+422 
+423         self.headers = CaseInsensitiveDict()
+424         if headers:
+425             for header in headers.items():
+426                 # Raise exception on invalid header value.
+427                 check_header_validity(header)
+428                 name, value = header
+429                 self.headers[to_native_string(name)] = value
+430 
+431     def prepare_body(self, data, files, json=None):
+432         """Prepares the given HTTP body data."""
+433 
+434         # Check if file, fo, generator, iterator.
+435         # If not, run through normal process.
+436 
+437         # Nottin' on you.
+438         body = None
+439         content_type = None
+440 
+441         if not data and json is not None:
+442             # urllib3 requires a bytes-like body. Python 2's json.dumps
+443             # provides this natively, but Python 3 gives a Unicode string.
+444             content_type = 'application/json'
+445             body = complexjson.dumps(json)
+446             if not isinstance(body, bytes):
+447                 body = body.encode('utf-8')
+448 
+449         is_stream = all([
+450             hasattr(data, '__iter__'),
+451             not isinstance(data, (basestring, list, tuple, collections.Mapping))
+452         ])
+453 
+454         try:
+455             length = super_len(data)
+456         except (TypeError, AttributeError, UnsupportedOperation):
+457             length = None
+458 
+459         if is_stream:
+460             body = data
+461 
+462             if getattr(body, 'tell', None) is not None:
+463                 # Record the current file position before reading.
+464                 # This will allow us to rewind a file in the event
+465                 # of a redirect.
+466                 try:
+467                     self._body_position = body.tell()
+468                 except (IOError, OSError):
+469                     # This differentiates from None, allowing us to catch
+470                     # a failed `tell()` later when trying to rewind the body
+471                     self._body_position = object()
+472 
+473             if files:
+474                 raise NotImplementedError('Streamed bodies and files are mutually exclusive.')
+475 
+476             if length:
+477                 self.headers['Content-Length'] = builtin_str(length)
+478             else:
+479                 self.headers['Transfer-Encoding'] = 'chunked'
+480         else:
+481             # Multi-part file uploads.
+482             if files:
+483                 (body, content_type) = self._encode_files(files, data)
+484             else:
+485                 if data:
+486                     body = self._encode_params(data)
+487                     if isinstance(data, basestring) or hasattr(data, 'read'):
+488                         content_type = None
+489                     else:
+490                         content_type = 'application/x-www-form-urlencoded'
+491 
+492             self.prepare_content_length(body)
+493 
+494             # Add content-type if it wasn't explicitly provided.
+495             if content_type and ('content-type' not in self.headers):
+496                 self.headers['Content-Type'] = content_type
+497 
+498         self.body = body
+499 
+500     def prepare_content_length(self, body):
+501         """Prepare Content-Length header based on request method and body"""
+502         if body is not None:
+503             length = super_len(body)
+504             if length:
+505                 # If length exists, set it. Otherwise, we fallback
+506                 # to Transfer-Encoding: chunked.
+507                 self.headers['Content-Length'] = builtin_str(length)
+508         elif self.method not in ('GET', 'HEAD') and self.headers.get('Content-Length') is None:
+509             # Set Content-Length to 0 for methods that can have a body
+510             # but don't provide one. (i.e. not GET or HEAD)
+511             self.headers['Content-Length'] = '0'
+512 
+513     def prepare_auth(self, auth, url=''):
+514         """Prepares the given HTTP auth data."""
+515 
+516         # If no Auth is explicitly provided, extract it from the URL first.
+517         if auth is None:
+518             url_auth = get_auth_from_url(self.url)
+519             auth = url_auth if any(url_auth) else None
+520 
+521         if auth:
+522             if isinstance(auth, tuple) and len(auth) == 2:
+523                 # special-case basic HTTP auth
+524                 auth = HTTPBasicAuth(*auth)
+525 
+526             # Allow auth to make its changes.
+527             r = auth(self)
+528 
+529             # Update self to reflect the auth changes.
+530             self.__dict__.update(r.__dict__)
+531 
+532             # Recompute Content-Length
+533             self.prepare_content_length(self.body)
+534 
+535     def prepare_cookies(self, cookies):
+536         """Prepares the given HTTP cookie data.
+537 
+538         This function eventually generates a ``Cookie`` header from the
+539         given cookies using cookielib. Due to cookielib's design, the header
+540         will not be regenerated if it already exists, meaning this function
+541         can only be called once for the life of the
+542         :class:`PreparedRequest <PreparedRequest>` object. Any subsequent calls
+543         to ``prepare_cookies`` will have no actual effect, unless the "Cookie"
+544         header is removed beforehand.
+545         """
+546         if isinstance(cookies, cookielib.CookieJar):
+547             self._cookies = cookies
+548         else:
+549             self._cookies = cookiejar_from_dict(cookies)
+550 
+551         cookie_header = get_cookie_header(self._cookies, self)
+552         if cookie_header is not None:
+553             self.headers['Cookie'] = cookie_header
+554 
+555     def prepare_hooks(self, hooks):
+556         """Prepares the given hooks."""
+557         # hooks can be passed as None to the prepare method and to this
+558         # method. To prevent iterating over None, simply use an empty list
+559         # if hooks is False-y
+560         hooks = hooks or []
+561         for event in hooks:
+562             self.register_hook(event, hooks[event])
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 15:06:16.184 | INFO     | Search completed. Bug locations: [<file>requests/models.py</file>
+<class>PreparedRequest</class>
+<method>prepare_url</method>
+<code>
+334     def prepare_url(self, url, params):
+335         """Prepares the given HTTP URL."""
+336         #: Accept objects that have string representations.
+337         #: We're unable to blindly call unicode/str functions
+338         #: as this will include the bytestring indicator (b'')
+339         #: on python 3.x.
+340         #: https://github.com/kennethreitz/requests/pull/2238
+341         if isinstance(url, bytes):
+342             url = url.decode('utf8')
+343         else:
+344             url = unicode(url) if is_py2 else str(url)
+345 
+346         # Remove leading whitespaces from url
+347         url = url.lstrip()
+348 
+349         # Don't do any URL preparation for non-HTTP schemes like `mailto`,
+350         # `data`, `http+unix` etc to work around exceptions from `url_parse`,
+351         # which handles RFC 3986 only.
+352         if ':' in url and not url.lower().startswith(('http://', 'https://')):
+353             self.url = url
+354             return
+355 
+356         # Support for unicode domain names and paths.
+357         try:
+358             scheme, auth, host, port, path, query, fragment = parse_url(url)
+359         except LocationParseError as e:
+360             raise InvalidURL(*e.args)
+361 
+362         if not scheme:
+363             error = ("Invalid URL {0!r}: No schema supplied. Perhaps you meant http://{0}?")
+364             error = error.format(to_native_string(url, 'utf8'))
+365 
+366             raise MissingSchema(error)
+367 
+368         if not host:
+369             raise InvalidURL("Invalid URL %r: No host supplied" % url)
+370 
+371         # In general, we want to try IDNA encoding every hostname, as that
+372         # allows users to automatically get the correct behaviour. However,
+373         # we’re quite strict about IDNA encoding, so certain valid hostnames
+374         # may fail to encode. On failure, we verify the hostname meets a
+375         # minimum standard of only containing ASCII characters, and not starting
+376         # with a wildcard (*), before allowing the unencoded hostname through.
+377         try:
+378             host = idna.encode(host, uts46=True).decode('utf-8')
+379         except (UnicodeError, idna.IDNAError):
+380             if not unicode_is_ascii(host) or host.startswith(u'*'):
+381                 raise InvalidURL('URL has an invalid label.')
+382 
+383         # Carefully reconstruct the network location
+384         netloc = auth or ''
+385         if netloc:
+386             netloc += '@'
+387         netloc += host
+388         if port:
+389             netloc += ':' + str(port)
+390 
+391         # Bare domains aren't valid URLs.
+392         if not path:
+393             path = '/'
+394 
+395         if is_py2:
+396             if isinstance(scheme, str):
+397                 scheme = scheme.encode('utf-8')
+398             if isinstance(netloc, str):
+399                 netloc = netloc.encode('utf-8')
+400             if isinstance(path, str):
+401                 path = path.encode('utf-8')
+402             if isinstance(query, str):
+403                 query = query.encode('utf-8')
+404             if isinstance(fragment, str):
+405                 fragment = fragment.encode('utf-8')
+406 
+407         if isinstance(params, (str, bytes)):
+408             params = to_native_string(params)
+409 
+410         enc_params = self._encode_params(params)
+411         if enc_params:
+412             if query:
+413                 query = '%s&%s' % (query, enc_params)
+414             else:
+415                 query = enc_params
+416 
+417         url = requote_uri(urlunparse([scheme, netloc, path, None, query, fragment]))
+418         self.url = url
+
+</code><intended_behavior>This method should be modified to allow URL preparation for non-HTTP schemes if they are explicitly allowed or registered by the user. This means extending the functionality to not just bypass URLs with schemes other than `http://` or `https://`. A registry or configuration setting could be introduced at the `Session` level, allowing users to specify which schemes should be treated like HTTP schemes for the purpose of URL preparation. This would involve adding a check against this new registry/configuration within the `if` condition that currently skips URL preparation for non-HTTP schemes. The condition at lines 349-352 needs to be adjusted to account for the new mechanism, allowing specified non-HTTP schemes to undergo the same preparation process as HTTP URLs, including parameter encoding and normalization. The solution should preserve the existing functionality for all standard HTTP and HTTPS URLs and add new functionality for user-defined schemes without altering the behavior for truly unsupported or unknown schemes not explicitly marked by the user for HTTP-like processing. This approach ensures backward compatibility while providing flexibility for cases like `http+unix`.</intended_behavior>, <file>requests/models.py</file>
+<class>PreparedRequest</class>
+<method>None</method>
+<code>
+262 class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):
+263     """The fully mutable :class:`PreparedRequest <PreparedRequest>` object,
+264     containing the exact bytes that will be sent to the server.
+265 
+266     Generated from either a :class:`Request <Request>` object or manually.
+267 
+268     Usage::
+269 
+270       >>> import requests
+271       >>> req = requests.Request('GET', 'http://httpbin.org/get')
+272       >>> r = req.prepare()
+273       <PreparedRequest [GET]>
+274 
+275       >>> s = requests.Session()
+276       >>> s.send(r)
+277       <Response [200]>
+278     """
+279 
+280     def __init__(self):
+281         #: HTTP verb to send to the server.
+282         self.method = None
+283         #: HTTP URL to send the request to.
+284         self.url = None
+285         #: dictionary of HTTP headers.
+286         self.headers = None
+287         # The `CookieJar` used to create the Cookie header will be stored here
+288         # after prepare_cookies is called
+289         self._cookies = None
+290         #: request body to send to the server.
+291         self.body = None
+292         #: dictionary of callback hooks, for internal usage.
+293         self.hooks = default_hooks()
+294         #: integer denoting starting position of a readable file-like body.
+295         self._body_position = None
+296 
+297     def prepare(self, method=None, url=None, headers=None, files=None,
+298         data=None, params=None, auth=None, cookies=None, hooks=None, json=None):
+299         """Prepares the entire request with the given parameters."""
+300 
+301         self.prepare_method(method)
+302         self.prepare_url(url, params)
+303         self.prepare_headers(headers)
+304         self.prepare_cookies(cookies)
+305         self.prepare_body(data, files, json)
+306         self.prepare_auth(auth, url)
+307 
+308         # Note that prepare_auth must be last to enable authentication schemes
+309         # such as OAuth to work on a fully prepared request.
+310 
+311         # This MUST go after prepare_auth. Authenticators could add a hook
+312         self.prepare_hooks(hooks)
+313 
+314     def __repr__(self):
+315         return '<PreparedRequest [%s]>' % (self.method)
+316 
+317     def copy(self):
+318         p = PreparedRequest()
+319         p.method = self.method
+320         p.url = self.url
+321         p.headers = self.headers.copy() if self.headers is not None else None
+322         p._cookies = _copy_cookie_jar(self._cookies)
+323         p.body = self.body
+324         p.hooks = self.hooks
+325         p._body_position = self._body_position
+326         return p
+327 
+328     def prepare_method(self, method):
+329         """Prepares the given HTTP method."""
+330         self.method = method
+331         if self.method is not None:
+332             self.method = to_native_string(self.method.upper())
+333 
+334     def prepare_url(self, url, params):
+335         """Prepares the given HTTP URL."""
+336         #: Accept objects that have string representations.
+337         #: We're unable to blindly call unicode/str functions
+338         #: as this will include the bytestring indicator (b'')
+339         #: on python 3.x.
+340         #: https://github.com/kennethreitz/requests/pull/2238
+341         if isinstance(url, bytes):
+342             url = url.decode('utf8')
+343         else:
+344             url = unicode(url) if is_py2 else str(url)
+345 
+346         # Remove leading whitespaces from url
+347         url = url.lstrip()
+348 
+349         # Don't do any URL preparation for non-HTTP schemes like `mailto`,
+350         # `data`, `http+unix` etc to work around exceptions from `url_parse`,
+351         # which handles RFC 3986 only.
+352         if ':' in url and not url.lower().startswith(('http://', 'https://')):
+353             self.url = url
+354             return
+355 
+356         # Support for unicode domain names and paths.
+357         try:
+358             scheme, auth, host, port, path, query, fragment = parse_url(url)
+359         except LocationParseError as e:
+360             raise InvalidURL(*e.args)
+361 
+362         if not scheme:
+363             error = ("Invalid URL {0!r}: No schema supplied. Perhaps you meant http://{0}?")
+364             error = error.format(to_native_string(url, 'utf8'))
+365 
+366             raise MissingSchema(error)
+367 
+368         if not host:
+369             raise InvalidURL("Invalid URL %r: No host supplied" % url)
+370 
+371         # In general, we want to try IDNA encoding every hostname, as that
+372         # allows users to automatically get the correct behaviour. However,
+373         # we’re quite strict about IDNA encoding, so certain valid hostnames
+374         # may fail to encode. On failure, we verify the hostname meets a
+375         # minimum standard of only containing ASCII characters, and not starting
+376         # with a wildcard (*), before allowing the unencoded hostname through.
+377         try:
+378             host = idna.encode(host, uts46=True).decode('utf-8')
+379         except (UnicodeError, idna.IDNAError):
+380             if not unicode_is_ascii(host) or host.startswith(u'*'):
+381                 raise InvalidURL('URL has an invalid label.')
+382 
+383         # Carefully reconstruct the network location
+384         netloc = auth or ''
+385         if netloc:
+386             netloc += '@'
+387         netloc += host
+388         if port:
+389             netloc += ':' + str(port)
+390 
+391         # Bare domains aren't valid URLs.
+392         if not path:
+393             path = '/'
+394 
+395         if is_py2:
+396             if isinstance(scheme, str):
+397                 scheme = scheme.encode('utf-8')
+398             if isinstance(netloc, str):
+399                 netloc = netloc.encode('utf-8')
+400             if isinstance(path, str):
+401                 path = path.encode('utf-8')
+402             if isinstance(query, str):
+403                 query = query.encode('utf-8')
+404             if isinstance(fragment, str):
+405                 fragment = fragment.encode('utf-8')
+406 
+407         if isinstance(params, (str, bytes)):
+408             params = to_native_string(params)
+409 
+410         enc_params = self._encode_params(params)
+411         if enc_params:
+412             if query:
+413                 query = '%s&%s' % (query, enc_params)
+414             else:
+415                 query = enc_params
+416 
+417         url = requote_uri(urlunparse([scheme, netloc, path, None, query, fragment]))
+418         self.url = url
+419 
+420     def prepare_headers(self, headers):
+421         """Prepares the given HTTP headers."""
+422 
+423         self.headers = CaseInsensitiveDict()
+424         if headers:
+425             for header in headers.items():
+426                 # Raise exception on invalid header value.
+427                 check_header_validity(header)
+428                 name, value = header
+429                 self.headers[to_native_string(name)] = value
+430 
+431     def prepare_body(self, data, files, json=None):
+432         """Prepares the given HTTP body data."""
+433 
+434         # Check if file, fo, generator, iterator.
+435         # If not, run through normal process.
+436 
+437         # Nottin' on you.
+438         body = None
+439         content_type = None
+440 
+441         if not data and json is not None:
+442             # urllib3 requires a bytes-like body. Python 2's json.dumps
+443             # provides this natively, but Python 3 gives a Unicode string.
+444             content_type = 'application/json'
+445             body = complexjson.dumps(json)
+446             if not isinstance(body, bytes):
+447                 body = body.encode('utf-8')
+448 
+449         is_stream = all([
+450             hasattr(data, '__iter__'),
+451             not isinstance(data, (basestring, list, tuple, collections.Mapping))
+452         ])
+453 
+454         try:
+455             length = super_len(data)
+456         except (TypeError, AttributeError, UnsupportedOperation):
+457             length = None
+458 
+459         if is_stream:
+460             body = data
+461 
+462             if getattr(body, 'tell', None) is not None:
+463                 # Record the current file position before reading.
+464                 # This will allow us to rewind a file in the event
+465                 # of a redirect.
+466                 try:
+467                     self._body_position = body.tell()
+468                 except (IOError, OSError):
+469                     # This differentiates from None, allowing us to catch
+470                     # a failed `tell()` later when trying to rewind the body
+471                     self._body_position = object()
+472 
+473             if files:
+474                 raise NotImplementedError('Streamed bodies and files are mutually exclusive.')
+475 
+476             if length:
+477                 self.headers['Content-Length'] = builtin_str(length)
+478             else:
+479                 self.headers['Transfer-Encoding'] = 'chunked'
+480         else:
+481             # Multi-part file uploads.
+482             if files:
+483                 (body, content_type) = self._encode_files(files, data)
+484             else:
+485                 if data:
+486                     body = self._encode_params(data)
+487                     if isinstance(data, basestring) or hasattr(data, 'read'):
+488                         content_type = None
+489                     else:
+490                         content_type = 'application/x-www-form-urlencoded'
+491 
+492             self.prepare_content_length(body)
+493 
+494             # Add content-type if it wasn't explicitly provided.
+495             if content_type and ('content-type' not in self.headers):
+496                 self.headers['Content-Type'] = content_type
+497 
+498         self.body = body
+499 
+500     def prepare_content_length(self, body):
+501         """Prepare Content-Length header based on request method and body"""
+502         if body is not None:
+503             length = super_len(body)
+504             if length:
+505                 # If length exists, set it. Otherwise, we fallback
+506                 # to Transfer-Encoding: chunked.
+507                 self.headers['Content-Length'] = builtin_str(length)
+508         elif self.method not in ('GET', 'HEAD') and self.headers.get('Content-Length') is None:
+509             # Set Content-Length to 0 for methods that can have a body
+510             # but don't provide one. (i.e. not GET or HEAD)
+511             self.headers['Content-Length'] = '0'
+512 
+513     def prepare_auth(self, auth, url=''):
+514         """Prepares the given HTTP auth data."""
+515 
+516         # If no Auth is explicitly provided, extract it from the URL first.
+517         if auth is None:
+518             url_auth = get_auth_from_url(self.url)
+519             auth = url_auth if any(url_auth) else None
+520 
+521         if auth:
+522             if isinstance(auth, tuple) and len(auth) == 2:
+523                 # special-case basic HTTP auth
+524                 auth = HTTPBasicAuth(*auth)
+525 
+526             # Allow auth to make its changes.
+527             r = auth(self)
+528 
+529             # Update self to reflect the auth changes.
+530             self.__dict__.update(r.__dict__)
+531 
+532             # Recompute Content-Length
+533             self.prepare_content_length(self.body)
+534 
+535     def prepare_cookies(self, cookies):
+536         """Prepares the given HTTP cookie data.
+537 
+538         This function eventually generates a ``Cookie`` header from the
+539         given cookies using cookielib. Due to cookielib's design, the header
+540         will not be regenerated if it already exists, meaning this function
+541         can only be called once for the life of the
+542         :class:`PreparedRequest <PreparedRequest>` object. Any subsequent calls
+543         to ``prepare_cookies`` will have no actual effect, unless the "Cookie"
+544         header is removed beforehand.
+545         """
+546         if isinstance(cookies, cookielib.CookieJar):
+547             self._cookies = cookies
+548         else:
+549             self._cookies = cookiejar_from_dict(cookies)
+550 
+551         cookie_header = get_cookie_header(self._cookies, self)
+552         if cookie_header is not None:
+553             self.headers['Cookie'] = cookie_header
+554 
+555     def prepare_hooks(self, hooks):
+556         """Prepares the given hooks."""
+557         # hooks can be passed as None to the prepare method and to this
+558         # method. To prevent iterating over None, simply use an empty list
+559         # if hooks is False-y
+560         hooks = hooks or []
+561         for event in hooks:
+562             self.register_hook(event, hooks[event])
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-10-18 15:06:16.184 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 15:06:16.184 | INFO     | Search-only: skipping patch selection
+2025-10-18 15:06:16.269 | INFO     | Task psf__requests-3738 completed successfully.
+2025-10-18 15:06:16.270 | INFO     | No patch generated. You can try running ACR again.

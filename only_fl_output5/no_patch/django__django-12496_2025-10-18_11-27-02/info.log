@@ -1,0 +1,4006 @@
+2025-10-18 11:27:02.989 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 11:27:06.620 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=461, output_tokens=12, cost=0.004970
+2025-10-18 11:27:16.574 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=641, output_tokens=414, cost=0.018830
+2025-10-18 11:27:17.721 | INFO     | registered non reproducing test 0
+2025-10-18 11:27:31.682 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1713, output_tokens=643, cost=0.036420
+2025-10-18 11:27:32.865 | INFO     | registered non reproducing test 1
+2025-10-18 11:27:49.032 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1669, output_tokens=720, cost=0.038290
+2025-10-18 11:27:50.183 | INFO     | registered non reproducing test 2
+2025-10-18 11:27:50.184 | WARNING  | Failed to write a reproducer test; skipping reproducer tracing
+2025-10-18 11:27:50.187 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 11:27:58.266 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=764, output_tokens=365, cost=0.018590
+2025-10-18 11:27:58.276 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 11:28:00.329 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=719, output_tokens=54, cost=0.008810
+2025-10-18 11:28:00.330 | DEBUG    | Extracted a valid json.
+2025-10-18 11:28:00.331 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"Parent\")",
+        "search_class(\"Child\")",
+        "search_method_in_class(\"create\", \"Child\")",
+        "search_code(\"UUIDField\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 11:28:00.413 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 11:28:00.413 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 11:28:16.487 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1649, output_tokens=749, cost=0.038960
+2025-10-18 11:28:16.495 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 11:28:27.772 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2614, output_tokens=532, cost=0.042100
+2025-10-18 11:28:27.782 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 11:28:33.948 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=886, output_tokens=228, cost=0.015700
+2025-10-18 11:28:33.949 | DEBUG    | Extracted a valid json.
+2025-10-18 11:28:33.949 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/db/models/base.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The method should be enhanced to detect when a model instance is being saved with multi-table inheritance where a custom primary key is defined. It should ensure that the parent table is correctly populated without issuing a redundant update that overrides fields with empty values. The fix should ensure the efficient creation of parent and child model instances in a single operation where possible, or at least eliminate unnecessary updates to the parent model when creating a child model instance."
+        },
+        {
+            "file": "django/db/models/fields/__init__.py",
+            "class": "UUIDField",
+            "method": "",
+            "intended_behavior": "Ensure proper handling and generation of UUIDField as a primary key in inheritance scenarios, maintaining the linkage and integrity between parent and child records without unnecessary updates. This might involve adjusting how the UUIDField value is set and ensuring it's correctly utilized in both parent and child table creation processes."
+        }
+    ]
+}
+2025-10-18 11:28:33.963 | DEBUG    | Bug location extracted successfully: [<file>django/db/models/base.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import copy
+2 import inspect
+3 import warnings
+4 from functools import partialmethod
+5 from itertools import chain
+6 
+7 from django.apps import apps
+8 from django.conf import settings
+9 from django.core import checks
+10 from django.core.exceptions import (
+11     NON_FIELD_ERRORS, FieldDoesNotExist, FieldError, MultipleObjectsReturned,
+12     ObjectDoesNotExist, ValidationError,
+13 )
+14 from django.db import (
+15     DEFAULT_DB_ALIAS, DJANGO_VERSION_PICKLE_KEY, DatabaseError, connection,
+16     connections, router, transaction,
+17 )
+18 from django.db.models import (
+19     NOT_PROVIDED, ExpressionWrapper, IntegerField, Max, Value,
+20 )
+21 from django.db.models.constants import LOOKUP_SEP
+22 from django.db.models.constraints import CheckConstraint
+23 from django.db.models.deletion import CASCADE, Collector
+24 from django.db.models.fields.related import (
+25     ForeignObjectRel, OneToOneField, lazy_related_operation, resolve_relation,
+26 )
+27 from django.db.models.functions import Coalesce
+28 from django.db.models.manager import Manager
+29 from django.db.models.options import Options
+30 from django.db.models.query import Q
+31 from django.db.models.signals import (
+32     class_prepared, post_init, post_save, pre_init, pre_save,
+33 )
+34 from django.db.models.utils import make_model_tuple
+35 from django.utils.encoding import force_str
+36 from django.utils.hashable import make_hashable
+37 from django.utils.text import capfirst, get_text_list
+38 from django.utils.translation import gettext_lazy as _
+39 from django.utils.version import get_version
+40 
+41 
+42 class Deferred:
+43     def __repr__(self):
+44         return '<Deferred field>'
+45 
+46     def __str__(self):
+47         return '<Deferred field>'
+48 
+49 
+50 DEFERRED = Deferred()
+51 
+52 
+53 def subclass_exception(name, bases, module, attached_to):
+54     """
+55     Create exception subclass. Used by ModelBase below.
+56 
+57     The exception is created in a way that allows it to be pickled, assuming
+58     that the returned exception class will be added as an attribute to the
+59     'attached_to' class.
+60     """
+61     return type(name, bases, {
+62         '__module__': module,
+63         '__qualname__': '%s.%s' % (attached_to.__qualname__, name),
+64     })
+65 
+66 
+67 def _has_contribute_to_class(value):
+68     # Only call contribute_to_class() if it's bound.
+69     return not inspect.isclass(value) and hasattr(value, 'contribute_to_class')
+70 
+71 
+72 class ModelBase(type):
+73     """Metaclass for all models."""
+74     def __new__(cls, name, bases, attrs, **kwargs):
+75         super_new = super().__new__
+76 
+77         # Also ensure initialization is only performed for subclasses of Model
+78         # (excluding Model class itself).
+79         parents = [b for b in bases if isinstance(b, ModelBase)]
+80         if not parents:
+81             return super_new(cls, name, bases, attrs)
+82 
+83         # Create the class.
+84         module = attrs.pop('__module__')
+85         new_attrs = {'__module__': module}
+86         classcell = attrs.pop('__classcell__', None)
+87         if classcell is not None:
+88             new_attrs['__classcell__'] = classcell
+89         attr_meta = attrs.pop('Meta', None)
+90         # Pass all attrs without a (Django-specific) contribute_to_class()
+91         # method to type.__new__() so that they're properly initialized
+92         # (i.e. __set_name__()).
+93         contributable_attrs = {}
+94         for obj_name, obj in list(attrs.items()):
+95             if _has_contribute_to_class(obj):
+96                 contributable_attrs[obj_name] = obj
+97             else:
+98                 new_attrs[obj_name] = obj
+99         new_class = super_new(cls, name, bases, new_attrs, **kwargs)
+100 
+101         abstract = getattr(attr_meta, 'abstract', False)
+102         meta = attr_meta or getattr(new_class, 'Meta', None)
+103         base_meta = getattr(new_class, '_meta', None)
+104 
+105         app_label = None
+106 
+107         # Look for an application configuration to attach the model to.
+108         app_config = apps.get_containing_app_config(module)
+109 
+110         if getattr(meta, 'app_label', None) is None:
+111             if app_config is None:
+112                 if not abstract:
+113                     raise RuntimeError(
+114                         "Model class %s.%s doesn't declare an explicit "
+115                         "app_label and isn't in an application in "
+116                         "INSTALLED_APPS." % (module, name)
+117                     )
+118 
+119             else:
+120                 app_label = app_config.label
+121 
+122         new_class.add_to_class('_meta', Options(meta, app_label))
+123         if not abstract:
+124             new_class.add_to_class(
+125                 'DoesNotExist',
+126                 subclass_exception(
+127                     'DoesNotExist',
+128                     tuple(
+129                         x.DoesNotExist for x in parents if hasattr(x, '_meta') and not x._meta.abstract
+130                     ) or (ObjectDoesNotExist,),
+131                     module,
+132                     attached_to=new_class))
+133             new_class.add_to_class(
+134                 'MultipleObjectsReturned',
+135                 subclass_exception(
+136                     'MultipleObjectsReturned',
+137                     tuple(
+138                         x.MultipleObjectsReturned for x in parents if hasattr(x, '_meta') and not x._meta.abstract
+139                     ) or (MultipleObjectsReturned,),
+140                     module,
+141                     attached_to=new_class))
+142             if base_meta and not base_meta.abstract:
+143                 # Non-abstract child classes inherit some attributes from their
+144                 # non-abstract parent (unless an ABC comes before it in the
+145                 # method resolution order).
+146                 if not hasattr(meta, 'ordering'):
+147                     new_class._meta.ordering = base_meta.ordering
+148                 if not hasattr(meta, 'get_latest_by'):
+149                     new_class._meta.get_latest_by = base_meta.get_latest_by
+150 
+151         is_proxy = new_class._meta.proxy
+152 
+153         # If the model is a proxy, ensure that the base class
+154         # hasn't been swapped out.
+155         if is_proxy and base_meta and base_meta.swapped:
+156             raise TypeError("%s cannot proxy the swapped model '%s'." % (name, base_meta.swapped))
+157 
+158         # Add remaining attributes (those with a contribute_to_class() method)
+159         # to the class.
+160         for obj_name, obj in contributable_attrs.items():
+161             new_class.add_to_class(obj_name, obj)
+162 
+163         # All the fields of any type declared on this model
+164         new_fields = chain(
+165             new_class._meta.local_fields,
+166             new_class._meta.local_many_to_many,
+167             new_class._meta.private_fields
+168         )
+169         field_names = {f.name for f in new_fields}
+170 
+171         # Basic setup for proxy models.
+172         if is_proxy:
+173             base = None
+174             for parent in [kls for kls in parents if hasattr(kls, '_meta')]:
+175                 if parent._meta.abstract:
+176                     if parent._meta.fields:
+177                         raise TypeError(
+178                             "Abstract base class containing model fields not "
+179                             "permitted for proxy model '%s'." % name
+180                         )
+181                     else:
+182                         continue
+183                 if base is None:
+184                     base = parent
+185                 elif parent._meta.concrete_model is not base._meta.concrete_model:
+186                     raise TypeError("Proxy model '%s' has more than one non-abstract model base class." % name)
+187             if base is None:
+188                 raise TypeError("Proxy model '%s' has no non-abstract model base class." % name)
+189             new_class._meta.setup_proxy(base)
+190             new_class._meta.concrete_model = base._meta.concrete_model
+191         else:
+192             new_class._meta.concrete_model = new_class
+193 
+194         # Collect the parent links for multi-table inheritance.
+195         parent_links = {}
+196         for base in reversed([new_class] + parents):
+197             # Conceptually equivalent to `if base is Model`.
+198             if not hasattr(base, '_meta'):
+199                 continue
+200             # Skip concrete parent classes.
+201             if base != new_class and not base._meta.abstract:
+202                 continue
+203             # Locate OneToOneField instances.
+204             for field in base._meta.local_fields:
+205                 if isinstance(field, OneToOneField) and field.remote_field.parent_link:
+206                     related = resolve_relation(new_class, field.remote_field.model)
+207                     parent_links[make_model_tuple(related)] = field
+208 
+209         # Track fields inherited from base models.
+210         inherited_attributes = set()
+211         # Do the appropriate setup for any model parents.
+212         for base in new_class.mro():
+213             if base not in parents or not hasattr(base, '_meta'):
+214                 # Things without _meta aren't functional models, so they're
+215                 # uninteresting parents.
+216                 inherited_attributes.update(base.__dict__)
+217                 continue
+218 
+219             parent_fields = base._meta.local_fields + base._meta.local_many_to_many
+220             if not base._meta.abstract:
+221                 # Check for clashes between locally declared fields and those
+222                 # on the base classes.
+223                 for field in parent_fields:
+224                     if field.name in field_names:
+225                         raise FieldError(
+226                             'Local field %r in class %r clashes with field of '
+227                             'the same name from base class %r.' % (
+228                                 field.name,
+229                                 name,
+230                                 base.__name__,
+231                             )
+232                         )
+233                     else:
+234                         inherited_attributes.add(field.name)
+235 
+236                 # Concrete classes...
+237                 base = base._meta.concrete_model
+238                 base_key = make_model_tuple(base)
+239                 if base_key in parent_links:
+240                     field = parent_links[base_key]
+241                 elif not is_proxy:
+242                     attr_name = '%s_ptr' % base._meta.model_name
+243                     field = OneToOneField(
+244                         base,
+245                         on_delete=CASCADE,
+246                         name=attr_name,
+247                         auto_created=True,
+248                         parent_link=True,
+249                     )
+250 
+251                     if attr_name in field_names:
+252                         raise FieldError(
+253                             "Auto-generated field '%s' in class %r for "
+254                             "parent_link to base class %r clashes with "
+255                             "declared field of the same name." % (
+256                                 attr_name,
+257                                 name,
+258                                 base.__name__,
+259                             )
+260                         )
+261 
+262                     # Only add the ptr field if it's not already present;
+263                     # e.g. migrations will already have it specified
+264                     if not hasattr(new_class, attr_name):
+265                         new_class.add_to_class(attr_name, field)
+266                 else:
+267                     field = None
+268                 new_class._meta.parents[base] = field
+269             else:
+270                 base_parents = base._meta.parents.copy()
+271 
+272                 # Add fields from abstract base class if it wasn't overridden.
+273                 for field in parent_fields:
+274                     if (field.name not in field_names and
+275                             field.name not in new_class.__dict__ and
+276                             field.name not in inherited_attributes):
+277                         new_field = copy.deepcopy(field)
+278                         new_class.add_to_class(field.name, new_field)
+279                         # Replace parent links defined on this base by the new
+280                         # field. It will be appropriately resolved if required.
+281                         if field.one_to_one:
+282                             for parent, parent_link in base_parents.items():
+283                                 if field == parent_link:
+284                                     base_parents[parent] = new_field
+285 
+286                 # Pass any non-abstract parent classes onto child.
+287                 new_class._meta.parents.update(base_parents)
+288 
+289             # Inherit private fields (like GenericForeignKey) from the parent
+290             # class
+291             for field in base._meta.private_fields:
+292                 if field.name in field_names:
+293                     if not base._meta.abstract:
+294                         raise FieldError(
+295                             'Local field %r in class %r clashes with field of '
+296                             'the same name from base class %r.' % (
+297                                 field.name,
+298                                 name,
+299                                 base.__name__,
+300                             )
+301                         )
+302                 else:
+303                     field = copy.deepcopy(field)
+304                     if not base._meta.abstract:
+305                         field.mti_inherited = True
+306                     new_class.add_to_class(field.name, field)
+307 
+308         # Copy indexes so that index names are unique when models extend an
+309         # abstract model.
+310         new_class._meta.indexes = [copy.deepcopy(idx) for idx in new_class._meta.indexes]
+311 
+312         if abstract:
+313             # Abstract base models can't be instantiated and don't appear in
+314             # the list of models for an app. We do the final setup for them a
+315             # little differently from normal models.
+316             attr_meta.abstract = False
+317             new_class.Meta = attr_meta
+318             return new_class
+319 
+320         new_class._prepare()
+321         new_class._meta.apps.register_model(new_class._meta.app_label, new_class)
+322         return new_class
+323 
+324     def add_to_class(cls, name, value):
+325         if _has_contribute_to_class(value):
+326             value.contribute_to_class(cls, name)
+327         else:
+328             setattr(cls, name, value)
+329 
+330     def _prepare(cls):
+331         """Create some methods once self._meta has been populated."""
+332         opts = cls._meta
+333         opts._prepare(cls)
+334 
+335         if opts.order_with_respect_to:
+336             cls.get_next_in_order = partialmethod(cls._get_next_or_previous_in_order, is_next=True)
+337             cls.get_previous_in_order = partialmethod(cls._get_next_or_previous_in_order, is_next=False)
+338 
+339             # Defer creating accessors on the foreign class until it has been
+340             # created and registered. If remote_field is None, we're ordering
+341             # with respect to a GenericForeignKey and don't know what the
+342             # foreign class is - we'll add those accessors later in
+343             # contribute_to_class().
+344             if opts.order_with_respect_to.remote_field:
+345                 wrt = opts.order_with_respect_to
+346                 remote = wrt.remote_field.model
+347                 lazy_related_operation(make_foreign_order_accessors, cls, remote)
+348 
+349         # Give the class a docstring -- its definition.
+350         if cls.__doc__ is None:
+351             cls.__doc__ = "%s(%s)" % (cls.__name__, ", ".join(f.name for f in opts.fields))
+352 
+353         get_absolute_url_override = settings.ABSOLUTE_URL_OVERRIDES.get(opts.label_lower)
+354         if get_absolute_url_override:
+355             setattr(cls, 'get_absolute_url', get_absolute_url_override)
+356 
+357         if not opts.managers:
+358             if any(f.name == 'objects' for f in opts.fields):
+359                 raise ValueError(
+360                     "Model %s must specify a custom Manager, because it has a "
+361                     "field named 'objects'." % cls.__name__
+362                 )
+363             manager = Manager()
+364             manager.auto_created = True
+365             cls.add_to_class('objects', manager)
+366 
+367         # Set the name of _meta.indexes. This can't be done in
+368         # Options.contribute_to_class() because fields haven't been added to
+369         # the model at that point.
+370         for index in cls._meta.indexes:
+371             if not index.name:
+372                 index.set_name_with_model(cls)
+373 
+374         class_prepared.send(sender=cls)
+375 
+376     @property
+377     def _base_manager(cls):
+378         return cls._meta.base_manager
+379 
+380     @property
+381     def _default_manager(cls):
+382         return cls._meta.default_manager
+383 
+384 
+385 class ModelStateFieldsCacheDescriptor:
+386     def __get__(self, instance, cls=None):
+387         if instance is None:
+388             return self
+389         res = instance.fields_cache = {}
+390         return res
+391 
+392 
+393 class ModelState:
+394     """Store model instance state."""
+395     db = None
+396     # If true, uniqueness validation checks will consider this a new, unsaved
+397     # object. Necessary for correct validation of new instances of objects with
+398     # explicit (non-auto) PKs. This impacts validation only; it has no effect
+399     # on the actual save.
+400     adding = True
+401     fields_cache = ModelStateFieldsCacheDescriptor()
+402 
+403 
+404 class Model(metaclass=ModelBase):
+405 
+406     def __init__(self, *args, **kwargs):
+407         # Alias some things as locals to avoid repeat global lookups
+408         cls = self.__class__
+409         opts = self._meta
+410         _setattr = setattr
+411         _DEFERRED = DEFERRED
+412 
+413         pre_init.send(sender=cls, args=args, kwargs=kwargs)
+414 
+415         # Set up the storage for instance state
+416         self._state = ModelState()
+417 
+418         # There is a rather weird disparity here; if kwargs, it's set, then args
+419         # overrides it. It should be one or the other; don't duplicate the work
+420         # The reason for the kwargs check is that standard iterator passes in by
+421         # args, and instantiation for iteration is 33% faster.
+422         if len(args) > len(opts.concrete_fields):
+423             # Daft, but matches old exception sans the err msg.
+424             raise IndexError("Number of args exceeds number of fields")
+425 
+426         if not kwargs:
+427             fields_iter = iter(opts.concrete_fields)
+428             # The ordering of the zip calls matter - zip throws StopIteration
+429             # when an iter throws it. So if the first iter throws it, the second
+430             # is *not* consumed. We rely on this, so don't change the order
+431             # without changing the logic.
+432             for val, field in zip(args, fields_iter):
+433                 if val is _DEFERRED:
+434                     continue
+435                 _setattr(self, field.attname, val)
+436         else:
+437             # Slower, kwargs-ready version.
+438             fields_iter = iter(opts.fields)
+439             for val, field in zip(args, fields_iter):
+440                 if val is _DEFERRED:
+441                     continue
+442                 _setattr(self, field.attname, val)
+443                 kwargs.pop(field.name, None)
+444 
+445         # Now we're left with the unprocessed fields that *must* come from
+446         # keywords, or default.
+447 
+448         for field in fields_iter:
+449             is_related_object = False
+450             # Virtual field
+451             if field.attname not in kwargs and field.column is None:
+452                 continue
+453             if kwargs:
+454                 if isinstance(field.remote_field, ForeignObjectRel):
+455                     try:
+456                         # Assume object instance was passed in.
+457                         rel_obj = kwargs.pop(field.name)
+458                         is_related_object = True
+459                     except KeyError:
+460                         try:
+461                             # Object instance wasn't passed in -- must be an ID.
+462                             val = kwargs.pop(field.attname)
+463                         except KeyError:
+464                             val = field.get_default()
+465                 else:
+466                     try:
+467                         val = kwargs.pop(field.attname)
+468                     except KeyError:
+469                         # This is done with an exception rather than the
+470                         # default argument on pop because we don't want
+471                         # get_default() to be evaluated, and then not used.
+472                         # Refs #12057.
+473                         val = field.get_default()
+474             else:
+475                 val = field.get_default()
+476 
+477             if is_related_object:
+478                 # If we are passed a related instance, set it using the
+479                 # field.name instead of field.attname (e.g. "user" instead of
+480                 # "user_id") so that the object gets properly cached (and type
+481                 # checked) by the RelatedObjectDescriptor.
+482                 if rel_obj is not _DEFERRED:
+483                     _setattr(self, field.name, rel_obj)
+484             else:
+485                 if val is not _DEFERRED:
+486                     _setattr(self, field.attname, val)
+487 
+488         if kwargs:
+489             property_names = opts._property_names
+490             for prop in tuple(kwargs):
+491                 try:
+492                     # Any remaining kwargs must correspond to properties or
+493                     # virtual fields.
+494                     if prop in property_names or opts.get_field(prop):
+495                         if kwargs[prop] is not _DEFERRED:
+496                             _setattr(self, prop, kwargs[prop])
+497                         del kwargs[prop]
+498                 except (AttributeError, FieldDoesNotExist):
+499                     pass
+500             for kwarg in kwargs:
+501                 raise TypeError("%s() got an unexpected keyword argument '%s'" % (cls.__name__, kwarg))
+502         super().__init__()
+503         post_init.send(sender=cls, instance=self)
+504 
+505     @classmethod
+506     def from_db(cls, db, field_names, values):
+507         if len(values) != len(cls._meta.concrete_fields):
+508             values_iter = iter(values)
+509             values = [
+510                 next(values_iter) if f.attname in field_names else DEFERRED
+511                 for f in cls._meta.concrete_fields
+512             ]
+513         new = cls(*values)
+514         new._state.adding = False
+515         new._state.db = db
+516         return new
+517 
+518     def __repr__(self):
+519         return '<%s: %s>' % (self.__class__.__name__, self)
+520 
+521     def __str__(self):
+522         return '%s object (%s)' % (self.__class__.__name__, self.pk)
+523 
+524     def __eq__(self, other):
+525         if not isinstance(other, Model):
+526             return NotImplemented
+527         if self._meta.concrete_model != other._meta.concrete_model:
+528             return False
+529         my_pk = self.pk
+530         if my_pk is None:
+531             return self is other
+532         return my_pk == other.pk
+533 
+534     def __hash__(self):
+535         if self.pk is None:
+536             raise TypeError("Model instances without primary key value are unhashable")
+537         return hash(self.pk)
+538 
+539     def __reduce__(self):
+540         data = self.__getstate__()
+541         data[DJANGO_VERSION_PICKLE_KEY] = get_version()
+542         class_id = self._meta.app_label, self._meta.object_name
+543         return model_unpickle, (class_id,), data
+544 
+545     def __getstate__(self):
+546         """Hook to allow choosing the attributes to pickle."""
+547         return self.__dict__
+548 
+549     def __setstate__(self, state):
+550         msg = None
+551         pickled_version = state.get(DJANGO_VERSION_PICKLE_KEY)
+552         if pickled_version:
+553             current_version = get_version()
+554             if current_version != pickled_version:
+555                 msg = (
+556                     "Pickled model instance's Django version %s does not match "
+557                     "the current version %s." % (pickled_version, current_version)
+558                 )
+559         else:
+560             msg = "Pickled model instance's Django version is not specified."
+561 
+562         if msg:
+563             warnings.warn(msg, RuntimeWarning, stacklevel=2)
+564 
+565         self.__dict__.update(state)
+566 
+567     def _get_pk_val(self, meta=None):
+568         meta = meta or self._meta
+569         return getattr(self, meta.pk.attname)
+570 
+571     def _set_pk_val(self, value):
+572         for parent_link in self._meta.parents.values():
+573             if parent_link and parent_link != self._meta.pk:
+574                 setattr(self, parent_link.target_field.attname, value)
+575         return setattr(self, self._meta.pk.attname, value)
+576 
+577     pk = property(_get_pk_val, _set_pk_val)
+578 
+579     def get_deferred_fields(self):
+580         """
+581         Return a set containing names of deferred fields for this instance.
+582         """
+583         return {
+584             f.attname for f in self._meta.concrete_fields
+585             if f.attname not in self.__dict__
+586         }
+587 
+588     def refresh_from_db(self, using=None, fields=None):
+589         """
+590         Reload field values from the database.
+591 
+592         By default, the reloading happens from the database this instance was
+593         loaded from, or by the read router if this instance wasn't loaded from
+594         any database. The using parameter will override the default.
+595 
+596         Fields can be used to specify which fields to reload. The fields
+597         should be an iterable of field attnames. If fields is None, then
+598         all non-deferred fields are reloaded.
+599 
+600         When accessing deferred fields of an instance, the deferred loading
+601         of the field will call this method.
+602         """
+603         if fields is None:
+604             self._prefetched_objects_cache = {}
+605         else:
+606             prefetched_objects_cache = getattr(self, '_prefetched_objects_cache', ())
+607             for field in fields:
+608                 if field in prefetched_objects_cache:
+609                     del prefetched_objects_cache[field]
+610                     fields.remove(field)
+611             if not fields:
+612                 return
+613             if any(LOOKUP_SEP in f for f in fields):
+614                 raise ValueError(
+615                     'Found "%s" in fields argument. Relations and transforms '
+616                     'are not allowed in fields.' % LOOKUP_SEP)
+617 
+618         hints = {'instance': self}
+619         db_instance_qs = self.__class__._base_manager.db_manager(using, hints=hints).filter(pk=self.pk)
+620 
+621         # Use provided fields, if not set then reload all non-deferred fields.
+622         deferred_fields = self.get_deferred_fields()
+623         if fields is not None:
+624             fields = list(fields)
+625             db_instance_qs = db_instance_qs.only(*fields)
+626         elif deferred_fields:
+627             fields = [f.attname for f in self._meta.concrete_fields
+628                       if f.attname not in deferred_fields]
+629             db_instance_qs = db_instance_qs.only(*fields)
+630 
+631         db_instance = db_instance_qs.get()
+632         non_loaded_fields = db_instance.get_deferred_fields()
+633         for field in self._meta.concrete_fields:
+634             if field.attname in non_loaded_fields:
+635                 # This field wasn't refreshed - skip ahead.
+636                 continue
+637             setattr(self, field.attname, getattr(db_instance, field.attname))
+638             # Clear cached foreign keys.
+639             if field.is_relation and field.is_cached(self):
+640                 field.delete_cached_value(self)
+641 
+642         # Clear cached relations.
+643         for field in self._meta.related_objects:
+644             if field.is_cached(self):
+645                 field.delete_cached_value(self)
+646 
+647         self._state.db = db_instance._state.db
+648 
+649     def serializable_value(self, field_name):
+650         """
+651         Return the value of the field name for this instance. If the field is
+652         a foreign key, return the id value instead of the object. If there's
+653         no Field object with this name on the model, return the model
+654         attribute's value.
+655 
+656         Used to serialize a field's value (in the serializer, or form output,
+657         for example). Normally, you would just access the attribute directly
+658         and not use this method.
+659         """
+660         try:
+661             field = self._meta.get_field(field_name)
+662         except FieldDoesNotExist:
+663             return getattr(self, field_name)
+664         return getattr(self, field.attname)
+665 
+666     def save(self, force_insert=False, force_update=False, using=None,
+667              update_fields=None):
+668         """
+669         Save the current instance. Override this in a subclass if you want to
+670         control the saving process.
+671 
+672         The 'force_insert' and 'force_update' parameters can be used to insist
+673         that the "save" must be an SQL insert or update (or equivalent for
+674         non-SQL backends), respectively. Normally, they should not be set.
+675         """
+676         # Ensure that a model instance without a PK hasn't been assigned to
+677         # a ForeignKey or OneToOneField on this model. If the field is
+678         # nullable, allowing the save() would result in silent data loss.
+679         for field in self._meta.concrete_fields:
+680             # If the related field isn't cached, then an instance hasn't
+681             # been assigned and there's no need to worry about this check.
+682             if field.is_relation and field.is_cached(self):
+683                 obj = getattr(self, field.name, None)
+684                 if not obj:
+685                     continue
+686                 # A pk may have been assigned manually to a model instance not
+687                 # saved to the database (or auto-generated in a case like
+688                 # UUIDField), but we allow the save to proceed and rely on the
+689                 # database to raise an IntegrityError if applicable. If
+690                 # constraints aren't supported by the database, there's the
+691                 # unavoidable risk of data corruption.
+692                 if obj.pk is None:
+693                     # Remove the object from a related instance cache.
+694                     if not field.remote_field.multiple:
+695                         field.remote_field.delete_cached_value(obj)
+696                     raise ValueError(
+697                         "save() prohibited to prevent data loss due to "
+698                         "unsaved related object '%s'." % field.name
+699                     )
+700                 elif getattr(self, field.attname) is None:
+701                     # Use pk from related object if it has been saved after
+702                     # an assignment.
+703                     setattr(self, field.attname, obj.pk)
+704                 # If the relationship's pk/to_field was changed, clear the
+705                 # cached relationship.
+706                 if getattr(obj, field.target_field.attname) != getattr(self, field.attname):
+707                     field.delete_cached_value(self)
+708 
+709         using = using or router.db_for_write(self.__class__, instance=self)
+710         if force_insert and (force_update or update_fields):
+711             raise ValueError("Cannot force both insert and updating in model saving.")
+712 
+713         deferred_fields = self.get_deferred_fields()
+714         if update_fields is not None:
+715             # If update_fields is empty, skip the save. We do also check for
+716             # no-op saves later on for inheritance cases. This bailout is
+717             # still needed for skipping signal sending.
+718             if not update_fields:
+719                 return
+720 
+721             update_fields = frozenset(update_fields)
+722             field_names = set()
+723 
+724             for field in self._meta.fields:
+725                 if not field.primary_key:
+726                     field_names.add(field.name)
+727 
+728                     if field.name != field.attname:
+729                         field_names.add(field.attname)
+730 
+731             non_model_fields = update_fields.difference(field_names)
+732 
+733             if non_model_fields:
+734                 raise ValueError("The following fields do not exist in this "
+735                                  "model or are m2m fields: %s"
+736                                  % ', '.join(non_model_fields))
+737 
+738         # If saving to the same database, and this model is deferred, then
+739         # automatically do an "update_fields" save on the loaded fields.
+740         elif not force_insert and deferred_fields and using == self._state.db:
+741             field_names = set()
+742             for field in self._meta.concrete_fields:
+743                 if not field.primary_key and not hasattr(field, 'through'):
+744                     field_names.add(field.attname)
+745             loaded_fields = field_names.difference(deferred_fields)
+746             if loaded_fields:
+747                 update_fields = frozenset(loaded_fields)
+748 
+749         self.save_base(using=using, force_insert=force_insert,
+750                        force_update=force_update, update_fields=update_fields)
+751     save.alters_data = True
+752 
+753     def save_base(self, raw=False, force_insert=False,
+754                   force_update=False, using=None, update_fields=None):
+755         """
+756         Handle the parts of saving which should be done only once per save,
+757         yet need to be done in raw saves, too. This includes some sanity
+758         checks and signal sending.
+759 
+760         The 'raw' argument is telling save_base not to save any parent
+761         models and not to do any changes to the values before save. This
+762         is used by fixture loading.
+763         """
+764         using = using or router.db_for_write(self.__class__, instance=self)
+765         assert not (force_insert and (force_update or update_fields))
+766         assert update_fields is None or update_fields
+767         cls = origin = self.__class__
+768         # Skip proxies, but keep the origin as the proxy model.
+769         if cls._meta.proxy:
+770             cls = cls._meta.concrete_model
+771         meta = cls._meta
+772         if not meta.auto_created:
+773             pre_save.send(
+774                 sender=origin, instance=self, raw=raw, using=using,
+775                 update_fields=update_fields,
+776             )
+777         # A transaction isn't needed if one query is issued.
+778         if meta.parents:
+779             context_manager = transaction.atomic(using=using, savepoint=False)
+780         else:
+781             context_manager = transaction.mark_for_rollback_on_error(using=using)
+782         with context_manager:
+783             parent_inserted = False
+784             if not raw:
+785                 parent_inserted = self._save_parents(cls, using, update_fields)
+786             updated = self._save_table(
+787                 raw, cls, force_insert or parent_inserted,
+788                 force_update, using, update_fields,
+789             )
+790         # Store the database on which the object was saved
+791         self._state.db = using
+792         # Once saved, this is no longer a to-be-added instance.
+793         self._state.adding = False
+794 
+795         # Signal that the save is complete
+796         if not meta.auto_created:
+797             post_save.send(
+798                 sender=origin, instance=self, created=(not updated),
+799                 update_fields=update_fields, raw=raw, using=using,
+800             )
+801 
+802     save_base.alters_data = True
+803 
+804     def _save_parents(self, cls, using, update_fields):
+805         """Save all the parents of cls using values from self."""
+806         meta = cls._meta
+807         inserted = False
+808         for parent, field in meta.parents.items():
+809             # Make sure the link fields are synced between parent and self.
+810             if (field and getattr(self, parent._meta.pk.attname) is None and
+811                     getattr(self, field.attname) is not None):
+812                 setattr(self, parent._meta.pk.attname, getattr(self, field.attname))
+813             parent_inserted = self._save_parents(cls=parent, using=using, update_fields=update_fields)
+814             updated = self._save_table(
+815                 cls=parent, using=using, update_fields=update_fields,
+816                 force_insert=parent_inserted,
+817             )
+818             if not updated:
+819                 inserted = True
+820             # Set the parent's PK value to self.
+821             if field:
+822                 setattr(self, field.attname, self._get_pk_val(parent._meta))
+823                 # Since we didn't have an instance of the parent handy set
+824                 # attname directly, bypassing the descriptor. Invalidate
+825                 # the related object cache, in case it's been accidentally
+826                 # populated. A fresh instance will be re-built from the
+827                 # database if necessary.
+828                 if field.is_cached(self):
+829                     field.delete_cached_value(self)
+830         return inserted
+831 
+832     def _save_table(self, raw=False, cls=None, force_insert=False,
+833                     force_update=False, using=None, update_fields=None):
+834         """
+835         Do the heavy-lifting involved in saving. Update or insert the data
+836         for a single table.
+837         """
+838         meta = cls._meta
+839         non_pks = [f for f in meta.local_concrete_fields if not f.primary_key]
+840 
+841         if update_fields:
+842             non_pks = [f for f in non_pks
+843                        if f.name in update_fields or f.attname in update_fields]
+844 
+845         pk_val = self._get_pk_val(meta)
+846         if pk_val is None:
+847             pk_val = meta.pk.get_pk_value_on_save(self)
+848             setattr(self, meta.pk.attname, pk_val)
+849         pk_set = pk_val is not None
+850         if not pk_set and (force_update or update_fields):
+851             raise ValueError("Cannot force an update in save() with no primary key.")
+852         updated = False
+853         # Skip an UPDATE when adding an instance and primary key has a default.
+854         if (
+855             not raw and
+856             not force_insert and
+857             self._state.adding and
+858             self._meta.pk.default and
+859             self._meta.pk.default is not NOT_PROVIDED
+860         ):
+861             force_insert = True
+862         # If possible, try an UPDATE. If that doesn't update anything, do an INSERT.
+863         if pk_set and not force_insert:
+864             base_qs = cls._base_manager.using(using)
+865             values = [(f, None, (getattr(self, f.attname) if raw else f.pre_save(self, False)))
+866                       for f in non_pks]
+867             forced_update = update_fields or force_update
+868             updated = self._do_update(base_qs, using, pk_val, values, update_fields,
+869                                       forced_update)
+870             if force_update and not updated:
+871                 raise DatabaseError("Forced update did not affect any rows.")
+872             if update_fields and not updated:
+873                 raise DatabaseError("Save with update_fields did not affect any rows.")
+874         if not updated:
+875             if meta.order_with_respect_to:
+876                 # If this is a model with an order_with_respect_to
+877                 # autopopulate the _order field
+878                 field = meta.order_with_respect_to
+879                 filter_args = field.get_filter_kwargs_for_object(self)
+880                 self._order = cls._base_manager.using(using).filter(**filter_args).aggregate(
+881                     _order__max=Coalesce(
+882                         ExpressionWrapper(Max('_order') + Value(1), output_field=IntegerField()),
+883                         Value(0),
+884                     ),
+885                 )['_order__max']
+886             fields = meta.local_concrete_fields
+887             if not pk_set:
+888                 fields = [f for f in fields if f is not meta.auto_field]
+889 
+890             returning_fields = meta.db_returning_fields
+891             results = self._do_insert(cls._base_manager, using, fields, returning_fields, raw)
+892             for result, field in zip(results, returning_fields):
+893                 setattr(self, field.attname, result)
+894         return updated
+895 
+896     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
+897         """
+898         Try to update the model. Return True if the model was updated (if an
+899         update query was done and a matching row was found in the DB).
+900         """
+901         filtered = base_qs.filter(pk=pk_val)
+902         if not values:
+903             # We can end up here when saving a model in inheritance chain where
+904             # update_fields doesn't target any field in current model. In that
+905             # case we just say the update succeeded. Another case ending up here
+906             # is a model with just PK - in that case check that the PK still
+907             # exists.
+908             return update_fields is not None or filtered.exists()
+909         if self._meta.select_on_save and not forced_update:
+910             return (
+911                 filtered.exists() and
+912                 # It may happen that the object is deleted from the DB right after
+913                 # this check, causing the subsequent UPDATE to return zero matching
+914                 # rows. The same result can occur in some rare cases when the
+915                 # database returns zero despite the UPDATE being executed
+916                 # successfully (a row is matched and updated). In order to
+917                 # distinguish these two cases, the object's existence in the
+918                 # database is again checked for if the UPDATE query returns 0.
+919                 (filtered._update(values) > 0 or filtered.exists())
+920             )
+921         return filtered._update(values) > 0
+922 
+923     def _do_insert(self, manager, using, fields, returning_fields, raw):
+924         """
+925         Do an INSERT. If returning_fields is defined then this method should
+926         return the newly created data for the model.
+927         """
+928         return manager._insert(
+929             [self], fields=fields, returning_fields=returning_fields,
+930             using=using, raw=raw,
+931         )
+932 
+933     def delete(self, using=None, keep_parents=False):
+934         using = using or router.db_for_write(self.__class__, instance=self)
+935         assert self.pk is not None, (
+936             "%s object can't be deleted because its %s attribute is set to None." %
+937             (self._meta.object_name, self._meta.pk.attname)
+938         )
+939 
+940         collector = Collector(using=using)
+941         collector.collect([self], keep_parents=keep_parents)
+942         return collector.delete()
+943 
+944     delete.alters_data = True
+945 
+946     def _get_FIELD_display(self, field):
+947         value = getattr(self, field.attname)
+948         choices_dict = dict(make_hashable(field.flatchoices))
+949         # force_str() to coerce lazy strings.
+950         return force_str(choices_dict.get(make_hashable(value), value), strings_only=True)
+951 
+952     def _get_next_or_previous_by_FIELD(self, field, is_next, **kwargs):
+953         if not self.pk:
+954             raise ValueError("get_next/get_previous cannot be used on unsaved objects.")
+955         op = 'gt' if is_next else 'lt'
+956         order = '' if is_next else '-'
+957         param = getattr(self, field.attname)
+958         q = Q(**{'%s__%s' % (field.name, op): param})
+959         q = q | Q(**{field.name: param, 'pk__%s' % op: self.pk})
+960         qs = self.__class__._default_manager.using(self._state.db).filter(**kwargs).filter(q).order_by(
+961             '%s%s' % (order, field.name), '%spk' % order
+962         )
+963         try:
+964             return qs[0]
+965         except IndexError:
+966             raise self.DoesNotExist("%s matching query does not exist." % self.__class__._meta.object_name)
+967 
+968     def _get_next_or_previous_in_order(self, is_next):
+969         cachename = "__%s_order_cache" % is_next
+970         if not hasattr(self, cachename):
+971             op = 'gt' if is_next else 'lt'
+972             order = '_order' if is_next else '-_order'
+973             order_field = self._meta.order_with_respect_to
+974             filter_args = order_field.get_filter_kwargs_for_object(self)
+975             obj = self.__class__._default_manager.filter(**filter_args).filter(**{
+976                 '_order__%s' % op: self.__class__._default_manager.values('_order').filter(**{
+977                     self._meta.pk.name: self.pk
+978                 })
+979             }).order_by(order)[:1].get()
+980             setattr(self, cachename, obj)
+981         return getattr(self, cachename)
+982 
+983     def prepare_database_save(self, field):
+984         if self.pk is None:
+985             raise ValueError("Unsaved model instance %r cannot be used in an ORM query." % self)
+986         return getattr(self, field.remote_field.get_related_field().attname)
+987 
+988     def clean(self):
+989         """
+990         Hook for doing any extra model-wide validation after clean() has been
+991         called on every field by self.clean_fields. Any ValidationError raised
+992         by this method will not be associated with a particular field; it will
+993         have a special-case association with the field defined by NON_FIELD_ERRORS.
+994         """
+995         pass
+996 
+997     def validate_unique(self, exclude=None):
+998         """
+999         Check unique constraints on the model and raise ValidationError if any
+1000         failed.
+1001         """
+1002         unique_checks, date_checks = self._get_unique_checks(exclude=exclude)
+1003 
+1004         errors = self._perform_unique_checks(unique_checks)
+1005         date_errors = self._perform_date_checks(date_checks)
+1006 
+1007         for k, v in date_errors.items():
+1008             errors.setdefault(k, []).extend(v)
+1009 
+1010         if errors:
+1011             raise ValidationError(errors)
+1012 
+1013     def _get_unique_checks(self, exclude=None):
+1014         """
+1015         Return a list of checks to perform. Since validate_unique() could be
+1016         called from a ModelForm, some fields may have been excluded; we can't
+1017         perform a unique check on a model that is missing fields involved
+1018         in that check. Fields that did not validate should also be excluded,
+1019         but they need to be passed in via the exclude argument.
+1020         """
+1021         if exclude is None:
+1022             exclude = []
+1023         unique_checks = []
+1024 
+1025         unique_togethers = [(self.__class__, self._meta.unique_together)]
+1026         constraints = [(self.__class__, self._meta.total_unique_constraints)]
+1027         for parent_class in self._meta.get_parent_list():
+1028             if parent_class._meta.unique_together:
+1029                 unique_togethers.append((parent_class, parent_class._meta.unique_together))
+1030             if parent_class._meta.total_unique_constraints:
+1031                 constraints.append(
+1032                     (parent_class, parent_class._meta.total_unique_constraints)
+1033                 )
+1034 
+1035         for model_class, unique_together in unique_togethers:
+1036             for check in unique_together:
+1037                 if not any(name in exclude for name in check):
+1038                     # Add the check if the field isn't excluded.
+1039                     unique_checks.append((model_class, tuple(check)))
+1040 
+1041         for model_class, model_constraints in constraints:
+1042             for constraint in model_constraints:
+1043                 if not any(name in exclude for name in constraint.fields):
+1044                     unique_checks.append((model_class, constraint.fields))
+1045 
+1046         # These are checks for the unique_for_<date/year/month>.
+1047         date_checks = []
+1048 
+1049         # Gather a list of checks for fields declared as unique and add them to
+1050         # the list of checks.
+1051 
+1052         fields_with_class = [(self.__class__, self._meta.local_fields)]
+1053         for parent_class in self._meta.get_parent_list():
+1054             fields_with_class.append((parent_class, parent_class._meta.local_fields))
+1055 
+1056         for model_class, fields in fields_with_class:
+1057             for f in fields:
+1058                 name = f.name
+1059                 if name in exclude:
+1060                     continue
+1061                 if f.unique:
+1062                     unique_checks.append((model_class, (name,)))
+1063                 if f.unique_for_date and f.unique_for_date not in exclude:
+1064                     date_checks.append((model_class, 'date', name, f.unique_for_date))
+1065                 if f.unique_for_year and f.unique_for_year not in exclude:
+1066                     date_checks.append((model_class, 'year', name, f.unique_for_year))
+1067                 if f.unique_for_month and f.unique_for_month not in exclude:
+1068                     date_checks.append((model_class, 'month', name, f.unique_for_month))
+1069         return unique_checks, date_checks
+1070 
+1071     def _perform_unique_checks(self, unique_checks):
+1072         errors = {}
+1073 
+1074         for model_class, unique_check in unique_checks:
+1075             # Try to look up an existing object with the same values as this
+1076             # object's values for all the unique field.
+1077 
+1078             lookup_kwargs = {}
+1079             for field_name in unique_check:
+1080                 f = self._meta.get_field(field_name)
+1081                 lookup_value = getattr(self, f.attname)
+1082                 # TODO: Handle multiple backends with different feature flags.
+1083                 if (lookup_value is None or
+1084                         (lookup_value == '' and connection.features.interprets_empty_strings_as_nulls)):
+1085                     # no value, skip the lookup
+1086                     continue
+1087                 if f.primary_key and not self._state.adding:
+1088                     # no need to check for unique primary key when editing
+1089                     continue
+1090                 lookup_kwargs[str(field_name)] = lookup_value
+1091 
+1092             # some fields were skipped, no reason to do the check
+1093             if len(unique_check) != len(lookup_kwargs):
+1094                 continue
+1095 
+1096             qs = model_class._default_manager.filter(**lookup_kwargs)
+1097 
+1098             # Exclude the current object from the query if we are editing an
+1099             # instance (as opposed to creating a new one)
+1100             # Note that we need to use the pk as defined by model_class, not
+1101             # self.pk. These can be different fields because model inheritance
+1102             # allows single model to have effectively multiple primary keys.
+1103             # Refs #17615.
+1104             model_class_pk = self._get_pk_val(model_class._meta)
+1105             if not self._state.adding and model_class_pk is not None:
+1106                 qs = qs.exclude(pk=model_class_pk)
+1107             if qs.exists():
+1108                 if len(unique_check) == 1:
+1109                     key = unique_check[0]
+1110                 else:
+1111                     key = NON_FIELD_ERRORS
+1112                 errors.setdefault(key, []).append(self.unique_error_message(model_class, unique_check))
+1113 
+1114         return errors
+1115 
+1116     def _perform_date_checks(self, date_checks):
+1117         errors = {}
+1118         for model_class, lookup_type, field, unique_for in date_checks:
+1119             lookup_kwargs = {}
+1120             # there's a ticket to add a date lookup, we can remove this special
+1121             # case if that makes it's way in
+1122             date = getattr(self, unique_for)
+1123             if date is None:
+1124                 continue
+1125             if lookup_type == 'date':
+1126                 lookup_kwargs['%s__day' % unique_for] = date.day
+1127                 lookup_kwargs['%s__month' % unique_for] = date.month
+1128                 lookup_kwargs['%s__year' % unique_for] = date.year
+1129             else:
+1130                 lookup_kwargs['%s__%s' % (unique_for, lookup_type)] = getattr(date, lookup_type)
+1131             lookup_kwargs[field] = getattr(self, field)
+1132 
+1133             qs = model_class._default_manager.filter(**lookup_kwargs)
+1134             # Exclude the current object from the query if we are editing an
+1135             # instance (as opposed to creating a new one)
+1136             if not self._state.adding and self.pk is not None:
+1137                 qs = qs.exclude(pk=self.pk)
+1138 
+1139             if qs.exists():
+1140                 errors.setdefault(field, []).append(
+1141                     self.date_error_message(lookup_type, field, unique_for)
+1142                 )
+1143         return errors
+1144 
+1145     def date_error_message(self, lookup_type, field_name, unique_for):
+1146         opts = self._meta
+1147         field = opts.get_field(field_name)
+1148         return ValidationError(
+1149             message=field.error_messages['unique_for_date'],
+1150             code='unique_for_date',
+1151             params={
+1152                 'model': self,
+1153                 'model_name': capfirst(opts.verbose_name),
+1154                 'lookup_type': lookup_type,
+1155                 'field': field_name,
+1156                 'field_label': capfirst(field.verbose_name),
+1157                 'date_field': unique_for,
+1158                 'date_field_label': capfirst(opts.get_field(unique_for).verbose_name),
+1159             }
+1160         )
+1161 
+1162     def unique_error_message(self, model_class, unique_check):
+1163         opts = model_class._meta
+1164 
+1165         params = {
+1166             'model': self,
+1167             'model_class': model_class,
+1168             'model_name': capfirst(opts.verbose_name),
+1169             'unique_check': unique_check,
+1170         }
+1171 
+1172         # A unique field
+1173         if len(unique_check) == 1:
+1174             field = opts.get_field(unique_check[0])
+1175             params['field_label'] = capfirst(field.verbose_name)
+1176             return ValidationError(
+1177                 message=field.error_messages['unique'],
+1178                 code='unique',
+1179                 params=params,
+1180             )
+1181 
+1182         # unique_together
+1183         else:
+1184             field_labels = [capfirst(opts.get_field(f).verbose_name) for f in unique_check]
+1185             params['field_labels'] = get_text_list(field_labels, _('and'))
+1186             return ValidationError(
+1187                 message=_("%(model_name)s with this %(field_labels)s already exists."),
+1188                 code='unique_together',
+1189                 params=params,
+1190             )
+1191 
+1192     def full_clean(self, exclude=None, validate_unique=True):
+1193         """
+1194         Call clean_fields(), clean(), and validate_unique() on the model.
+1195         Raise a ValidationError for any errors that occur.
+1196         """
+1197         errors = {}
+1198         if exclude is None:
+1199             exclude = []
+1200         else:
+1201             exclude = list(exclude)
+1202 
+1203         try:
+1204             self.clean_fields(exclude=exclude)
+1205         except ValidationError as e:
+1206             errors = e.update_error_dict(errors)
+1207 
+1208         # Form.clean() is run even if other validation fails, so do the
+1209         # same with Model.clean() for consistency.
+1210         try:
+1211             self.clean()
+1212         except ValidationError as e:
+1213             errors = e.update_error_dict(errors)
+1214 
+1215         # Run unique checks, but only for fields that passed validation.
+1216         if validate_unique:
+1217             for name in errors:
+1218                 if name != NON_FIELD_ERRORS and name not in exclude:
+1219                     exclude.append(name)
+1220             try:
+1221                 self.validate_unique(exclude=exclude)
+1222             except ValidationError as e:
+1223                 errors = e.update_error_dict(errors)
+1224 
+1225         if errors:
+1226             raise ValidationError(errors)
+1227 
+1228     def clean_fields(self, exclude=None):
+1229         """
+1230         Clean all fields and raise a ValidationError containing a dict
+1231         of all validation errors if any occur.
+1232         """
+1233         if exclude is None:
+1234             exclude = []
+1235 
+1236         errors = {}
+1237         for f in self._meta.fields:
+1238             if f.name in exclude:
+1239                 continue
+1240             # Skip validation for empty fields with blank=True. The developer
+1241             # is responsible for making sure they have a valid value.
+1242             raw_value = getattr(self, f.attname)
+1243             if f.blank and raw_value in f.empty_values:
+1244                 continue
+1245             try:
+1246                 setattr(self, f.attname, f.clean(raw_value, self))
+1247             except ValidationError as e:
+1248                 errors[f.name] = e.error_list
+1249 
+1250         if errors:
+1251             raise ValidationError(errors)
+1252 
+1253     @classmethod
+1254     def check(cls, **kwargs):
+1255         errors = [*cls._check_swappable(), *cls._check_model(), *cls._check_managers(**kwargs)]
+1256         if not cls._meta.swapped:
+1257             databases = kwargs.get('databases') or []
+1258             errors += [
+1259                 *cls._check_fields(**kwargs),
+1260                 *cls._check_m2m_through_same_relationship(),
+1261                 *cls._check_long_column_names(),
+1262             ]
+1263             clash_errors = (
+1264                 *cls._check_id_field(),
+1265                 *cls._check_field_name_clashes(),
+1266                 *cls._check_model_name_db_lookup_clashes(),
+1267                 *cls._check_property_name_related_field_accessor_clashes(),
+1268                 *cls._check_single_primary_key(),
+1269             )
+1270             errors.extend(clash_errors)
+1271             # If there are field name clashes, hide consequent column name
+1272             # clashes.
+1273             if not clash_errors:
+1274                 errors.extend(cls._check_column_name_clashes())
+1275             errors += [
+1276                 *cls._check_index_together(),
+1277                 *cls._check_unique_together(),
+1278                 *cls._check_indexes(),
+1279                 *cls._check_ordering(),
+1280                 *cls._check_constraints(databases),
+1281             ]
+1282 
+1283         return errors
+1284 
+1285     @classmethod
+1286     def _check_swappable(cls):
+1287         """Check if the swapped model exists."""
+1288         errors = []
+1289         if cls._meta.swapped:
+1290             try:
+1291                 apps.get_model(cls._meta.swapped)
+1292             except ValueError:
+1293                 errors.append(
+1294                     checks.Error(
+1295                         "'%s' is not of the form 'app_label.app_name'." % cls._meta.swappable,
+1296                         id='models.E001',
+1297                     )
+1298                 )
+1299             except LookupError:
+1300                 app_label, model_name = cls._meta.swapped.split('.')
+1301                 errors.append(
+1302                     checks.Error(
+1303                         "'%s' references '%s.%s', which has not been "
+1304                         "installed, or is abstract." % (
+1305                             cls._meta.swappable, app_label, model_name
+1306                         ),
+1307                         id='models.E002',
+1308                     )
+1309                 )
+1310         return errors
+1311 
+1312     @classmethod
+1313     def _check_model(cls):
+1314         errors = []
+1315         if cls._meta.proxy:
+1316             if cls._meta.local_fields or cls._meta.local_many_to_many:
+1317                 errors.append(
+1318                     checks.Error(
+1319                         "Proxy model '%s' contains model fields." % cls.__name__,
+1320                         id='models.E017',
+1321                     )
+1322                 )
+1323         return errors
+1324 
+1325     @classmethod
+1326     def _check_managers(cls, **kwargs):
+1327         """Perform all manager checks."""
+1328         errors = []
+1329         for manager in cls._meta.managers:
+1330             errors.extend(manager.check(**kwargs))
+1331         return errors
+1332 
+1333     @classmethod
+1334     def _check_fields(cls, **kwargs):
+1335         """Perform all field checks."""
+1336         errors = []
+1337         for field in cls._meta.local_fields:
+1338             errors.extend(field.check(**kwargs))
+1339         for field in cls._meta.local_many_to_many:
+1340             errors.extend(field.check(from_model=cls, **kwargs))
+1341         return errors
+1342 
+1343     @classmethod
+1344     def _check_m2m_through_same_relationship(cls):
+1345         """ Check if no relationship model is used by more than one m2m field.
+1346         """
+1347 
+1348         errors = []
+1349         seen_intermediary_signatures = []
+1350 
+1351         fields = cls._meta.local_many_to_many
+1352 
+1353         # Skip when the target model wasn't found.
+1354         fields = (f for f in fields if isinstance(f.remote_field.model, ModelBase))
+1355 
+1356         # Skip when the relationship model wasn't found.
+1357         fields = (f for f in fields if isinstance(f.remote_field.through, ModelBase))
+1358 
+1359         for f in fields:
+1360             signature = (f.remote_field.model, cls, f.remote_field.through, f.remote_field.through_fields)
+1361             if signature in seen_intermediary_signatures:
+1362                 errors.append(
+1363                     checks.Error(
+1364                         "The model has two identical many-to-many relations "
+1365                         "through the intermediate model '%s'." %
+1366                         f.remote_field.through._meta.label,
+1367                         obj=cls,
+1368                         id='models.E003',
+1369                     )
+1370                 )
+1371             else:
+1372                 seen_intermediary_signatures.append(signature)
+1373         return errors
+1374 
+1375     @classmethod
+1376     def _check_id_field(cls):
+1377         """Check if `id` field is a primary key."""
+1378         fields = [f for f in cls._meta.local_fields if f.name == 'id' and f != cls._meta.pk]
+1379         # fields is empty or consists of the invalid "id" field
+1380         if fields and not fields[0].primary_key and cls._meta.pk.name == 'id':
+1381             return [
+1382                 checks.Error(
+1383                     "'id' can only be used as a field name if the field also "
+1384                     "sets 'primary_key=True'.",
+1385                     obj=cls,
+1386                     id='models.E004',
+1387                 )
+1388             ]
+1389         else:
+1390             return []
+1391 
+1392     @classmethod
+1393     def _check_field_name_clashes(cls):
+1394         """Forbid field shadowing in multi-table inheritance."""
+1395         errors = []
+1396         used_fields = {}  # name or attname -> field
+1397 
+1398         # Check that multi-inheritance doesn't cause field name shadowing.
+1399         for parent in cls._meta.get_parent_list():
+1400             for f in parent._meta.local_fields:
+1401                 clash = used_fields.get(f.name) or used_fields.get(f.attname) or None
+1402                 if clash:
+1403                     errors.append(
+1404                         checks.Error(
+1405                             "The field '%s' from parent model "
+1406                             "'%s' clashes with the field '%s' "
+1407                             "from parent model '%s'." % (
+1408                                 clash.name, clash.model._meta,
+1409                                 f.name, f.model._meta
+1410                             ),
+1411                             obj=cls,
+1412                             id='models.E005',
+1413                         )
+1414                     )
+1415                 used_fields[f.name] = f
+1416                 used_fields[f.attname] = f
+1417 
+1418         # Check that fields defined in the model don't clash with fields from
+1419         # parents, including auto-generated fields like multi-table inheritance
+1420         # child accessors.
+1421         for parent in cls._meta.get_parent_list():
+1422             for f in parent._meta.get_fields():
+1423                 if f not in used_fields:
+1424                     used_fields[f.name] = f
+1425 
+1426         for f in cls._meta.local_fields:
+1427             clash = used_fields.get(f.name) or used_fields.get(f.attname) or None
+1428             # Note that we may detect clash between user-defined non-unique
+1429             # field "id" and automatically added unique field "id", both
+1430             # defined at the same model. This special case is considered in
+1431             # _check_id_field and here we ignore it.
+1432             id_conflict = f.name == "id" and clash and clash.name == "id" and clash.model == cls
+1433             if clash and not id_conflict:
+1434                 errors.append(
+1435                     checks.Error(
+1436                         "The field '%s' clashes with the field '%s' "
+1437                         "from model '%s'." % (
+1438                             f.name, clash.name, clash.model._meta
+1439                         ),
+1440                         obj=f,
+1441                         id='models.E006',
+1442                     )
+1443                 )
+1444             used_fields[f.name] = f
+1445             used_fields[f.attname] = f
+1446 
+1447         return errors
+1448 
+1449     @classmethod
+1450     def _check_column_name_clashes(cls):
+1451         # Store a list of column names which have already been used by other fields.
+1452         used_column_names = []
+1453         errors = []
+1454 
+1455         for f in cls._meta.local_fields:
+1456             _, column_name = f.get_attname_column()
+1457 
+1458             # Ensure the column name is not already in use.
+1459             if column_name and column_name in used_column_names:
+1460                 errors.append(
+1461                     checks.Error(
+1462                         "Field '%s' has column name '%s' that is used by "
+1463                         "another field." % (f.name, column_name),
+1464                         hint="Specify a 'db_column' for the field.",
+1465                         obj=cls,
+1466                         id='models.E007'
+1467                     )
+1468                 )
+1469             else:
+1470                 used_column_names.append(column_name)
+1471 
+1472         return errors
+1473 
+1474     @classmethod
+1475     def _check_model_name_db_lookup_clashes(cls):
+1476         errors = []
+1477         model_name = cls.__name__
+1478         if model_name.startswith('_') or model_name.endswith('_'):
+1479             errors.append(
+1480                 checks.Error(
+1481                     "The model name '%s' cannot start or end with an underscore "
+1482                     "as it collides with the query lookup syntax." % model_name,
+1483                     obj=cls,
+1484                     id='models.E023'
+1485                 )
+1486             )
+1487         elif LOOKUP_SEP in model_name:
+1488             errors.append(
+1489                 checks.Error(
+1490                     "The model name '%s' cannot contain double underscores as "
+1491                     "it collides with the query lookup syntax." % model_name,
+1492                     obj=cls,
+1493                     id='models.E024'
+1494                 )
+1495             )
+1496         return errors
+1497 
+1498     @classmethod
+1499     def _check_property_name_related_field_accessor_clashes(cls):
+1500         errors = []
+1501         property_names = cls._meta._property_names
+1502         related_field_accessors = (
+1503             f.get_attname() for f in cls._meta._get_fields(reverse=False)
+1504             if f.is_relation and f.related_model is not None
+1505         )
+1506         for accessor in related_field_accessors:
+1507             if accessor in property_names:
+1508                 errors.append(
+1509                     checks.Error(
+1510                         "The property '%s' clashes with a related field "
+1511                         "accessor." % accessor,
+1512                         obj=cls,
+1513                         id='models.E025',
+1514                     )
+1515                 )
+1516         return errors
+1517 
+1518     @classmethod
+1519     def _check_single_primary_key(cls):
+1520         errors = []
+1521         if sum(1 for f in cls._meta.local_fields if f.primary_key) > 1:
+1522             errors.append(
+1523                 checks.Error(
+1524                     "The model cannot have more than one field with "
+1525                     "'primary_key=True'.",
+1526                     obj=cls,
+1527                     id='models.E026',
+1528                 )
+1529             )
+1530         return errors
+1531 
+1532     @classmethod
+1533     def _check_index_together(cls):
+1534         """Check the value of "index_together" option."""
+1535         if not isinstance(cls._meta.index_together, (tuple, list)):
+1536             return [
+1537                 checks.Error(
+1538                     "'index_together' must be a list or tuple.",
+1539                     obj=cls,
+1540                     id='models.E008',
+1541                 )
+1542             ]
+1543 
+1544         elif any(not isinstance(fields, (tuple, list)) for fields in cls._meta.index_together):
+1545             return [
+1546                 checks.Error(
+1547                     "All 'index_together' elements must be lists or tuples.",
+1548                     obj=cls,
+1549                     id='models.E009',
+1550                 )
+1551             ]
+1552 
+1553         else:
+1554             errors = []
+1555             for fields in cls._meta.index_together:
+1556                 errors.extend(cls._check_local_fields(fields, "index_together"))
+1557             return errors
+1558 
+1559     @classmethod
+1560     def _check_unique_together(cls):
+1561         """Check the value of "unique_together" option."""
+1562         if not isinstance(cls._meta.unique_together, (tuple, list)):
+1563             return [
+1564                 checks.Error(
+1565                     "'unique_together' must be a list or tuple.",
+1566                     obj=cls,
+1567                     id='models.E010',
+1568                 )
+1569             ]
+1570 
+1571         elif any(not isinstance(fields, (tuple, list)) for fields in cls._meta.unique_together):
+1572             return [
+1573                 checks.Error(
+1574                     "All 'unique_together' elements must be lists or tuples.",
+1575                     obj=cls,
+1576                     id='models.E011',
+1577                 )
+1578             ]
+1579 
+1580         else:
+1581             errors = []
+1582             for fields in cls._meta.unique_together:
+1583                 errors.extend(cls._check_local_fields(fields, "unique_together"))
+1584             return errors
+1585 
+1586     @classmethod
+1587     def _check_indexes(cls):
+1588         """Check the fields and names of indexes."""
+1589         errors = []
+1590         for index in cls._meta.indexes:
+1591             # Index name can't start with an underscore or a number, restricted
+1592             # for cross-database compatibility with Oracle.
+1593             if index.name[0] == '_' or index.name[0].isdigit():
+1594                 errors.append(
+1595                     checks.Error(
+1596                         "The index name '%s' cannot start with an underscore "
+1597                         "or a number." % index.name,
+1598                         obj=cls,
+1599                         id='models.E033',
+1600                     ),
+1601                 )
+1602             if len(index.name) > index.max_name_length:
+1603                 errors.append(
+1604                     checks.Error(
+1605                         "The index name '%s' cannot be longer than %d "
+1606                         "characters." % (index.name, index.max_name_length),
+1607                         obj=cls,
+1608                         id='models.E034',
+1609                     ),
+1610                 )
+1611         fields = [field for index in cls._meta.indexes for field, _ in index.fields_orders]
+1612         errors.extend(cls._check_local_fields(fields, 'indexes'))
+1613         return errors
+1614 
+1615     @classmethod
+1616     def _check_local_fields(cls, fields, option):
+1617         from django.db import models
+1618 
+1619         # In order to avoid hitting the relation tree prematurely, we use our
+1620         # own fields_map instead of using get_field()
+1621         forward_fields_map = {}
+1622         for field in cls._meta._get_fields(reverse=False):
+1623             forward_fields_map[field.name] = field
+1624             if hasattr(field, 'attname'):
+1625                 forward_fields_map[field.attname] = field
+1626 
+1627         errors = []
+1628         for field_name in fields:
+1629             try:
+1630                 field = forward_fields_map[field_name]
+1631             except KeyError:
+1632                 errors.append(
+1633                     checks.Error(
+1634                         "'%s' refers to the nonexistent field '%s'." % (
+1635                             option, field_name,
+1636                         ),
+1637                         obj=cls,
+1638                         id='models.E012',
+1639                     )
+1640                 )
+1641             else:
+1642                 if isinstance(field.remote_field, models.ManyToManyRel):
+1643                     errors.append(
+1644                         checks.Error(
+1645                             "'%s' refers to a ManyToManyField '%s', but "
+1646                             "ManyToManyFields are not permitted in '%s'." % (
+1647                                 option, field_name, option,
+1648                             ),
+1649                             obj=cls,
+1650                             id='models.E013',
+1651                         )
+1652                     )
+1653                 elif field not in cls._meta.local_fields:
+1654                     errors.append(
+1655                         checks.Error(
+1656                             "'%s' refers to field '%s' which is not local to model '%s'."
+1657                             % (option, field_name, cls._meta.object_name),
+1658                             hint="This issue may be caused by multi-table inheritance.",
+1659                             obj=cls,
+1660                             id='models.E016',
+1661                         )
+1662                     )
+1663         return errors
+1664 
+1665     @classmethod
+1666     def _check_ordering(cls):
+1667         """
+1668         Check "ordering" option -- is it a list of strings and do all fields
+1669         exist?
+1670         """
+1671         if cls._meta._ordering_clash:
+1672             return [
+1673                 checks.Error(
+1674                     "'ordering' and 'order_with_respect_to' cannot be used together.",
+1675                     obj=cls,
+1676                     id='models.E021',
+1677                 ),
+1678             ]
+1679 
+1680         if cls._meta.order_with_respect_to or not cls._meta.ordering:
+1681             return []
+1682 
+1683         if not isinstance(cls._meta.ordering, (list, tuple)):
+1684             return [
+1685                 checks.Error(
+1686                     "'ordering' must be a tuple or list (even if you want to order by only one field).",
+1687                     obj=cls,
+1688                     id='models.E014',
+1689                 )
+1690             ]
+1691 
+1692         errors = []
+1693         fields = cls._meta.ordering
+1694 
+1695         # Skip expressions and '?' fields.
+1696         fields = (f for f in fields if isinstance(f, str) and f != '?')
+1697 
+1698         # Convert "-field" to "field".
+1699         fields = ((f[1:] if f.startswith('-') else f) for f in fields)
+1700 
+1701         # Separate related fields and non-related fields.
+1702         _fields = []
+1703         related_fields = []
+1704         for f in fields:
+1705             if LOOKUP_SEP in f:
+1706                 related_fields.append(f)
+1707             else:
+1708                 _fields.append(f)
+1709         fields = _fields
+1710 
+1711         # Check related fields.
+1712         for field in related_fields:
+1713             _cls = cls
+1714             fld = None
+1715             for part in field.split(LOOKUP_SEP):
+1716                 try:
+1717                     # pk is an alias that won't be found by opts.get_field.
+1718                     if part == 'pk':
+1719                         fld = _cls._meta.pk
+1720                     else:
+1721                         fld = _cls._meta.get_field(part)
+1722                     if fld.is_relation:
+1723                         _cls = fld.get_path_info()[-1].to_opts.model
+1724                     else:
+1725                         _cls = None
+1726                 except (FieldDoesNotExist, AttributeError):
+1727                     if fld is None or fld.get_transform(part) is None:
+1728                         errors.append(
+1729                             checks.Error(
+1730                                 "'ordering' refers to the nonexistent field, "
+1731                                 "related field, or lookup '%s'." % field,
+1732                                 obj=cls,
+1733                                 id='models.E015',
+1734                             )
+1735                         )
+1736 
+1737         # Skip ordering on pk. This is always a valid order_by field
+1738         # but is an alias and therefore won't be found by opts.get_field.
+1739         fields = {f for f in fields if f != 'pk'}
+1740 
+1741         # Check for invalid or nonexistent fields in ordering.
+1742         invalid_fields = []
+1743 
+1744         # Any field name that is not present in field_names does not exist.
+1745         # Also, ordering by m2m fields is not allowed.
+1746         opts = cls._meta
+1747         valid_fields = set(chain.from_iterable(
+1748             (f.name, f.attname) if not (f.auto_created and not f.concrete) else (f.field.related_query_name(),)
+1749             for f in chain(opts.fields, opts.related_objects)
+1750         ))
+1751 
+1752         invalid_fields.extend(fields - valid_fields)
+1753 
+1754         for invalid_field in invalid_fields:
+1755             errors.append(
+1756                 checks.Error(
+1757                     "'ordering' refers to the nonexistent field, related "
+1758                     "field, or lookup '%s'." % invalid_field,
+1759                     obj=cls,
+1760                     id='models.E015',
+1761                 )
+1762             )
+1763         return errors
+1764 
+1765     @classmethod
+1766     def _check_long_column_names(cls):
+1767         """
+1768         Check that any auto-generated column names are shorter than the limits
+1769         for each database in which the model will be created.
+1770         """
+1771         errors = []
+1772         allowed_len = None
+1773         db_alias = None
+1774 
+1775         # Find the minimum max allowed length among all specified db_aliases.
+1776         for db in settings.DATABASES:
+1777             # skip databases where the model won't be created
+1778             if not router.allow_migrate_model(db, cls):
+1779                 continue
+1780             connection = connections[db]
+1781             max_name_length = connection.ops.max_name_length()
+1782             if max_name_length is None or connection.features.truncates_names:
+1783                 continue
+1784             else:
+1785                 if allowed_len is None:
+1786                     allowed_len = max_name_length
+1787                     db_alias = db
+1788                 elif max_name_length < allowed_len:
+1789                     allowed_len = max_name_length
+1790                     db_alias = db
+1791 
+1792         if allowed_len is None:
+1793             return errors
+1794 
+1795         for f in cls._meta.local_fields:
+1796             _, column_name = f.get_attname_column()
+1797 
+1798             # Check if auto-generated name for the field is too long
+1799             # for the database.
+1800             if f.db_column is None and column_name is not None and len(column_name) > allowed_len:
+1801                 errors.append(
+1802                     checks.Error(
+1803                         'Autogenerated column name too long for field "%s". '
+1804                         'Maximum length is "%s" for database "%s".'
+1805                         % (column_name, allowed_len, db_alias),
+1806                         hint="Set the column name manually using 'db_column'.",
+1807                         obj=cls,
+1808                         id='models.E018',
+1809                     )
+1810                 )
+1811 
+1812         for f in cls._meta.local_many_to_many:
+1813             # Skip nonexistent models.
+1814             if isinstance(f.remote_field.through, str):
+1815                 continue
+1816 
+1817             # Check if auto-generated name for the M2M field is too long
+1818             # for the database.
+1819             for m2m in f.remote_field.through._meta.local_fields:
+1820                 _, rel_name = m2m.get_attname_column()
+1821                 if m2m.db_column is None and rel_name is not None and len(rel_name) > allowed_len:
+1822                     errors.append(
+1823                         checks.Error(
+1824                             'Autogenerated column name too long for M2M field '
+1825                             '"%s". Maximum length is "%s" for database "%s".'
+1826                             % (rel_name, allowed_len, db_alias),
+1827                             hint=(
+1828                                 "Use 'through' to create a separate model for "
+1829                                 "M2M and then set column_name using 'db_column'."
+1830                             ),
+1831                             obj=cls,
+1832                             id='models.E019',
+1833                         )
+1834                     )
+1835 
+1836         return errors
+1837 
+1838     @classmethod
+1839     def _check_constraints(cls, databases):
+1840         errors = []
+1841         for db in databases:
+1842             if not router.allow_migrate_model(db, cls):
+1843                 continue
+1844             connection = connections[db]
+1845             if (
+1846                 connection.features.supports_table_check_constraints or
+1847                 'supports_table_check_constraints' in cls._meta.required_db_features
+1848             ):
+1849                 continue
+1850             if any(isinstance(constraint, CheckConstraint) for constraint in cls._meta.constraints):
+1851                 errors.append(
+1852                     checks.Warning(
+1853                         '%s does not support check constraints.' % connection.display_name,
+1854                         hint=(
+1855                             "A constraint won't be created. Silence this "
+1856                             "warning if you don't care about it."
+1857                         ),
+1858                         obj=cls,
+1859                         id='models.W027',
+1860                     )
+1861                 )
+1862         return errors
+1863 
+1864 
+1865 ############################################
+1866 # HELPER FUNCTIONS (CURRIED MODEL METHODS) #
+1867 ############################################
+1868 
+1869 # ORDERING METHODS #########################
+1870 
+1871 def method_set_order(self, ordered_obj, id_list, using=None):
+1872     if using is None:
+1873         using = DEFAULT_DB_ALIAS
+1874     order_wrt = ordered_obj._meta.order_with_respect_to
+1875     filter_args = order_wrt.get_forward_related_filter(self)
+1876     ordered_obj.objects.db_manager(using).filter(**filter_args).bulk_update([
+1877         ordered_obj(pk=pk, _order=order) for order, pk in enumerate(id_list)
+1878     ], ['_order'])
+1879 
+1880 
+1881 def method_get_order(self, ordered_obj):
+1882     order_wrt = ordered_obj._meta.order_with_respect_to
+1883     filter_args = order_wrt.get_forward_related_filter(self)
+1884     pk_name = ordered_obj._meta.pk.name
+1885     return ordered_obj.objects.filter(**filter_args).values_list(pk_name, flat=True)
+1886 
+1887 
+1888 def make_foreign_order_accessors(model, related_model):
+1889     setattr(
+1890         related_model,
+1891         'get_%s_order' % model.__name__.lower(),
+1892         partialmethod(method_get_order, model)
+1893     )
+1894     setattr(
+1895         related_model,
+1896         'set_%s_order' % model.__name__.lower(),
+1897         partialmethod(method_set_order, model)
+1898     )
+1899 
+1900 ########
+1901 # MISC #
+1902 ########
+1903 
+1904 
+1905 def model_unpickle(model_id):
+1906     """Used to unpickle Model subclasses with deferred fields."""
+1907     if isinstance(model_id, tuple):
+1908         model = apps.get_model(*model_id)
+1909     else:
+1910         # Backwards compat - the model was cached directly in earlier versions.
+1911         model = model_id
+1912     return model.__new__(model)
+1913 
+1914 
+1915 model_unpickle.__safe_for_unpickle__ = True
+
+</code><intended_behavior>The method should be enhanced to detect when a model instance is being saved with multi-table inheritance where a custom primary key is defined. It should ensure that the parent table is correctly populated without issuing a redundant update that overrides fields with empty values. The fix should ensure the efficient creation of parent and child model instances in a single operation where possible, or at least eliminate unnecessary updates to the parent model when creating a child model instance.</intended_behavior>, <file>django/db/models/fields/__init__.py</file>
+<class>UUIDField</class>
+<method>None</method>
+<code>
+2289 class UUIDField(Field):
+2290     default_error_messages = {
+2291         'invalid': _('“%(value)s” is not a valid UUID.'),
+2292     }
+2293     description = _('Universally unique identifier')
+2294     empty_strings_allowed = False
+2295 
+2296     def __init__(self, verbose_name=None, **kwargs):
+2297         kwargs['max_length'] = 32
+2298         super().__init__(verbose_name, **kwargs)
+2299 
+2300     def deconstruct(self):
+2301         name, path, args, kwargs = super().deconstruct()
+2302         del kwargs['max_length']
+2303         return name, path, args, kwargs
+2304 
+2305     def get_internal_type(self):
+2306         return "UUIDField"
+2307 
+2308     def get_prep_value(self, value):
+2309         value = super().get_prep_value(value)
+2310         return self.to_python(value)
+2311 
+2312     def get_db_prep_value(self, value, connection, prepared=False):
+2313         if value is None:
+2314             return None
+2315         if not isinstance(value, uuid.UUID):
+2316             value = self.to_python(value)
+2317 
+2318         if connection.features.has_native_uuid_field:
+2319             return value
+2320         return value.hex
+2321 
+2322     def to_python(self, value):
+2323         if value is not None and not isinstance(value, uuid.UUID):
+2324             input_form = 'int' if isinstance(value, int) else 'hex'
+2325             try:
+2326                 return uuid.UUID(**{input_form: value})
+2327             except (AttributeError, ValueError):
+2328                 raise exceptions.ValidationError(
+2329                     self.error_messages['invalid'],
+2330                     code='invalid',
+2331                     params={'value': value},
+2332                 )
+2333         return value
+2334 
+2335     def formfield(self, **kwargs):
+2336         return super().formfield(**{
+2337             'form_class': forms.UUIDField,
+2338             **kwargs,
+2339         })
+
+</code><intended_behavior>Ensure proper handling and generation of UUIDField as a primary key in inheritance scenarios, maintaining the linkage and integrity between parent and child records without unnecessary updates. This might involve adjusting how the UUIDField value is set and ensuring it's correctly utilized in both parent and child table creation processes.</intended_behavior>]
+2025-10-18 11:28:33.964 | INFO     | Search completed. Bug locations: [<file>django/db/models/base.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import copy
+2 import inspect
+3 import warnings
+4 from functools import partialmethod
+5 from itertools import chain
+6 
+7 from django.apps import apps
+8 from django.conf import settings
+9 from django.core import checks
+10 from django.core.exceptions import (
+11     NON_FIELD_ERRORS, FieldDoesNotExist, FieldError, MultipleObjectsReturned,
+12     ObjectDoesNotExist, ValidationError,
+13 )
+14 from django.db import (
+15     DEFAULT_DB_ALIAS, DJANGO_VERSION_PICKLE_KEY, DatabaseError, connection,
+16     connections, router, transaction,
+17 )
+18 from django.db.models import (
+19     NOT_PROVIDED, ExpressionWrapper, IntegerField, Max, Value,
+20 )
+21 from django.db.models.constants import LOOKUP_SEP
+22 from django.db.models.constraints import CheckConstraint
+23 from django.db.models.deletion import CASCADE, Collector
+24 from django.db.models.fields.related import (
+25     ForeignObjectRel, OneToOneField, lazy_related_operation, resolve_relation,
+26 )
+27 from django.db.models.functions import Coalesce
+28 from django.db.models.manager import Manager
+29 from django.db.models.options import Options
+30 from django.db.models.query import Q
+31 from django.db.models.signals import (
+32     class_prepared, post_init, post_save, pre_init, pre_save,
+33 )
+34 from django.db.models.utils import make_model_tuple
+35 from django.utils.encoding import force_str
+36 from django.utils.hashable import make_hashable
+37 from django.utils.text import capfirst, get_text_list
+38 from django.utils.translation import gettext_lazy as _
+39 from django.utils.version import get_version
+40 
+41 
+42 class Deferred:
+43     def __repr__(self):
+44         return '<Deferred field>'
+45 
+46     def __str__(self):
+47         return '<Deferred field>'
+48 
+49 
+50 DEFERRED = Deferred()
+51 
+52 
+53 def subclass_exception(name, bases, module, attached_to):
+54     """
+55     Create exception subclass. Used by ModelBase below.
+56 
+57     The exception is created in a way that allows it to be pickled, assuming
+58     that the returned exception class will be added as an attribute to the
+59     'attached_to' class.
+60     """
+61     return type(name, bases, {
+62         '__module__': module,
+63         '__qualname__': '%s.%s' % (attached_to.__qualname__, name),
+64     })
+65 
+66 
+67 def _has_contribute_to_class(value):
+68     # Only call contribute_to_class() if it's bound.
+69     return not inspect.isclass(value) and hasattr(value, 'contribute_to_class')
+70 
+71 
+72 class ModelBase(type):
+73     """Metaclass for all models."""
+74     def __new__(cls, name, bases, attrs, **kwargs):
+75         super_new = super().__new__
+76 
+77         # Also ensure initialization is only performed for subclasses of Model
+78         # (excluding Model class itself).
+79         parents = [b for b in bases if isinstance(b, ModelBase)]
+80         if not parents:
+81             return super_new(cls, name, bases, attrs)
+82 
+83         # Create the class.
+84         module = attrs.pop('__module__')
+85         new_attrs = {'__module__': module}
+86         classcell = attrs.pop('__classcell__', None)
+87         if classcell is not None:
+88             new_attrs['__classcell__'] = classcell
+89         attr_meta = attrs.pop('Meta', None)
+90         # Pass all attrs without a (Django-specific) contribute_to_class()
+91         # method to type.__new__() so that they're properly initialized
+92         # (i.e. __set_name__()).
+93         contributable_attrs = {}
+94         for obj_name, obj in list(attrs.items()):
+95             if _has_contribute_to_class(obj):
+96                 contributable_attrs[obj_name] = obj
+97             else:
+98                 new_attrs[obj_name] = obj
+99         new_class = super_new(cls, name, bases, new_attrs, **kwargs)
+100 
+101         abstract = getattr(attr_meta, 'abstract', False)
+102         meta = attr_meta or getattr(new_class, 'Meta', None)
+103         base_meta = getattr(new_class, '_meta', None)
+104 
+105         app_label = None
+106 
+107         # Look for an application configuration to attach the model to.
+108         app_config = apps.get_containing_app_config(module)
+109 
+110         if getattr(meta, 'app_label', None) is None:
+111             if app_config is None:
+112                 if not abstract:
+113                     raise RuntimeError(
+114                         "Model class %s.%s doesn't declare an explicit "
+115                         "app_label and isn't in an application in "
+116                         "INSTALLED_APPS." % (module, name)
+117                     )
+118 
+119             else:
+120                 app_label = app_config.label
+121 
+122         new_class.add_to_class('_meta', Options(meta, app_label))
+123         if not abstract:
+124             new_class.add_to_class(
+125                 'DoesNotExist',
+126                 subclass_exception(
+127                     'DoesNotExist',
+128                     tuple(
+129                         x.DoesNotExist for x in parents if hasattr(x, '_meta') and not x._meta.abstract
+130                     ) or (ObjectDoesNotExist,),
+131                     module,
+132                     attached_to=new_class))
+133             new_class.add_to_class(
+134                 'MultipleObjectsReturned',
+135                 subclass_exception(
+136                     'MultipleObjectsReturned',
+137                     tuple(
+138                         x.MultipleObjectsReturned for x in parents if hasattr(x, '_meta') and not x._meta.abstract
+139                     ) or (MultipleObjectsReturned,),
+140                     module,
+141                     attached_to=new_class))
+142             if base_meta and not base_meta.abstract:
+143                 # Non-abstract child classes inherit some attributes from their
+144                 # non-abstract parent (unless an ABC comes before it in the
+145                 # method resolution order).
+146                 if not hasattr(meta, 'ordering'):
+147                     new_class._meta.ordering = base_meta.ordering
+148                 if not hasattr(meta, 'get_latest_by'):
+149                     new_class._meta.get_latest_by = base_meta.get_latest_by
+150 
+151         is_proxy = new_class._meta.proxy
+152 
+153         # If the model is a proxy, ensure that the base class
+154         # hasn't been swapped out.
+155         if is_proxy and base_meta and base_meta.swapped:
+156             raise TypeError("%s cannot proxy the swapped model '%s'." % (name, base_meta.swapped))
+157 
+158         # Add remaining attributes (those with a contribute_to_class() method)
+159         # to the class.
+160         for obj_name, obj in contributable_attrs.items():
+161             new_class.add_to_class(obj_name, obj)
+162 
+163         # All the fields of any type declared on this model
+164         new_fields = chain(
+165             new_class._meta.local_fields,
+166             new_class._meta.local_many_to_many,
+167             new_class._meta.private_fields
+168         )
+169         field_names = {f.name for f in new_fields}
+170 
+171         # Basic setup for proxy models.
+172         if is_proxy:
+173             base = None
+174             for parent in [kls for kls in parents if hasattr(kls, '_meta')]:
+175                 if parent._meta.abstract:
+176                     if parent._meta.fields:
+177                         raise TypeError(
+178                             "Abstract base class containing model fields not "
+179                             "permitted for proxy model '%s'." % name
+180                         )
+181                     else:
+182                         continue
+183                 if base is None:
+184                     base = parent
+185                 elif parent._meta.concrete_model is not base._meta.concrete_model:
+186                     raise TypeError("Proxy model '%s' has more than one non-abstract model base class." % name)
+187             if base is None:
+188                 raise TypeError("Proxy model '%s' has no non-abstract model base class." % name)
+189             new_class._meta.setup_proxy(base)
+190             new_class._meta.concrete_model = base._meta.concrete_model
+191         else:
+192             new_class._meta.concrete_model = new_class
+193 
+194         # Collect the parent links for multi-table inheritance.
+195         parent_links = {}
+196         for base in reversed([new_class] + parents):
+197             # Conceptually equivalent to `if base is Model`.
+198             if not hasattr(base, '_meta'):
+199                 continue
+200             # Skip concrete parent classes.
+201             if base != new_class and not base._meta.abstract:
+202                 continue
+203             # Locate OneToOneField instances.
+204             for field in base._meta.local_fields:
+205                 if isinstance(field, OneToOneField) and field.remote_field.parent_link:
+206                     related = resolve_relation(new_class, field.remote_field.model)
+207                     parent_links[make_model_tuple(related)] = field
+208 
+209         # Track fields inherited from base models.
+210         inherited_attributes = set()
+211         # Do the appropriate setup for any model parents.
+212         for base in new_class.mro():
+213             if base not in parents or not hasattr(base, '_meta'):
+214                 # Things without _meta aren't functional models, so they're
+215                 # uninteresting parents.
+216                 inherited_attributes.update(base.__dict__)
+217                 continue
+218 
+219             parent_fields = base._meta.local_fields + base._meta.local_many_to_many
+220             if not base._meta.abstract:
+221                 # Check for clashes between locally declared fields and those
+222                 # on the base classes.
+223                 for field in parent_fields:
+224                     if field.name in field_names:
+225                         raise FieldError(
+226                             'Local field %r in class %r clashes with field of '
+227                             'the same name from base class %r.' % (
+228                                 field.name,
+229                                 name,
+230                                 base.__name__,
+231                             )
+232                         )
+233                     else:
+234                         inherited_attributes.add(field.name)
+235 
+236                 # Concrete classes...
+237                 base = base._meta.concrete_model
+238                 base_key = make_model_tuple(base)
+239                 if base_key in parent_links:
+240                     field = parent_links[base_key]
+241                 elif not is_proxy:
+242                     attr_name = '%s_ptr' % base._meta.model_name
+243                     field = OneToOneField(
+244                         base,
+245                         on_delete=CASCADE,
+246                         name=attr_name,
+247                         auto_created=True,
+248                         parent_link=True,
+249                     )
+250 
+251                     if attr_name in field_names:
+252                         raise FieldError(
+253                             "Auto-generated field '%s' in class %r for "
+254                             "parent_link to base class %r clashes with "
+255                             "declared field of the same name." % (
+256                                 attr_name,
+257                                 name,
+258                                 base.__name__,
+259                             )
+260                         )
+261 
+262                     # Only add the ptr field if it's not already present;
+263                     # e.g. migrations will already have it specified
+264                     if not hasattr(new_class, attr_name):
+265                         new_class.add_to_class(attr_name, field)
+266                 else:
+267                     field = None
+268                 new_class._meta.parents[base] = field
+269             else:
+270                 base_parents = base._meta.parents.copy()
+271 
+272                 # Add fields from abstract base class if it wasn't overridden.
+273                 for field in parent_fields:
+274                     if (field.name not in field_names and
+275                             field.name not in new_class.__dict__ and
+276                             field.name not in inherited_attributes):
+277                         new_field = copy.deepcopy(field)
+278                         new_class.add_to_class(field.name, new_field)
+279                         # Replace parent links defined on this base by the new
+280                         # field. It will be appropriately resolved if required.
+281                         if field.one_to_one:
+282                             for parent, parent_link in base_parents.items():
+283                                 if field == parent_link:
+284                                     base_parents[parent] = new_field
+285 
+286                 # Pass any non-abstract parent classes onto child.
+287                 new_class._meta.parents.update(base_parents)
+288 
+289             # Inherit private fields (like GenericForeignKey) from the parent
+290             # class
+291             for field in base._meta.private_fields:
+292                 if field.name in field_names:
+293                     if not base._meta.abstract:
+294                         raise FieldError(
+295                             'Local field %r in class %r clashes with field of '
+296                             'the same name from base class %r.' % (
+297                                 field.name,
+298                                 name,
+299                                 base.__name__,
+300                             )
+301                         )
+302                 else:
+303                     field = copy.deepcopy(field)
+304                     if not base._meta.abstract:
+305                         field.mti_inherited = True
+306                     new_class.add_to_class(field.name, field)
+307 
+308         # Copy indexes so that index names are unique when models extend an
+309         # abstract model.
+310         new_class._meta.indexes = [copy.deepcopy(idx) for idx in new_class._meta.indexes]
+311 
+312         if abstract:
+313             # Abstract base models can't be instantiated and don't appear in
+314             # the list of models for an app. We do the final setup for them a
+315             # little differently from normal models.
+316             attr_meta.abstract = False
+317             new_class.Meta = attr_meta
+318             return new_class
+319 
+320         new_class._prepare()
+321         new_class._meta.apps.register_model(new_class._meta.app_label, new_class)
+322         return new_class
+323 
+324     def add_to_class(cls, name, value):
+325         if _has_contribute_to_class(value):
+326             value.contribute_to_class(cls, name)
+327         else:
+328             setattr(cls, name, value)
+329 
+330     def _prepare(cls):
+331         """Create some methods once self._meta has been populated."""
+332         opts = cls._meta
+333         opts._prepare(cls)
+334 
+335         if opts.order_with_respect_to:
+336             cls.get_next_in_order = partialmethod(cls._get_next_or_previous_in_order, is_next=True)
+337             cls.get_previous_in_order = partialmethod(cls._get_next_or_previous_in_order, is_next=False)
+338 
+339             # Defer creating accessors on the foreign class until it has been
+340             # created and registered. If remote_field is None, we're ordering
+341             # with respect to a GenericForeignKey and don't know what the
+342             # foreign class is - we'll add those accessors later in
+343             # contribute_to_class().
+344             if opts.order_with_respect_to.remote_field:
+345                 wrt = opts.order_with_respect_to
+346                 remote = wrt.remote_field.model
+347                 lazy_related_operation(make_foreign_order_accessors, cls, remote)
+348 
+349         # Give the class a docstring -- its definition.
+350         if cls.__doc__ is None:
+351             cls.__doc__ = "%s(%s)" % (cls.__name__, ", ".join(f.name for f in opts.fields))
+352 
+353         get_absolute_url_override = settings.ABSOLUTE_URL_OVERRIDES.get(opts.label_lower)
+354         if get_absolute_url_override:
+355             setattr(cls, 'get_absolute_url', get_absolute_url_override)
+356 
+357         if not opts.managers:
+358             if any(f.name == 'objects' for f in opts.fields):
+359                 raise ValueError(
+360                     "Model %s must specify a custom Manager, because it has a "
+361                     "field named 'objects'." % cls.__name__
+362                 )
+363             manager = Manager()
+364             manager.auto_created = True
+365             cls.add_to_class('objects', manager)
+366 
+367         # Set the name of _meta.indexes. This can't be done in
+368         # Options.contribute_to_class() because fields haven't been added to
+369         # the model at that point.
+370         for index in cls._meta.indexes:
+371             if not index.name:
+372                 index.set_name_with_model(cls)
+373 
+374         class_prepared.send(sender=cls)
+375 
+376     @property
+377     def _base_manager(cls):
+378         return cls._meta.base_manager
+379 
+380     @property
+381     def _default_manager(cls):
+382         return cls._meta.default_manager
+383 
+384 
+385 class ModelStateFieldsCacheDescriptor:
+386     def __get__(self, instance, cls=None):
+387         if instance is None:
+388             return self
+389         res = instance.fields_cache = {}
+390         return res
+391 
+392 
+393 class ModelState:
+394     """Store model instance state."""
+395     db = None
+396     # If true, uniqueness validation checks will consider this a new, unsaved
+397     # object. Necessary for correct validation of new instances of objects with
+398     # explicit (non-auto) PKs. This impacts validation only; it has no effect
+399     # on the actual save.
+400     adding = True
+401     fields_cache = ModelStateFieldsCacheDescriptor()
+402 
+403 
+404 class Model(metaclass=ModelBase):
+405 
+406     def __init__(self, *args, **kwargs):
+407         # Alias some things as locals to avoid repeat global lookups
+408         cls = self.__class__
+409         opts = self._meta
+410         _setattr = setattr
+411         _DEFERRED = DEFERRED
+412 
+413         pre_init.send(sender=cls, args=args, kwargs=kwargs)
+414 
+415         # Set up the storage for instance state
+416         self._state = ModelState()
+417 
+418         # There is a rather weird disparity here; if kwargs, it's set, then args
+419         # overrides it. It should be one or the other; don't duplicate the work
+420         # The reason for the kwargs check is that standard iterator passes in by
+421         # args, and instantiation for iteration is 33% faster.
+422         if len(args) > len(opts.concrete_fields):
+423             # Daft, but matches old exception sans the err msg.
+424             raise IndexError("Number of args exceeds number of fields")
+425 
+426         if not kwargs:
+427             fields_iter = iter(opts.concrete_fields)
+428             # The ordering of the zip calls matter - zip throws StopIteration
+429             # when an iter throws it. So if the first iter throws it, the second
+430             # is *not* consumed. We rely on this, so don't change the order
+431             # without changing the logic.
+432             for val, field in zip(args, fields_iter):
+433                 if val is _DEFERRED:
+434                     continue
+435                 _setattr(self, field.attname, val)
+436         else:
+437             # Slower, kwargs-ready version.
+438             fields_iter = iter(opts.fields)
+439             for val, field in zip(args, fields_iter):
+440                 if val is _DEFERRED:
+441                     continue
+442                 _setattr(self, field.attname, val)
+443                 kwargs.pop(field.name, None)
+444 
+445         # Now we're left with the unprocessed fields that *must* come from
+446         # keywords, or default.
+447 
+448         for field in fields_iter:
+449             is_related_object = False
+450             # Virtual field
+451             if field.attname not in kwargs and field.column is None:
+452                 continue
+453             if kwargs:
+454                 if isinstance(field.remote_field, ForeignObjectRel):
+455                     try:
+456                         # Assume object instance was passed in.
+457                         rel_obj = kwargs.pop(field.name)
+458                         is_related_object = True
+459                     except KeyError:
+460                         try:
+461                             # Object instance wasn't passed in -- must be an ID.
+462                             val = kwargs.pop(field.attname)
+463                         except KeyError:
+464                             val = field.get_default()
+465                 else:
+466                     try:
+467                         val = kwargs.pop(field.attname)
+468                     except KeyError:
+469                         # This is done with an exception rather than the
+470                         # default argument on pop because we don't want
+471                         # get_default() to be evaluated, and then not used.
+472                         # Refs #12057.
+473                         val = field.get_default()
+474             else:
+475                 val = field.get_default()
+476 
+477             if is_related_object:
+478                 # If we are passed a related instance, set it using the
+479                 # field.name instead of field.attname (e.g. "user" instead of
+480                 # "user_id") so that the object gets properly cached (and type
+481                 # checked) by the RelatedObjectDescriptor.
+482                 if rel_obj is not _DEFERRED:
+483                     _setattr(self, field.name, rel_obj)
+484             else:
+485                 if val is not _DEFERRED:
+486                     _setattr(self, field.attname, val)
+487 
+488         if kwargs:
+489             property_names = opts._property_names
+490             for prop in tuple(kwargs):
+491                 try:
+492                     # Any remaining kwargs must correspond to properties or
+493                     # virtual fields.
+494                     if prop in property_names or opts.get_field(prop):
+495                         if kwargs[prop] is not _DEFERRED:
+496                             _setattr(self, prop, kwargs[prop])
+497                         del kwargs[prop]
+498                 except (AttributeError, FieldDoesNotExist):
+499                     pass
+500             for kwarg in kwargs:
+501                 raise TypeError("%s() got an unexpected keyword argument '%s'" % (cls.__name__, kwarg))
+502         super().__init__()
+503         post_init.send(sender=cls, instance=self)
+504 
+505     @classmethod
+506     def from_db(cls, db, field_names, values):
+507         if len(values) != len(cls._meta.concrete_fields):
+508             values_iter = iter(values)
+509             values = [
+510                 next(values_iter) if f.attname in field_names else DEFERRED
+511                 for f in cls._meta.concrete_fields
+512             ]
+513         new = cls(*values)
+514         new._state.adding = False
+515         new._state.db = db
+516         return new
+517 
+518     def __repr__(self):
+519         return '<%s: %s>' % (self.__class__.__name__, self)
+520 
+521     def __str__(self):
+522         return '%s object (%s)' % (self.__class__.__name__, self.pk)
+523 
+524     def __eq__(self, other):
+525         if not isinstance(other, Model):
+526             return NotImplemented
+527         if self._meta.concrete_model != other._meta.concrete_model:
+528             return False
+529         my_pk = self.pk
+530         if my_pk is None:
+531             return self is other
+532         return my_pk == other.pk
+533 
+534     def __hash__(self):
+535         if self.pk is None:
+536             raise TypeError("Model instances without primary key value are unhashable")
+537         return hash(self.pk)
+538 
+539     def __reduce__(self):
+540         data = self.__getstate__()
+541         data[DJANGO_VERSION_PICKLE_KEY] = get_version()
+542         class_id = self._meta.app_label, self._meta.object_name
+543         return model_unpickle, (class_id,), data
+544 
+545     def __getstate__(self):
+546         """Hook to allow choosing the attributes to pickle."""
+547         return self.__dict__
+548 
+549     def __setstate__(self, state):
+550         msg = None
+551         pickled_version = state.get(DJANGO_VERSION_PICKLE_KEY)
+552         if pickled_version:
+553             current_version = get_version()
+554             if current_version != pickled_version:
+555                 msg = (
+556                     "Pickled model instance's Django version %s does not match "
+557                     "the current version %s." % (pickled_version, current_version)
+558                 )
+559         else:
+560             msg = "Pickled model instance's Django version is not specified."
+561 
+562         if msg:
+563             warnings.warn(msg, RuntimeWarning, stacklevel=2)
+564 
+565         self.__dict__.update(state)
+566 
+567     def _get_pk_val(self, meta=None):
+568         meta = meta or self._meta
+569         return getattr(self, meta.pk.attname)
+570 
+571     def _set_pk_val(self, value):
+572         for parent_link in self._meta.parents.values():
+573             if parent_link and parent_link != self._meta.pk:
+574                 setattr(self, parent_link.target_field.attname, value)
+575         return setattr(self, self._meta.pk.attname, value)
+576 
+577     pk = property(_get_pk_val, _set_pk_val)
+578 
+579     def get_deferred_fields(self):
+580         """
+581         Return a set containing names of deferred fields for this instance.
+582         """
+583         return {
+584             f.attname for f in self._meta.concrete_fields
+585             if f.attname not in self.__dict__
+586         }
+587 
+588     def refresh_from_db(self, using=None, fields=None):
+589         """
+590         Reload field values from the database.
+591 
+592         By default, the reloading happens from the database this instance was
+593         loaded from, or by the read router if this instance wasn't loaded from
+594         any database. The using parameter will override the default.
+595 
+596         Fields can be used to specify which fields to reload. The fields
+597         should be an iterable of field attnames. If fields is None, then
+598         all non-deferred fields are reloaded.
+599 
+600         When accessing deferred fields of an instance, the deferred loading
+601         of the field will call this method.
+602         """
+603         if fields is None:
+604             self._prefetched_objects_cache = {}
+605         else:
+606             prefetched_objects_cache = getattr(self, '_prefetched_objects_cache', ())
+607             for field in fields:
+608                 if field in prefetched_objects_cache:
+609                     del prefetched_objects_cache[field]
+610                     fields.remove(field)
+611             if not fields:
+612                 return
+613             if any(LOOKUP_SEP in f for f in fields):
+614                 raise ValueError(
+615                     'Found "%s" in fields argument. Relations and transforms '
+616                     'are not allowed in fields.' % LOOKUP_SEP)
+617 
+618         hints = {'instance': self}
+619         db_instance_qs = self.__class__._base_manager.db_manager(using, hints=hints).filter(pk=self.pk)
+620 
+621         # Use provided fields, if not set then reload all non-deferred fields.
+622         deferred_fields = self.get_deferred_fields()
+623         if fields is not None:
+624             fields = list(fields)
+625             db_instance_qs = db_instance_qs.only(*fields)
+626         elif deferred_fields:
+627             fields = [f.attname for f in self._meta.concrete_fields
+628                       if f.attname not in deferred_fields]
+629             db_instance_qs = db_instance_qs.only(*fields)
+630 
+631         db_instance = db_instance_qs.get()
+632         non_loaded_fields = db_instance.get_deferred_fields()
+633         for field in self._meta.concrete_fields:
+634             if field.attname in non_loaded_fields:
+635                 # This field wasn't refreshed - skip ahead.
+636                 continue
+637             setattr(self, field.attname, getattr(db_instance, field.attname))
+638             # Clear cached foreign keys.
+639             if field.is_relation and field.is_cached(self):
+640                 field.delete_cached_value(self)
+641 
+642         # Clear cached relations.
+643         for field in self._meta.related_objects:
+644             if field.is_cached(self):
+645                 field.delete_cached_value(self)
+646 
+647         self._state.db = db_instance._state.db
+648 
+649     def serializable_value(self, field_name):
+650         """
+651         Return the value of the field name for this instance. If the field is
+652         a foreign key, return the id value instead of the object. If there's
+653         no Field object with this name on the model, return the model
+654         attribute's value.
+655 
+656         Used to serialize a field's value (in the serializer, or form output,
+657         for example). Normally, you would just access the attribute directly
+658         and not use this method.
+659         """
+660         try:
+661             field = self._meta.get_field(field_name)
+662         except FieldDoesNotExist:
+663             return getattr(self, field_name)
+664         return getattr(self, field.attname)
+665 
+666     def save(self, force_insert=False, force_update=False, using=None,
+667              update_fields=None):
+668         """
+669         Save the current instance. Override this in a subclass if you want to
+670         control the saving process.
+671 
+672         The 'force_insert' and 'force_update' parameters can be used to insist
+673         that the "save" must be an SQL insert or update (or equivalent for
+674         non-SQL backends), respectively. Normally, they should not be set.
+675         """
+676         # Ensure that a model instance without a PK hasn't been assigned to
+677         # a ForeignKey or OneToOneField on this model. If the field is
+678         # nullable, allowing the save() would result in silent data loss.
+679         for field in self._meta.concrete_fields:
+680             # If the related field isn't cached, then an instance hasn't
+681             # been assigned and there's no need to worry about this check.
+682             if field.is_relation and field.is_cached(self):
+683                 obj = getattr(self, field.name, None)
+684                 if not obj:
+685                     continue
+686                 # A pk may have been assigned manually to a model instance not
+687                 # saved to the database (or auto-generated in a case like
+688                 # UUIDField), but we allow the save to proceed and rely on the
+689                 # database to raise an IntegrityError if applicable. If
+690                 # constraints aren't supported by the database, there's the
+691                 # unavoidable risk of data corruption.
+692                 if obj.pk is None:
+693                     # Remove the object from a related instance cache.
+694                     if not field.remote_field.multiple:
+695                         field.remote_field.delete_cached_value(obj)
+696                     raise ValueError(
+697                         "save() prohibited to prevent data loss due to "
+698                         "unsaved related object '%s'." % field.name
+699                     )
+700                 elif getattr(self, field.attname) is None:
+701                     # Use pk from related object if it has been saved after
+702                     # an assignment.
+703                     setattr(self, field.attname, obj.pk)
+704                 # If the relationship's pk/to_field was changed, clear the
+705                 # cached relationship.
+706                 if getattr(obj, field.target_field.attname) != getattr(self, field.attname):
+707                     field.delete_cached_value(self)
+708 
+709         using = using or router.db_for_write(self.__class__, instance=self)
+710         if force_insert and (force_update or update_fields):
+711             raise ValueError("Cannot force both insert and updating in model saving.")
+712 
+713         deferred_fields = self.get_deferred_fields()
+714         if update_fields is not None:
+715             # If update_fields is empty, skip the save. We do also check for
+716             # no-op saves later on for inheritance cases. This bailout is
+717             # still needed for skipping signal sending.
+718             if not update_fields:
+719                 return
+720 
+721             update_fields = frozenset(update_fields)
+722             field_names = set()
+723 
+724             for field in self._meta.fields:
+725                 if not field.primary_key:
+726                     field_names.add(field.name)
+727 
+728                     if field.name != field.attname:
+729                         field_names.add(field.attname)
+730 
+731             non_model_fields = update_fields.difference(field_names)
+732 
+733             if non_model_fields:
+734                 raise ValueError("The following fields do not exist in this "
+735                                  "model or are m2m fields: %s"
+736                                  % ', '.join(non_model_fields))
+737 
+738         # If saving to the same database, and this model is deferred, then
+739         # automatically do an "update_fields" save on the loaded fields.
+740         elif not force_insert and deferred_fields and using == self._state.db:
+741             field_names = set()
+742             for field in self._meta.concrete_fields:
+743                 if not field.primary_key and not hasattr(field, 'through'):
+744                     field_names.add(field.attname)
+745             loaded_fields = field_names.difference(deferred_fields)
+746             if loaded_fields:
+747                 update_fields = frozenset(loaded_fields)
+748 
+749         self.save_base(using=using, force_insert=force_insert,
+750                        force_update=force_update, update_fields=update_fields)
+751     save.alters_data = True
+752 
+753     def save_base(self, raw=False, force_insert=False,
+754                   force_update=False, using=None, update_fields=None):
+755         """
+756         Handle the parts of saving which should be done only once per save,
+757         yet need to be done in raw saves, too. This includes some sanity
+758         checks and signal sending.
+759 
+760         The 'raw' argument is telling save_base not to save any parent
+761         models and not to do any changes to the values before save. This
+762         is used by fixture loading.
+763         """
+764         using = using or router.db_for_write(self.__class__, instance=self)
+765         assert not (force_insert and (force_update or update_fields))
+766         assert update_fields is None or update_fields
+767         cls = origin = self.__class__
+768         # Skip proxies, but keep the origin as the proxy model.
+769         if cls._meta.proxy:
+770             cls = cls._meta.concrete_model
+771         meta = cls._meta
+772         if not meta.auto_created:
+773             pre_save.send(
+774                 sender=origin, instance=self, raw=raw, using=using,
+775                 update_fields=update_fields,
+776             )
+777         # A transaction isn't needed if one query is issued.
+778         if meta.parents:
+779             context_manager = transaction.atomic(using=using, savepoint=False)
+780         else:
+781             context_manager = transaction.mark_for_rollback_on_error(using=using)
+782         with context_manager:
+783             parent_inserted = False
+784             if not raw:
+785                 parent_inserted = self._save_parents(cls, using, update_fields)
+786             updated = self._save_table(
+787                 raw, cls, force_insert or parent_inserted,
+788                 force_update, using, update_fields,
+789             )
+790         # Store the database on which the object was saved
+791         self._state.db = using
+792         # Once saved, this is no longer a to-be-added instance.
+793         self._state.adding = False
+794 
+795         # Signal that the save is complete
+796         if not meta.auto_created:
+797             post_save.send(
+798                 sender=origin, instance=self, created=(not updated),
+799                 update_fields=update_fields, raw=raw, using=using,
+800             )
+801 
+802     save_base.alters_data = True
+803 
+804     def _save_parents(self, cls, using, update_fields):
+805         """Save all the parents of cls using values from self."""
+806         meta = cls._meta
+807         inserted = False
+808         for parent, field in meta.parents.items():
+809             # Make sure the link fields are synced between parent and self.
+810             if (field and getattr(self, parent._meta.pk.attname) is None and
+811                     getattr(self, field.attname) is not None):
+812                 setattr(self, parent._meta.pk.attname, getattr(self, field.attname))
+813             parent_inserted = self._save_parents(cls=parent, using=using, update_fields=update_fields)
+814             updated = self._save_table(
+815                 cls=parent, using=using, update_fields=update_fields,
+816                 force_insert=parent_inserted,
+817             )
+818             if not updated:
+819                 inserted = True
+820             # Set the parent's PK value to self.
+821             if field:
+822                 setattr(self, field.attname, self._get_pk_val(parent._meta))
+823                 # Since we didn't have an instance of the parent handy set
+824                 # attname directly, bypassing the descriptor. Invalidate
+825                 # the related object cache, in case it's been accidentally
+826                 # populated. A fresh instance will be re-built from the
+827                 # database if necessary.
+828                 if field.is_cached(self):
+829                     field.delete_cached_value(self)
+830         return inserted
+831 
+832     def _save_table(self, raw=False, cls=None, force_insert=False,
+833                     force_update=False, using=None, update_fields=None):
+834         """
+835         Do the heavy-lifting involved in saving. Update or insert the data
+836         for a single table.
+837         """
+838         meta = cls._meta
+839         non_pks = [f for f in meta.local_concrete_fields if not f.primary_key]
+840 
+841         if update_fields:
+842             non_pks = [f for f in non_pks
+843                        if f.name in update_fields or f.attname in update_fields]
+844 
+845         pk_val = self._get_pk_val(meta)
+846         if pk_val is None:
+847             pk_val = meta.pk.get_pk_value_on_save(self)
+848             setattr(self, meta.pk.attname, pk_val)
+849         pk_set = pk_val is not None
+850         if not pk_set and (force_update or update_fields):
+851             raise ValueError("Cannot force an update in save() with no primary key.")
+852         updated = False
+853         # Skip an UPDATE when adding an instance and primary key has a default.
+854         if (
+855             not raw and
+856             not force_insert and
+857             self._state.adding and
+858             self._meta.pk.default and
+859             self._meta.pk.default is not NOT_PROVIDED
+860         ):
+861             force_insert = True
+862         # If possible, try an UPDATE. If that doesn't update anything, do an INSERT.
+863         if pk_set and not force_insert:
+864             base_qs = cls._base_manager.using(using)
+865             values = [(f, None, (getattr(self, f.attname) if raw else f.pre_save(self, False)))
+866                       for f in non_pks]
+867             forced_update = update_fields or force_update
+868             updated = self._do_update(base_qs, using, pk_val, values, update_fields,
+869                                       forced_update)
+870             if force_update and not updated:
+871                 raise DatabaseError("Forced update did not affect any rows.")
+872             if update_fields and not updated:
+873                 raise DatabaseError("Save with update_fields did not affect any rows.")
+874         if not updated:
+875             if meta.order_with_respect_to:
+876                 # If this is a model with an order_with_respect_to
+877                 # autopopulate the _order field
+878                 field = meta.order_with_respect_to
+879                 filter_args = field.get_filter_kwargs_for_object(self)
+880                 self._order = cls._base_manager.using(using).filter(**filter_args).aggregate(
+881                     _order__max=Coalesce(
+882                         ExpressionWrapper(Max('_order') + Value(1), output_field=IntegerField()),
+883                         Value(0),
+884                     ),
+885                 )['_order__max']
+886             fields = meta.local_concrete_fields
+887             if not pk_set:
+888                 fields = [f for f in fields if f is not meta.auto_field]
+889 
+890             returning_fields = meta.db_returning_fields
+891             results = self._do_insert(cls._base_manager, using, fields, returning_fields, raw)
+892             for result, field in zip(results, returning_fields):
+893                 setattr(self, field.attname, result)
+894         return updated
+895 
+896     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
+897         """
+898         Try to update the model. Return True if the model was updated (if an
+899         update query was done and a matching row was found in the DB).
+900         """
+901         filtered = base_qs.filter(pk=pk_val)
+902         if not values:
+903             # We can end up here when saving a model in inheritance chain where
+904             # update_fields doesn't target any field in current model. In that
+905             # case we just say the update succeeded. Another case ending up here
+906             # is a model with just PK - in that case check that the PK still
+907             # exists.
+908             return update_fields is not None or filtered.exists()
+909         if self._meta.select_on_save and not forced_update:
+910             return (
+911                 filtered.exists() and
+912                 # It may happen that the object is deleted from the DB right after
+913                 # this check, causing the subsequent UPDATE to return zero matching
+914                 # rows. The same result can occur in some rare cases when the
+915                 # database returns zero despite the UPDATE being executed
+916                 # successfully (a row is matched and updated). In order to
+917                 # distinguish these two cases, the object's existence in the
+918                 # database is again checked for if the UPDATE query returns 0.
+919                 (filtered._update(values) > 0 or filtered.exists())
+920             )
+921         return filtered._update(values) > 0
+922 
+923     def _do_insert(self, manager, using, fields, returning_fields, raw):
+924         """
+925         Do an INSERT. If returning_fields is defined then this method should
+926         return the newly created data for the model.
+927         """
+928         return manager._insert(
+929             [self], fields=fields, returning_fields=returning_fields,
+930             using=using, raw=raw,
+931         )
+932 
+933     def delete(self, using=None, keep_parents=False):
+934         using = using or router.db_for_write(self.__class__, instance=self)
+935         assert self.pk is not None, (
+936             "%s object can't be deleted because its %s attribute is set to None." %
+937             (self._meta.object_name, self._meta.pk.attname)
+938         )
+939 
+940         collector = Collector(using=using)
+941         collector.collect([self], keep_parents=keep_parents)
+942         return collector.delete()
+943 
+944     delete.alters_data = True
+945 
+946     def _get_FIELD_display(self, field):
+947         value = getattr(self, field.attname)
+948         choices_dict = dict(make_hashable(field.flatchoices))
+949         # force_str() to coerce lazy strings.
+950         return force_str(choices_dict.get(make_hashable(value), value), strings_only=True)
+951 
+952     def _get_next_or_previous_by_FIELD(self, field, is_next, **kwargs):
+953         if not self.pk:
+954             raise ValueError("get_next/get_previous cannot be used on unsaved objects.")
+955         op = 'gt' if is_next else 'lt'
+956         order = '' if is_next else '-'
+957         param = getattr(self, field.attname)
+958         q = Q(**{'%s__%s' % (field.name, op): param})
+959         q = q | Q(**{field.name: param, 'pk__%s' % op: self.pk})
+960         qs = self.__class__._default_manager.using(self._state.db).filter(**kwargs).filter(q).order_by(
+961             '%s%s' % (order, field.name), '%spk' % order
+962         )
+963         try:
+964             return qs[0]
+965         except IndexError:
+966             raise self.DoesNotExist("%s matching query does not exist." % self.__class__._meta.object_name)
+967 
+968     def _get_next_or_previous_in_order(self, is_next):
+969         cachename = "__%s_order_cache" % is_next
+970         if not hasattr(self, cachename):
+971             op = 'gt' if is_next else 'lt'
+972             order = '_order' if is_next else '-_order'
+973             order_field = self._meta.order_with_respect_to
+974             filter_args = order_field.get_filter_kwargs_for_object(self)
+975             obj = self.__class__._default_manager.filter(**filter_args).filter(**{
+976                 '_order__%s' % op: self.__class__._default_manager.values('_order').filter(**{
+977                     self._meta.pk.name: self.pk
+978                 })
+979             }).order_by(order)[:1].get()
+980             setattr(self, cachename, obj)
+981         return getattr(self, cachename)
+982 
+983     def prepare_database_save(self, field):
+984         if self.pk is None:
+985             raise ValueError("Unsaved model instance %r cannot be used in an ORM query." % self)
+986         return getattr(self, field.remote_field.get_related_field().attname)
+987 
+988     def clean(self):
+989         """
+990         Hook for doing any extra model-wide validation after clean() has been
+991         called on every field by self.clean_fields. Any ValidationError raised
+992         by this method will not be associated with a particular field; it will
+993         have a special-case association with the field defined by NON_FIELD_ERRORS.
+994         """
+995         pass
+996 
+997     def validate_unique(self, exclude=None):
+998         """
+999         Check unique constraints on the model and raise ValidationError if any
+1000         failed.
+1001         """
+1002         unique_checks, date_checks = self._get_unique_checks(exclude=exclude)
+1003 
+1004         errors = self._perform_unique_checks(unique_checks)
+1005         date_errors = self._perform_date_checks(date_checks)
+1006 
+1007         for k, v in date_errors.items():
+1008             errors.setdefault(k, []).extend(v)
+1009 
+1010         if errors:
+1011             raise ValidationError(errors)
+1012 
+1013     def _get_unique_checks(self, exclude=None):
+1014         """
+1015         Return a list of checks to perform. Since validate_unique() could be
+1016         called from a ModelForm, some fields may have been excluded; we can't
+1017         perform a unique check on a model that is missing fields involved
+1018         in that check. Fields that did not validate should also be excluded,
+1019         but they need to be passed in via the exclude argument.
+1020         """
+1021         if exclude is None:
+1022             exclude = []
+1023         unique_checks = []
+1024 
+1025         unique_togethers = [(self.__class__, self._meta.unique_together)]
+1026         constraints = [(self.__class__, self._meta.total_unique_constraints)]
+1027         for parent_class in self._meta.get_parent_list():
+1028             if parent_class._meta.unique_together:
+1029                 unique_togethers.append((parent_class, parent_class._meta.unique_together))
+1030             if parent_class._meta.total_unique_constraints:
+1031                 constraints.append(
+1032                     (parent_class, parent_class._meta.total_unique_constraints)
+1033                 )
+1034 
+1035         for model_class, unique_together in unique_togethers:
+1036             for check in unique_together:
+1037                 if not any(name in exclude for name in check):
+1038                     # Add the check if the field isn't excluded.
+1039                     unique_checks.append((model_class, tuple(check)))
+1040 
+1041         for model_class, model_constraints in constraints:
+1042             for constraint in model_constraints:
+1043                 if not any(name in exclude for name in constraint.fields):
+1044                     unique_checks.append((model_class, constraint.fields))
+1045 
+1046         # These are checks for the unique_for_<date/year/month>.
+1047         date_checks = []
+1048 
+1049         # Gather a list of checks for fields declared as unique and add them to
+1050         # the list of checks.
+1051 
+1052         fields_with_class = [(self.__class__, self._meta.local_fields)]
+1053         for parent_class in self._meta.get_parent_list():
+1054             fields_with_class.append((parent_class, parent_class._meta.local_fields))
+1055 
+1056         for model_class, fields in fields_with_class:
+1057             for f in fields:
+1058                 name = f.name
+1059                 if name in exclude:
+1060                     continue
+1061                 if f.unique:
+1062                     unique_checks.append((model_class, (name,)))
+1063                 if f.unique_for_date and f.unique_for_date not in exclude:
+1064                     date_checks.append((model_class, 'date', name, f.unique_for_date))
+1065                 if f.unique_for_year and f.unique_for_year not in exclude:
+1066                     date_checks.append((model_class, 'year', name, f.unique_for_year))
+1067                 if f.unique_for_month and f.unique_for_month not in exclude:
+1068                     date_checks.append((model_class, 'month', name, f.unique_for_month))
+1069         return unique_checks, date_checks
+1070 
+1071     def _perform_unique_checks(self, unique_checks):
+1072         errors = {}
+1073 
+1074         for model_class, unique_check in unique_checks:
+1075             # Try to look up an existing object with the same values as this
+1076             # object's values for all the unique field.
+1077 
+1078             lookup_kwargs = {}
+1079             for field_name in unique_check:
+1080                 f = self._meta.get_field(field_name)
+1081                 lookup_value = getattr(self, f.attname)
+1082                 # TODO: Handle multiple backends with different feature flags.
+1083                 if (lookup_value is None or
+1084                         (lookup_value == '' and connection.features.interprets_empty_strings_as_nulls)):
+1085                     # no value, skip the lookup
+1086                     continue
+1087                 if f.primary_key and not self._state.adding:
+1088                     # no need to check for unique primary key when editing
+1089                     continue
+1090                 lookup_kwargs[str(field_name)] = lookup_value
+1091 
+1092             # some fields were skipped, no reason to do the check
+1093             if len(unique_check) != len(lookup_kwargs):
+1094                 continue
+1095 
+1096             qs = model_class._default_manager.filter(**lookup_kwargs)
+1097 
+1098             # Exclude the current object from the query if we are editing an
+1099             # instance (as opposed to creating a new one)
+1100             # Note that we need to use the pk as defined by model_class, not
+1101             # self.pk. These can be different fields because model inheritance
+1102             # allows single model to have effectively multiple primary keys.
+1103             # Refs #17615.
+1104             model_class_pk = self._get_pk_val(model_class._meta)
+1105             if not self._state.adding and model_class_pk is not None:
+1106                 qs = qs.exclude(pk=model_class_pk)
+1107             if qs.exists():
+1108                 if len(unique_check) == 1:
+1109                     key = unique_check[0]
+1110                 else:
+1111                     key = NON_FIELD_ERRORS
+1112                 errors.setdefault(key, []).append(self.unique_error_message(model_class, unique_check))
+1113 
+1114         return errors
+1115 
+1116     def _perform_date_checks(self, date_checks):
+1117         errors = {}
+1118         for model_class, lookup_type, field, unique_for in date_checks:
+1119             lookup_kwargs = {}
+1120             # there's a ticket to add a date lookup, we can remove this special
+1121             # case if that makes it's way in
+1122             date = getattr(self, unique_for)
+1123             if date is None:
+1124                 continue
+1125             if lookup_type == 'date':
+1126                 lookup_kwargs['%s__day' % unique_for] = date.day
+1127                 lookup_kwargs['%s__month' % unique_for] = date.month
+1128                 lookup_kwargs['%s__year' % unique_for] = date.year
+1129             else:
+1130                 lookup_kwargs['%s__%s' % (unique_for, lookup_type)] = getattr(date, lookup_type)
+1131             lookup_kwargs[field] = getattr(self, field)
+1132 
+1133             qs = model_class._default_manager.filter(**lookup_kwargs)
+1134             # Exclude the current object from the query if we are editing an
+1135             # instance (as opposed to creating a new one)
+1136             if not self._state.adding and self.pk is not None:
+1137                 qs = qs.exclude(pk=self.pk)
+1138 
+1139             if qs.exists():
+1140                 errors.setdefault(field, []).append(
+1141                     self.date_error_message(lookup_type, field, unique_for)
+1142                 )
+1143         return errors
+1144 
+1145     def date_error_message(self, lookup_type, field_name, unique_for):
+1146         opts = self._meta
+1147         field = opts.get_field(field_name)
+1148         return ValidationError(
+1149             message=field.error_messages['unique_for_date'],
+1150             code='unique_for_date',
+1151             params={
+1152                 'model': self,
+1153                 'model_name': capfirst(opts.verbose_name),
+1154                 'lookup_type': lookup_type,
+1155                 'field': field_name,
+1156                 'field_label': capfirst(field.verbose_name),
+1157                 'date_field': unique_for,
+1158                 'date_field_label': capfirst(opts.get_field(unique_for).verbose_name),
+1159             }
+1160         )
+1161 
+1162     def unique_error_message(self, model_class, unique_check):
+1163         opts = model_class._meta
+1164 
+1165         params = {
+1166             'model': self,
+1167             'model_class': model_class,
+1168             'model_name': capfirst(opts.verbose_name),
+1169             'unique_check': unique_check,
+1170         }
+1171 
+1172         # A unique field
+1173         if len(unique_check) == 1:
+1174             field = opts.get_field(unique_check[0])
+1175             params['field_label'] = capfirst(field.verbose_name)
+1176             return ValidationError(
+1177                 message=field.error_messages['unique'],
+1178                 code='unique',
+1179                 params=params,
+1180             )
+1181 
+1182         # unique_together
+1183         else:
+1184             field_labels = [capfirst(opts.get_field(f).verbose_name) for f in unique_check]
+1185             params['field_labels'] = get_text_list(field_labels, _('and'))
+1186             return ValidationError(
+1187                 message=_("%(model_name)s with this %(field_labels)s already exists."),
+1188                 code='unique_together',
+1189                 params=params,
+1190             )
+1191 
+1192     def full_clean(self, exclude=None, validate_unique=True):
+1193         """
+1194         Call clean_fields(), clean(), and validate_unique() on the model.
+1195         Raise a ValidationError for any errors that occur.
+1196         """
+1197         errors = {}
+1198         if exclude is None:
+1199             exclude = []
+1200         else:
+1201             exclude = list(exclude)
+1202 
+1203         try:
+1204             self.clean_fields(exclude=exclude)
+1205         except ValidationError as e:
+1206             errors = e.update_error_dict(errors)
+1207 
+1208         # Form.clean() is run even if other validation fails, so do the
+1209         # same with Model.clean() for consistency.
+1210         try:
+1211             self.clean()
+1212         except ValidationError as e:
+1213             errors = e.update_error_dict(errors)
+1214 
+1215         # Run unique checks, but only for fields that passed validation.
+1216         if validate_unique:
+1217             for name in errors:
+1218                 if name != NON_FIELD_ERRORS and name not in exclude:
+1219                     exclude.append(name)
+1220             try:
+1221                 self.validate_unique(exclude=exclude)
+1222             except ValidationError as e:
+1223                 errors = e.update_error_dict(errors)
+1224 
+1225         if errors:
+1226             raise ValidationError(errors)
+1227 
+1228     def clean_fields(self, exclude=None):
+1229         """
+1230         Clean all fields and raise a ValidationError containing a dict
+1231         of all validation errors if any occur.
+1232         """
+1233         if exclude is None:
+1234             exclude = []
+1235 
+1236         errors = {}
+1237         for f in self._meta.fields:
+1238             if f.name in exclude:
+1239                 continue
+1240             # Skip validation for empty fields with blank=True. The developer
+1241             # is responsible for making sure they have a valid value.
+1242             raw_value = getattr(self, f.attname)
+1243             if f.blank and raw_value in f.empty_values:
+1244                 continue
+1245             try:
+1246                 setattr(self, f.attname, f.clean(raw_value, self))
+1247             except ValidationError as e:
+1248                 errors[f.name] = e.error_list
+1249 
+1250         if errors:
+1251             raise ValidationError(errors)
+1252 
+1253     @classmethod
+1254     def check(cls, **kwargs):
+1255         errors = [*cls._check_swappable(), *cls._check_model(), *cls._check_managers(**kwargs)]
+1256         if not cls._meta.swapped:
+1257             databases = kwargs.get('databases') or []
+1258             errors += [
+1259                 *cls._check_fields(**kwargs),
+1260                 *cls._check_m2m_through_same_relationship(),
+1261                 *cls._check_long_column_names(),
+1262             ]
+1263             clash_errors = (
+1264                 *cls._check_id_field(),
+1265                 *cls._check_field_name_clashes(),
+1266                 *cls._check_model_name_db_lookup_clashes(),
+1267                 *cls._check_property_name_related_field_accessor_clashes(),
+1268                 *cls._check_single_primary_key(),
+1269             )
+1270             errors.extend(clash_errors)
+1271             # If there are field name clashes, hide consequent column name
+1272             # clashes.
+1273             if not clash_errors:
+1274                 errors.extend(cls._check_column_name_clashes())
+1275             errors += [
+1276                 *cls._check_index_together(),
+1277                 *cls._check_unique_together(),
+1278                 *cls._check_indexes(),
+1279                 *cls._check_ordering(),
+1280                 *cls._check_constraints(databases),
+1281             ]
+1282 
+1283         return errors
+1284 
+1285     @classmethod
+1286     def _check_swappable(cls):
+1287         """Check if the swapped model exists."""
+1288         errors = []
+1289         if cls._meta.swapped:
+1290             try:
+1291                 apps.get_model(cls._meta.swapped)
+1292             except ValueError:
+1293                 errors.append(
+1294                     checks.Error(
+1295                         "'%s' is not of the form 'app_label.app_name'." % cls._meta.swappable,
+1296                         id='models.E001',
+1297                     )
+1298                 )
+1299             except LookupError:
+1300                 app_label, model_name = cls._meta.swapped.split('.')
+1301                 errors.append(
+1302                     checks.Error(
+1303                         "'%s' references '%s.%s', which has not been "
+1304                         "installed, or is abstract." % (
+1305                             cls._meta.swappable, app_label, model_name
+1306                         ),
+1307                         id='models.E002',
+1308                     )
+1309                 )
+1310         return errors
+1311 
+1312     @classmethod
+1313     def _check_model(cls):
+1314         errors = []
+1315         if cls._meta.proxy:
+1316             if cls._meta.local_fields or cls._meta.local_many_to_many:
+1317                 errors.append(
+1318                     checks.Error(
+1319                         "Proxy model '%s' contains model fields." % cls.__name__,
+1320                         id='models.E017',
+1321                     )
+1322                 )
+1323         return errors
+1324 
+1325     @classmethod
+1326     def _check_managers(cls, **kwargs):
+1327         """Perform all manager checks."""
+1328         errors = []
+1329         for manager in cls._meta.managers:
+1330             errors.extend(manager.check(**kwargs))
+1331         return errors
+1332 
+1333     @classmethod
+1334     def _check_fields(cls, **kwargs):
+1335         """Perform all field checks."""
+1336         errors = []
+1337         for field in cls._meta.local_fields:
+1338             errors.extend(field.check(**kwargs))
+1339         for field in cls._meta.local_many_to_many:
+1340             errors.extend(field.check(from_model=cls, **kwargs))
+1341         return errors
+1342 
+1343     @classmethod
+1344     def _check_m2m_through_same_relationship(cls):
+1345         """ Check if no relationship model is used by more than one m2m field.
+1346         """
+1347 
+1348         errors = []
+1349         seen_intermediary_signatures = []
+1350 
+1351         fields = cls._meta.local_many_to_many
+1352 
+1353         # Skip when the target model wasn't found.
+1354         fields = (f for f in fields if isinstance(f.remote_field.model, ModelBase))
+1355 
+1356         # Skip when the relationship model wasn't found.
+1357         fields = (f for f in fields if isinstance(f.remote_field.through, ModelBase))
+1358 
+1359         for f in fields:
+1360             signature = (f.remote_field.model, cls, f.remote_field.through, f.remote_field.through_fields)
+1361             if signature in seen_intermediary_signatures:
+1362                 errors.append(
+1363                     checks.Error(
+1364                         "The model has two identical many-to-many relations "
+1365                         "through the intermediate model '%s'." %
+1366                         f.remote_field.through._meta.label,
+1367                         obj=cls,
+1368                         id='models.E003',
+1369                     )
+1370                 )
+1371             else:
+1372                 seen_intermediary_signatures.append(signature)
+1373         return errors
+1374 
+1375     @classmethod
+1376     def _check_id_field(cls):
+1377         """Check if `id` field is a primary key."""
+1378         fields = [f for f in cls._meta.local_fields if f.name == 'id' and f != cls._meta.pk]
+1379         # fields is empty or consists of the invalid "id" field
+1380         if fields and not fields[0].primary_key and cls._meta.pk.name == 'id':
+1381             return [
+1382                 checks.Error(
+1383                     "'id' can only be used as a field name if the field also "
+1384                     "sets 'primary_key=True'.",
+1385                     obj=cls,
+1386                     id='models.E004',
+1387                 )
+1388             ]
+1389         else:
+1390             return []
+1391 
+1392     @classmethod
+1393     def _check_field_name_clashes(cls):
+1394         """Forbid field shadowing in multi-table inheritance."""
+1395         errors = []
+1396         used_fields = {}  # name or attname -> field
+1397 
+1398         # Check that multi-inheritance doesn't cause field name shadowing.
+1399         for parent in cls._meta.get_parent_list():
+1400             for f in parent._meta.local_fields:
+1401                 clash = used_fields.get(f.name) or used_fields.get(f.attname) or None
+1402                 if clash:
+1403                     errors.append(
+1404                         checks.Error(
+1405                             "The field '%s' from parent model "
+1406                             "'%s' clashes with the field '%s' "
+1407                             "from parent model '%s'." % (
+1408                                 clash.name, clash.model._meta,
+1409                                 f.name, f.model._meta
+1410                             ),
+1411                             obj=cls,
+1412                             id='models.E005',
+1413                         )
+1414                     )
+1415                 used_fields[f.name] = f
+1416                 used_fields[f.attname] = f
+1417 
+1418         # Check that fields defined in the model don't clash with fields from
+1419         # parents, including auto-generated fields like multi-table inheritance
+1420         # child accessors.
+1421         for parent in cls._meta.get_parent_list():
+1422             for f in parent._meta.get_fields():
+1423                 if f not in used_fields:
+1424                     used_fields[f.name] = f
+1425 
+1426         for f in cls._meta.local_fields:
+1427             clash = used_fields.get(f.name) or used_fields.get(f.attname) or None
+1428             # Note that we may detect clash between user-defined non-unique
+1429             # field "id" and automatically added unique field "id", both
+1430             # defined at the same model. This special case is considered in
+1431             # _check_id_field and here we ignore it.
+1432             id_conflict = f.name == "id" and clash and clash.name == "id" and clash.model == cls
+1433             if clash and not id_conflict:
+1434                 errors.append(
+1435                     checks.Error(
+1436                         "The field '%s' clashes with the field '%s' "
+1437                         "from model '%s'." % (
+1438                             f.name, clash.name, clash.model._meta
+1439                         ),
+1440                         obj=f,
+1441                         id='models.E006',
+1442                     )
+1443                 )
+1444             used_fields[f.name] = f
+1445             used_fields[f.attname] = f
+1446 
+1447         return errors
+1448 
+1449     @classmethod
+1450     def _check_column_name_clashes(cls):
+1451         # Store a list of column names which have already been used by other fields.
+1452         used_column_names = []
+1453         errors = []
+1454 
+1455         for f in cls._meta.local_fields:
+1456             _, column_name = f.get_attname_column()
+1457 
+1458             # Ensure the column name is not already in use.
+1459             if column_name and column_name in used_column_names:
+1460                 errors.append(
+1461                     checks.Error(
+1462                         "Field '%s' has column name '%s' that is used by "
+1463                         "another field." % (f.name, column_name),
+1464                         hint="Specify a 'db_column' for the field.",
+1465                         obj=cls,
+1466                         id='models.E007'
+1467                     )
+1468                 )
+1469             else:
+1470                 used_column_names.append(column_name)
+1471 
+1472         return errors
+1473 
+1474     @classmethod
+1475     def _check_model_name_db_lookup_clashes(cls):
+1476         errors = []
+1477         model_name = cls.__name__
+1478         if model_name.startswith('_') or model_name.endswith('_'):
+1479             errors.append(
+1480                 checks.Error(
+1481                     "The model name '%s' cannot start or end with an underscore "
+1482                     "as it collides with the query lookup syntax." % model_name,
+1483                     obj=cls,
+1484                     id='models.E023'
+1485                 )
+1486             )
+1487         elif LOOKUP_SEP in model_name:
+1488             errors.append(
+1489                 checks.Error(
+1490                     "The model name '%s' cannot contain double underscores as "
+1491                     "it collides with the query lookup syntax." % model_name,
+1492                     obj=cls,
+1493                     id='models.E024'
+1494                 )
+1495             )
+1496         return errors
+1497 
+1498     @classmethod
+1499     def _check_property_name_related_field_accessor_clashes(cls):
+1500         errors = []
+1501         property_names = cls._meta._property_names
+1502         related_field_accessors = (
+1503             f.get_attname() for f in cls._meta._get_fields(reverse=False)
+1504             if f.is_relation and f.related_model is not None
+1505         )
+1506         for accessor in related_field_accessors:
+1507             if accessor in property_names:
+1508                 errors.append(
+1509                     checks.Error(
+1510                         "The property '%s' clashes with a related field "
+1511                         "accessor." % accessor,
+1512                         obj=cls,
+1513                         id='models.E025',
+1514                     )
+1515                 )
+1516         return errors
+1517 
+1518     @classmethod
+1519     def _check_single_primary_key(cls):
+1520         errors = []
+1521         if sum(1 for f in cls._meta.local_fields if f.primary_key) > 1:
+1522             errors.append(
+1523                 checks.Error(
+1524                     "The model cannot have more than one field with "
+1525                     "'primary_key=True'.",
+1526                     obj=cls,
+1527                     id='models.E026',
+1528                 )
+1529             )
+1530         return errors
+1531 
+1532     @classmethod
+1533     def _check_index_together(cls):
+1534         """Check the value of "index_together" option."""
+1535         if not isinstance(cls._meta.index_together, (tuple, list)):
+1536             return [
+1537                 checks.Error(
+1538                     "'index_together' must be a list or tuple.",
+1539                     obj=cls,
+1540                     id='models.E008',
+1541                 )
+1542             ]
+1543 
+1544         elif any(not isinstance(fields, (tuple, list)) for fields in cls._meta.index_together):
+1545             return [
+1546                 checks.Error(
+1547                     "All 'index_together' elements must be lists or tuples.",
+1548                     obj=cls,
+1549                     id='models.E009',
+1550                 )
+1551             ]
+1552 
+1553         else:
+1554             errors = []
+1555             for fields in cls._meta.index_together:
+1556                 errors.extend(cls._check_local_fields(fields, "index_together"))
+1557             return errors
+1558 
+1559     @classmethod
+1560     def _check_unique_together(cls):
+1561         """Check the value of "unique_together" option."""
+1562         if not isinstance(cls._meta.unique_together, (tuple, list)):
+1563             return [
+1564                 checks.Error(
+1565                     "'unique_together' must be a list or tuple.",
+1566                     obj=cls,
+1567                     id='models.E010',
+1568                 )
+1569             ]
+1570 
+1571         elif any(not isinstance(fields, (tuple, list)) for fields in cls._meta.unique_together):
+1572             return [
+1573                 checks.Error(
+1574                     "All 'unique_together' elements must be lists or tuples.",
+1575                     obj=cls,
+1576                     id='models.E011',
+1577                 )
+1578             ]
+1579 
+1580         else:
+1581             errors = []
+1582             for fields in cls._meta.unique_together:
+1583                 errors.extend(cls._check_local_fields(fields, "unique_together"))
+1584             return errors
+1585 
+1586     @classmethod
+1587     def _check_indexes(cls):
+1588         """Check the fields and names of indexes."""
+1589         errors = []
+1590         for index in cls._meta.indexes:
+1591             # Index name can't start with an underscore or a number, restricted
+1592             # for cross-database compatibility with Oracle.
+1593             if index.name[0] == '_' or index.name[0].isdigit():
+1594                 errors.append(
+1595                     checks.Error(
+1596                         "The index name '%s' cannot start with an underscore "
+1597                         "or a number." % index.name,
+1598                         obj=cls,
+1599                         id='models.E033',
+1600                     ),
+1601                 )
+1602             if len(index.name) > index.max_name_length:
+1603                 errors.append(
+1604                     checks.Error(
+1605                         "The index name '%s' cannot be longer than %d "
+1606                         "characters." % (index.name, index.max_name_length),
+1607                         obj=cls,
+1608                         id='models.E034',
+1609                     ),
+1610                 )
+1611         fields = [field for index in cls._meta.indexes for field, _ in index.fields_orders]
+1612         errors.extend(cls._check_local_fields(fields, 'indexes'))
+1613         return errors
+1614 
+1615     @classmethod
+1616     def _check_local_fields(cls, fields, option):
+1617         from django.db import models
+1618 
+1619         # In order to avoid hitting the relation tree prematurely, we use our
+1620         # own fields_map instead of using get_field()
+1621         forward_fields_map = {}
+1622         for field in cls._meta._get_fields(reverse=False):
+1623             forward_fields_map[field.name] = field
+1624             if hasattr(field, 'attname'):
+1625                 forward_fields_map[field.attname] = field
+1626 
+1627         errors = []
+1628         for field_name in fields:
+1629             try:
+1630                 field = forward_fields_map[field_name]
+1631             except KeyError:
+1632                 errors.append(
+1633                     checks.Error(
+1634                         "'%s' refers to the nonexistent field '%s'." % (
+1635                             option, field_name,
+1636                         ),
+1637                         obj=cls,
+1638                         id='models.E012',
+1639                     )
+1640                 )
+1641             else:
+1642                 if isinstance(field.remote_field, models.ManyToManyRel):
+1643                     errors.append(
+1644                         checks.Error(
+1645                             "'%s' refers to a ManyToManyField '%s', but "
+1646                             "ManyToManyFields are not permitted in '%s'." % (
+1647                                 option, field_name, option,
+1648                             ),
+1649                             obj=cls,
+1650                             id='models.E013',
+1651                         )
+1652                     )
+1653                 elif field not in cls._meta.local_fields:
+1654                     errors.append(
+1655                         checks.Error(
+1656                             "'%s' refers to field '%s' which is not local to model '%s'."
+1657                             % (option, field_name, cls._meta.object_name),
+1658                             hint="This issue may be caused by multi-table inheritance.",
+1659                             obj=cls,
+1660                             id='models.E016',
+1661                         )
+1662                     )
+1663         return errors
+1664 
+1665     @classmethod
+1666     def _check_ordering(cls):
+1667         """
+1668         Check "ordering" option -- is it a list of strings and do all fields
+1669         exist?
+1670         """
+1671         if cls._meta._ordering_clash:
+1672             return [
+1673                 checks.Error(
+1674                     "'ordering' and 'order_with_respect_to' cannot be used together.",
+1675                     obj=cls,
+1676                     id='models.E021',
+1677                 ),
+1678             ]
+1679 
+1680         if cls._meta.order_with_respect_to or not cls._meta.ordering:
+1681             return []
+1682 
+1683         if not isinstance(cls._meta.ordering, (list, tuple)):
+1684             return [
+1685                 checks.Error(
+1686                     "'ordering' must be a tuple or list (even if you want to order by only one field).",
+1687                     obj=cls,
+1688                     id='models.E014',
+1689                 )
+1690             ]
+1691 
+1692         errors = []
+1693         fields = cls._meta.ordering
+1694 
+1695         # Skip expressions and '?' fields.
+1696         fields = (f for f in fields if isinstance(f, str) and f != '?')
+1697 
+1698         # Convert "-field" to "field".
+1699         fields = ((f[1:] if f.startswith('-') else f) for f in fields)
+1700 
+1701         # Separate related fields and non-related fields.
+1702         _fields = []
+1703         related_fields = []
+1704         for f in fields:
+1705             if LOOKUP_SEP in f:
+1706                 related_fields.append(f)
+1707             else:
+1708                 _fields.append(f)
+1709         fields = _fields
+1710 
+1711         # Check related fields.
+1712         for field in related_fields:
+1713             _cls = cls
+1714             fld = None
+1715             for part in field.split(LOOKUP_SEP):
+1716                 try:
+1717                     # pk is an alias that won't be found by opts.get_field.
+1718                     if part == 'pk':
+1719                         fld = _cls._meta.pk
+1720                     else:
+1721                         fld = _cls._meta.get_field(part)
+1722                     if fld.is_relation:
+1723                         _cls = fld.get_path_info()[-1].to_opts.model
+1724                     else:
+1725                         _cls = None
+1726                 except (FieldDoesNotExist, AttributeError):
+1727                     if fld is None or fld.get_transform(part) is None:
+1728                         errors.append(
+1729                             checks.Error(
+1730                                 "'ordering' refers to the nonexistent field, "
+1731                                 "related field, or lookup '%s'." % field,
+1732                                 obj=cls,
+1733                                 id='models.E015',
+1734                             )
+1735                         )
+1736 
+1737         # Skip ordering on pk. This is always a valid order_by field
+1738         # but is an alias and therefore won't be found by opts.get_field.
+1739         fields = {f for f in fields if f != 'pk'}
+1740 
+1741         # Check for invalid or nonexistent fields in ordering.
+1742         invalid_fields = []
+1743 
+1744         # Any field name that is not present in field_names does not exist.
+1745         # Also, ordering by m2m fields is not allowed.
+1746         opts = cls._meta
+1747         valid_fields = set(chain.from_iterable(
+1748             (f.name, f.attname) if not (f.auto_created and not f.concrete) else (f.field.related_query_name(),)
+1749             for f in chain(opts.fields, opts.related_objects)
+1750         ))
+1751 
+1752         invalid_fields.extend(fields - valid_fields)
+1753 
+1754         for invalid_field in invalid_fields:
+1755             errors.append(
+1756                 checks.Error(
+1757                     "'ordering' refers to the nonexistent field, related "
+1758                     "field, or lookup '%s'." % invalid_field,
+1759                     obj=cls,
+1760                     id='models.E015',
+1761                 )
+1762             )
+1763         return errors
+1764 
+1765     @classmethod
+1766     def _check_long_column_names(cls):
+1767         """
+1768         Check that any auto-generated column names are shorter than the limits
+1769         for each database in which the model will be created.
+1770         """
+1771         errors = []
+1772         allowed_len = None
+1773         db_alias = None
+1774 
+1775         # Find the minimum max allowed length among all specified db_aliases.
+1776         for db in settings.DATABASES:
+1777             # skip databases where the model won't be created
+1778             if not router.allow_migrate_model(db, cls):
+1779                 continue
+1780             connection = connections[db]
+1781             max_name_length = connection.ops.max_name_length()
+1782             if max_name_length is None or connection.features.truncates_names:
+1783                 continue
+1784             else:
+1785                 if allowed_len is None:
+1786                     allowed_len = max_name_length
+1787                     db_alias = db
+1788                 elif max_name_length < allowed_len:
+1789                     allowed_len = max_name_length
+1790                     db_alias = db
+1791 
+1792         if allowed_len is None:
+1793             return errors
+1794 
+1795         for f in cls._meta.local_fields:
+1796             _, column_name = f.get_attname_column()
+1797 
+1798             # Check if auto-generated name for the field is too long
+1799             # for the database.
+1800             if f.db_column is None and column_name is not None and len(column_name) > allowed_len:
+1801                 errors.append(
+1802                     checks.Error(
+1803                         'Autogenerated column name too long for field "%s". '
+1804                         'Maximum length is "%s" for database "%s".'
+1805                         % (column_name, allowed_len, db_alias),
+1806                         hint="Set the column name manually using 'db_column'.",
+1807                         obj=cls,
+1808                         id='models.E018',
+1809                     )
+1810                 )
+1811 
+1812         for f in cls._meta.local_many_to_many:
+1813             # Skip nonexistent models.
+1814             if isinstance(f.remote_field.through, str):
+1815                 continue
+1816 
+1817             # Check if auto-generated name for the M2M field is too long
+1818             # for the database.
+1819             for m2m in f.remote_field.through._meta.local_fields:
+1820                 _, rel_name = m2m.get_attname_column()
+1821                 if m2m.db_column is None and rel_name is not None and len(rel_name) > allowed_len:
+1822                     errors.append(
+1823                         checks.Error(
+1824                             'Autogenerated column name too long for M2M field '
+1825                             '"%s". Maximum length is "%s" for database "%s".'
+1826                             % (rel_name, allowed_len, db_alias),
+1827                             hint=(
+1828                                 "Use 'through' to create a separate model for "
+1829                                 "M2M and then set column_name using 'db_column'."
+1830                             ),
+1831                             obj=cls,
+1832                             id='models.E019',
+1833                         )
+1834                     )
+1835 
+1836         return errors
+1837 
+1838     @classmethod
+1839     def _check_constraints(cls, databases):
+1840         errors = []
+1841         for db in databases:
+1842             if not router.allow_migrate_model(db, cls):
+1843                 continue
+1844             connection = connections[db]
+1845             if (
+1846                 connection.features.supports_table_check_constraints or
+1847                 'supports_table_check_constraints' in cls._meta.required_db_features
+1848             ):
+1849                 continue
+1850             if any(isinstance(constraint, CheckConstraint) for constraint in cls._meta.constraints):
+1851                 errors.append(
+1852                     checks.Warning(
+1853                         '%s does not support check constraints.' % connection.display_name,
+1854                         hint=(
+1855                             "A constraint won't be created. Silence this "
+1856                             "warning if you don't care about it."
+1857                         ),
+1858                         obj=cls,
+1859                         id='models.W027',
+1860                     )
+1861                 )
+1862         return errors
+1863 
+1864 
+1865 ############################################
+1866 # HELPER FUNCTIONS (CURRIED MODEL METHODS) #
+1867 ############################################
+1868 
+1869 # ORDERING METHODS #########################
+1870 
+1871 def method_set_order(self, ordered_obj, id_list, using=None):
+1872     if using is None:
+1873         using = DEFAULT_DB_ALIAS
+1874     order_wrt = ordered_obj._meta.order_with_respect_to
+1875     filter_args = order_wrt.get_forward_related_filter(self)
+1876     ordered_obj.objects.db_manager(using).filter(**filter_args).bulk_update([
+1877         ordered_obj(pk=pk, _order=order) for order, pk in enumerate(id_list)
+1878     ], ['_order'])
+1879 
+1880 
+1881 def method_get_order(self, ordered_obj):
+1882     order_wrt = ordered_obj._meta.order_with_respect_to
+1883     filter_args = order_wrt.get_forward_related_filter(self)
+1884     pk_name = ordered_obj._meta.pk.name
+1885     return ordered_obj.objects.filter(**filter_args).values_list(pk_name, flat=True)
+1886 
+1887 
+1888 def make_foreign_order_accessors(model, related_model):
+1889     setattr(
+1890         related_model,
+1891         'get_%s_order' % model.__name__.lower(),
+1892         partialmethod(method_get_order, model)
+1893     )
+1894     setattr(
+1895         related_model,
+1896         'set_%s_order' % model.__name__.lower(),
+1897         partialmethod(method_set_order, model)
+1898     )
+1899 
+1900 ########
+1901 # MISC #
+1902 ########
+1903 
+1904 
+1905 def model_unpickle(model_id):
+1906     """Used to unpickle Model subclasses with deferred fields."""
+1907     if isinstance(model_id, tuple):
+1908         model = apps.get_model(*model_id)
+1909     else:
+1910         # Backwards compat - the model was cached directly in earlier versions.
+1911         model = model_id
+1912     return model.__new__(model)
+1913 
+1914 
+1915 model_unpickle.__safe_for_unpickle__ = True
+
+</code><intended_behavior>The method should be enhanced to detect when a model instance is being saved with multi-table inheritance where a custom primary key is defined. It should ensure that the parent table is correctly populated without issuing a redundant update that overrides fields with empty values. The fix should ensure the efficient creation of parent and child model instances in a single operation where possible, or at least eliminate unnecessary updates to the parent model when creating a child model instance.</intended_behavior>, <file>django/db/models/fields/__init__.py</file>
+<class>UUIDField</class>
+<method>None</method>
+<code>
+2289 class UUIDField(Field):
+2290     default_error_messages = {
+2291         'invalid': _('“%(value)s” is not a valid UUID.'),
+2292     }
+2293     description = _('Universally unique identifier')
+2294     empty_strings_allowed = False
+2295 
+2296     def __init__(self, verbose_name=None, **kwargs):
+2297         kwargs['max_length'] = 32
+2298         super().__init__(verbose_name, **kwargs)
+2299 
+2300     def deconstruct(self):
+2301         name, path, args, kwargs = super().deconstruct()
+2302         del kwargs['max_length']
+2303         return name, path, args, kwargs
+2304 
+2305     def get_internal_type(self):
+2306         return "UUIDField"
+2307 
+2308     def get_prep_value(self, value):
+2309         value = super().get_prep_value(value)
+2310         return self.to_python(value)
+2311 
+2312     def get_db_prep_value(self, value, connection, prepared=False):
+2313         if value is None:
+2314             return None
+2315         if not isinstance(value, uuid.UUID):
+2316             value = self.to_python(value)
+2317 
+2318         if connection.features.has_native_uuid_field:
+2319             return value
+2320         return value.hex
+2321 
+2322     def to_python(self, value):
+2323         if value is not None and not isinstance(value, uuid.UUID):
+2324             input_form = 'int' if isinstance(value, int) else 'hex'
+2325             try:
+2326                 return uuid.UUID(**{input_form: value})
+2327             except (AttributeError, ValueError):
+2328                 raise exceptions.ValidationError(
+2329                     self.error_messages['invalid'],
+2330                     code='invalid',
+2331                     params={'value': value},
+2332                 )
+2333         return value
+2334 
+2335     def formfield(self, **kwargs):
+2336         return super().formfield(**{
+2337             'form_class': forms.UUIDField,
+2338             **kwargs,
+2339         })
+
+</code><intended_behavior>Ensure proper handling and generation of UUIDField as a primary key in inheritance scenarios, maintaining the linkage and integrity between parent and child records without unnecessary updates. This might involve adjusting how the UUIDField value is set and ensuring it's correctly utilized in both parent and child table creation processes.</intended_behavior>]
+2025-10-18 11:28:33.965 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 11:28:33.965 | INFO     | Search-only: skipping patch selection
+2025-10-18 11:28:34.107 | INFO     | Task django__django-12496 completed successfully.
+2025-10-18 11:28:34.108 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,735 @@
+2025-10-18 10:06:40.253 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2025-10-18 10:06:45.013 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=295, output_tokens=12, cost=0.003310
+2025-10-18 10:06:45.014 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-10-18 10:06:45.018 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:06:52.371 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=604, output_tokens=276, cost=0.014320
+2025-10-18 10:06:52.378 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:06:56.086 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=630, output_tokens=54, cost=0.007920
+2025-10-18 10:06:56.088 | DEBUG    | Extracted a valid json.
+2025-10-18 10:06:56.088 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"FileSystemStorage\")",
+        "search_method(\"save\")",
+        "search_code(\"tempfile.NamedTemporaryFile\")",
+        "search_code(\"os.rename\")"
+    ],
+    "bug_locations": []
+}
+2025-10-18 10:06:56.171 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-10-18 10:06:56.171 | DEBUG    | <Agent search> Analyzing search results.
+2025-10-18 10:07:13.605 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1771, output_tokens=778, cost=0.041050
+2025-10-18 10:07:13.621 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-10-18 10:07:22.137 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2765, output_tokens=365, cost=0.038600
+2025-10-18 10:07:22.145 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-10-18 10:07:30.994 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=719, output_tokens=335, cost=0.017240
+2025-10-18 10:07:30.995 | DEBUG    | Extracted a valid json.
+2025-10-18 10:07:30.995 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/core/files/storage.py",
+            "class": "FileSystemStorage",
+            "method": "_save",
+            "intended_behavior": "To resolve the issue, `_save` should ensure that after a file is moved from temporary storage to its final destination, the file permissions should be explicitly set to `0o644` (or whatever is configured in `FILE_UPLOAD_PERMISSIONS`). This ensures consistency regardless of the temporary storage mechanism used (`MemoryUploadedFile` or `TemporaryUploadedFile`). The existing functionality of `_save`, which includes handling file saving and integrity checks, should remain intact. After moving a file using `os.rename` or any similar method, an additional step should be added to enforce the permissions as specified."
+        },
+        {
+            "file": "django/core/files/move.py",
+            "class": "",
+            "method": "The use of `os.rename` within file movement functionality.",
+            "intended_behavior": "Wherever `os.rename` is used for moving the uploaded file from temporary to permanent storage, the operation should be followed up by setting the file permissions explicitly to maintain the permissions consistency. If permissions are not actively managed post `os.rename`, there should be a mechanism or wrapper around `os.rename` to ensure file permissions are set according to the `FILE_UPLOAD_PERMISSIONS` setting or default to `0o644` immediately following the move. This adjustment will prevent the permissions from being inadvertently restricted due to the defaults applied by `tempfile.NamedTemporaryFile` and maintained by `os.rename`."
+        }
+    ]
+}
+2025-10-18 10:07:31.002 | WARNING  | Too many fragments. Examine the method name: The use of `os.rename` within file movement functionality.
+2025-10-18 10:07:31.004 | DEBUG    | Bug location extracted successfully: [<file>django/core/files/storage.py</file>
+<class>FileSystemStorage</class>
+<method>_save</method>
+<code>
+226     def _save(self, name, content):
+227         full_path = self.path(name)
+228 
+229         # Create any intermediate directories that do not exist.
+230         directory = os.path.dirname(full_path)
+231         try:
+232             if self.directory_permissions_mode is not None:
+233                 # os.makedirs applies the global umask, so we reset it,
+234                 # for consistency with file_permissions_mode behavior.
+235                 old_umask = os.umask(0)
+236                 try:
+237                     os.makedirs(directory, self.directory_permissions_mode, exist_ok=True)
+238                 finally:
+239                     os.umask(old_umask)
+240             else:
+241                 os.makedirs(directory, exist_ok=True)
+242         except FileExistsError:
+243             raise FileExistsError('%s exists and is not a directory.' % directory)
+244 
+245         # There's a potential race condition between get_available_name and
+246         # saving the file; it's possible that two threads might return the
+247         # same name, at which point all sorts of fun happens. So we need to
+248         # try to create the file, but if it already exists we have to go back
+249         # to get_available_name() and try again.
+250 
+251         while True:
+252             try:
+253                 # This file has a file path that we can move.
+254                 if hasattr(content, 'temporary_file_path'):
+255                     file_move_safe(content.temporary_file_path(), full_path)
+256 
+257                 # This is a normal uploadedfile that we can stream.
+258                 else:
+259                     # The current umask value is masked out by os.open!
+260                     fd = os.open(full_path, self.OS_OPEN_FLAGS, 0o666)
+261                     _file = None
+262                     try:
+263                         locks.lock(fd, locks.LOCK_EX)
+264                         for chunk in content.chunks():
+265                             if _file is None:
+266                                 mode = 'wb' if isinstance(chunk, bytes) else 'wt'
+267                                 _file = os.fdopen(fd, mode)
+268                             _file.write(chunk)
+269                     finally:
+270                         locks.unlock(fd)
+271                         if _file is not None:
+272                             _file.close()
+273                         else:
+274                             os.close(fd)
+275             except FileExistsError:
+276                 # A new name is needed if the file exists.
+277                 name = self.get_available_name(name)
+278                 full_path = self.path(name)
+279             else:
+280                 # OK, the file save worked. Break out of the loop.
+281                 break
+282 
+283         if self.file_permissions_mode is not None:
+284             os.chmod(full_path, self.file_permissions_mode)
+285 
+286         # Store filenames with forward slashes, even on Windows.
+287         return name.replace('\\', '/')
+
+</code><intended_behavior>To resolve the issue, `_save` should ensure that after a file is moved from temporary storage to its final destination, the file permissions should be explicitly set to `0o644` (or whatever is configured in `FILE_UPLOAD_PERMISSIONS`). This ensures consistency regardless of the temporary storage mechanism used (`MemoryUploadedFile` or `TemporaryUploadedFile`). The existing functionality of `_save`, which includes handling file saving and integrity checks, should remain intact. After moving a file using `os.rename` or any similar method, an additional step should be added to enforce the permissions as specified.</intended_behavior>, <file>django/core/files/storage.py</file>
+<class>FileSystemStorage</class>
+<method>None</method>
+<code>
+170 class FileSystemStorage(Storage):
+171     """
+172     Standard filesystem storage
+173     """
+174     # The combination of O_CREAT and O_EXCL makes os.open() raise OSError if
+175     # the file already exists before it's opened.
+176     OS_OPEN_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0)
+177 
+178     def __init__(self, location=None, base_url=None, file_permissions_mode=None,
+179                  directory_permissions_mode=None):
+180         self._location = location
+181         self._base_url = base_url
+182         self._file_permissions_mode = file_permissions_mode
+183         self._directory_permissions_mode = directory_permissions_mode
+184         setting_changed.connect(self._clear_cached_properties)
+185 
+186     def _clear_cached_properties(self, setting, **kwargs):
+187         """Reset setting based property values."""
+188         if setting == 'MEDIA_ROOT':
+189             self.__dict__.pop('base_location', None)
+190             self.__dict__.pop('location', None)
+191         elif setting == 'MEDIA_URL':
+192             self.__dict__.pop('base_url', None)
+193         elif setting == 'FILE_UPLOAD_PERMISSIONS':
+194             self.__dict__.pop('file_permissions_mode', None)
+195         elif setting == 'FILE_UPLOAD_DIRECTORY_PERMISSIONS':
+196             self.__dict__.pop('directory_permissions_mode', None)
+197 
+198     def _value_or_setting(self, value, setting):
+199         return setting if value is None else value
+200 
+201     @cached_property
+202     def base_location(self):
+203         return self._value_or_setting(self._location, settings.MEDIA_ROOT)
+204 
+205     @cached_property
+206     def location(self):
+207         return os.path.abspath(self.base_location)
+208 
+209     @cached_property
+210     def base_url(self):
+211         if self._base_url is not None and not self._base_url.endswith('/'):
+212             self._base_url += '/'
+213         return self._value_or_setting(self._base_url, settings.MEDIA_URL)
+214 
+215     @cached_property
+216     def file_permissions_mode(self):
+217         return self._value_or_setting(self._file_permissions_mode, settings.FILE_UPLOAD_PERMISSIONS)
+218 
+219     @cached_property
+220     def directory_permissions_mode(self):
+221         return self._value_or_setting(self._directory_permissions_mode, settings.FILE_UPLOAD_DIRECTORY_PERMISSIONS)
+222 
+223     def _open(self, name, mode='rb'):
+224         return File(open(self.path(name), mode))
+225 
+226     def _save(self, name, content):
+227         full_path = self.path(name)
+228 
+229         # Create any intermediate directories that do not exist.
+230         directory = os.path.dirname(full_path)
+231         try:
+232             if self.directory_permissions_mode is not None:
+233                 # os.makedirs applies the global umask, so we reset it,
+234                 # for consistency with file_permissions_mode behavior.
+235                 old_umask = os.umask(0)
+236                 try:
+237                     os.makedirs(directory, self.directory_permissions_mode, exist_ok=True)
+238                 finally:
+239                     os.umask(old_umask)
+240             else:
+241                 os.makedirs(directory, exist_ok=True)
+242         except FileExistsError:
+243             raise FileExistsError('%s exists and is not a directory.' % directory)
+244 
+245         # There's a potential race condition between get_available_name and
+246         # saving the file; it's possible that two threads might return the
+247         # same name, at which point all sorts of fun happens. So we need to
+248         # try to create the file, but if it already exists we have to go back
+249         # to get_available_name() and try again.
+250 
+251         while True:
+252             try:
+253                 # This file has a file path that we can move.
+254                 if hasattr(content, 'temporary_file_path'):
+255                     file_move_safe(content.temporary_file_path(), full_path)
+256 
+257                 # This is a normal uploadedfile that we can stream.
+258                 else:
+259                     # The current umask value is masked out by os.open!
+260                     fd = os.open(full_path, self.OS_OPEN_FLAGS, 0o666)
+261                     _file = None
+262                     try:
+263                         locks.lock(fd, locks.LOCK_EX)
+264                         for chunk in content.chunks():
+265                             if _file is None:
+266                                 mode = 'wb' if isinstance(chunk, bytes) else 'wt'
+267                                 _file = os.fdopen(fd, mode)
+268                             _file.write(chunk)
+269                     finally:
+270                         locks.unlock(fd)
+271                         if _file is not None:
+272                             _file.close()
+273                         else:
+274                             os.close(fd)
+275             except FileExistsError:
+276                 # A new name is needed if the file exists.
+277                 name = self.get_available_name(name)
+278                 full_path = self.path(name)
+279             else:
+280                 # OK, the file save worked. Break out of the loop.
+281                 break
+282 
+283         if self.file_permissions_mode is not None:
+284             os.chmod(full_path, self.file_permissions_mode)
+285 
+286         # Store filenames with forward slashes, even on Windows.
+287         return name.replace('\\', '/')
+288 
+289     def delete(self, name):
+290         assert name, "The name argument is not allowed to be empty."
+291         name = self.path(name)
+292         # If the file or directory exists, delete it from the filesystem.
+293         try:
+294             if os.path.isdir(name):
+295                 os.rmdir(name)
+296             else:
+297                 os.remove(name)
+298         except FileNotFoundError:
+299             # FileNotFoundError is raised if the file or directory was removed
+300             # concurrently.
+301             pass
+302 
+303     def exists(self, name):
+304         return os.path.exists(self.path(name))
+305 
+306     def listdir(self, path):
+307         path = self.path(path)
+308         directories, files = [], []
+309         for entry in os.scandir(path):
+310             if entry.is_dir():
+311                 directories.append(entry.name)
+312             else:
+313                 files.append(entry.name)
+314         return directories, files
+315 
+316     def path(self, name):
+317         return safe_join(self.location, name)
+318 
+319     def size(self, name):
+320         return os.path.getsize(self.path(name))
+321 
+322     def url(self, name):
+323         if self.base_url is None:
+324             raise ValueError("This file is not accessible via a URL.")
+325         url = filepath_to_uri(name)
+326         if url is not None:
+327             url = url.lstrip('/')
+328         return urljoin(self.base_url, url)
+329 
+330     def _datetime_from_timestamp(self, ts):
+331         """
+332         If timezone support is enabled, make an aware datetime object in UTC;
+333         otherwise make a naive one in the local timezone.
+334         """
+335         if settings.USE_TZ:
+336             # Safe to use .replace() because UTC doesn't have DST
+337             return datetime.utcfromtimestamp(ts).replace(tzinfo=timezone.utc)
+338         else:
+339             return datetime.fromtimestamp(ts)
+340 
+341     def get_accessed_time(self, name):
+342         return self._datetime_from_timestamp(os.path.getatime(self.path(name)))
+343 
+344     def get_created_time(self, name):
+345         return self._datetime_from_timestamp(os.path.getctime(self.path(name)))
+346 
+347     def get_modified_time(self, name):
+348         return self._datetime_from_timestamp(os.path.getmtime(self.path(name)))
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/core/files/move.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 Move a file in the safest way possible::
+3 
+4     >>> from django.core.files.move import file_move_safe
+5     >>> file_move_safe("/tmp/old_file", "/tmp/new_file")
+6 """
+7 
+8 import errno
+9 import os
+10 from shutil import copystat
+11 
+12 from django.core.files import locks
+13 
+14 __all__ = ['file_move_safe']
+15 
+16 
+17 def _samefile(src, dst):
+18     # Macintosh, Unix.
+19     if hasattr(os.path, 'samefile'):
+20         try:
+21             return os.path.samefile(src, dst)
+22         except OSError:
+23             return False
+24 
+25     # All other platforms: check for same pathname.
+26     return (os.path.normcase(os.path.abspath(src)) ==
+27             os.path.normcase(os.path.abspath(dst)))
+28 
+29 
+30 def file_move_safe(old_file_name, new_file_name, chunk_size=1024 * 64, allow_overwrite=False):
+31     """
+32     Move a file from one location to another in the safest way possible.
+33 
+34     First, try ``os.rename``, which is simple but will break across filesystems.
+35     If that fails, stream manually from one file to another in pure Python.
+36 
+37     If the destination file exists and ``allow_overwrite`` is ``False``, raise
+38     ``FileExistsError``.
+39     """
+40     # There's no reason to move if we don't have to.
+41     if _samefile(old_file_name, new_file_name):
+42         return
+43 
+44     try:
+45         if not allow_overwrite and os.access(new_file_name, os.F_OK):
+46             raise FileExistsError('Destination file %s exists and allow_overwrite is False.' % new_file_name)
+47 
+48         os.rename(old_file_name, new_file_name)
+49         return
+50     except OSError:
+51         # OSError happens with os.rename() if moving to another filesystem or
+52         # when moving opened files on certain operating systems.
+53         pass
+54 
+55     # first open the old file, so that it won't go away
+56     with open(old_file_name, 'rb') as old_file:
+57         # now open the new file, not forgetting allow_overwrite
+58         fd = os.open(new_file_name, (os.O_WRONLY | os.O_CREAT | getattr(os, 'O_BINARY', 0) |
+59                                      (os.O_EXCL if not allow_overwrite else 0)))
+60         try:
+61             locks.lock(fd, locks.LOCK_EX)
+62             current_chunk = None
+63             while current_chunk != b'':
+64                 current_chunk = old_file.read(chunk_size)
+65                 os.write(fd, current_chunk)
+66         finally:
+67             locks.unlock(fd)
+68             os.close(fd)
+69 
+70     try:
+71         copystat(old_file_name, new_file_name)
+72     except PermissionError as e:
+73         # Certain filesystems (e.g. CIFS) fail to copy the file's metadata if
+74         # the type of the destination filesystem isn't the same as the source
+75         # filesystem; ignore that.
+76         if e.errno != errno.EPERM:
+77             raise
+78 
+79     try:
+80         os.remove(old_file_name)
+81     except PermissionError as e:
+82         # Certain operating systems (Cygwin and Windows)
+83         # fail when deleting opened files, ignore it.  (For the
+84         # systems where this happens, temporary files will be auto-deleted
+85         # on close anyway.)
+86         if getattr(e, 'winerror', 0) != 32:
+87             raise
+
+</code><intended_behavior>Wherever `os.rename` is used for moving the uploaded file from temporary to permanent storage, the operation should be followed up by setting the file permissions explicitly to maintain the permissions consistency. If permissions are not actively managed post `os.rename`, there should be a mechanism or wrapper around `os.rename` to ensure file permissions are set according to the `FILE_UPLOAD_PERMISSIONS` setting or default to `0o644` immediately following the move. This adjustment will prevent the permissions from being inadvertently restricted due to the defaults applied by `tempfile.NamedTemporaryFile` and maintained by `os.rename`.</intended_behavior>]
+2025-10-18 10:07:31.004 | INFO     | Search completed. Bug locations: [<file>django/core/files/storage.py</file>
+<class>FileSystemStorage</class>
+<method>_save</method>
+<code>
+226     def _save(self, name, content):
+227         full_path = self.path(name)
+228 
+229         # Create any intermediate directories that do not exist.
+230         directory = os.path.dirname(full_path)
+231         try:
+232             if self.directory_permissions_mode is not None:
+233                 # os.makedirs applies the global umask, so we reset it,
+234                 # for consistency with file_permissions_mode behavior.
+235                 old_umask = os.umask(0)
+236                 try:
+237                     os.makedirs(directory, self.directory_permissions_mode, exist_ok=True)
+238                 finally:
+239                     os.umask(old_umask)
+240             else:
+241                 os.makedirs(directory, exist_ok=True)
+242         except FileExistsError:
+243             raise FileExistsError('%s exists and is not a directory.' % directory)
+244 
+245         # There's a potential race condition between get_available_name and
+246         # saving the file; it's possible that two threads might return the
+247         # same name, at which point all sorts of fun happens. So we need to
+248         # try to create the file, but if it already exists we have to go back
+249         # to get_available_name() and try again.
+250 
+251         while True:
+252             try:
+253                 # This file has a file path that we can move.
+254                 if hasattr(content, 'temporary_file_path'):
+255                     file_move_safe(content.temporary_file_path(), full_path)
+256 
+257                 # This is a normal uploadedfile that we can stream.
+258                 else:
+259                     # The current umask value is masked out by os.open!
+260                     fd = os.open(full_path, self.OS_OPEN_FLAGS, 0o666)
+261                     _file = None
+262                     try:
+263                         locks.lock(fd, locks.LOCK_EX)
+264                         for chunk in content.chunks():
+265                             if _file is None:
+266                                 mode = 'wb' if isinstance(chunk, bytes) else 'wt'
+267                                 _file = os.fdopen(fd, mode)
+268                             _file.write(chunk)
+269                     finally:
+270                         locks.unlock(fd)
+271                         if _file is not None:
+272                             _file.close()
+273                         else:
+274                             os.close(fd)
+275             except FileExistsError:
+276                 # A new name is needed if the file exists.
+277                 name = self.get_available_name(name)
+278                 full_path = self.path(name)
+279             else:
+280                 # OK, the file save worked. Break out of the loop.
+281                 break
+282 
+283         if self.file_permissions_mode is not None:
+284             os.chmod(full_path, self.file_permissions_mode)
+285 
+286         # Store filenames with forward slashes, even on Windows.
+287         return name.replace('\\', '/')
+
+</code><intended_behavior>To resolve the issue, `_save` should ensure that after a file is moved from temporary storage to its final destination, the file permissions should be explicitly set to `0o644` (or whatever is configured in `FILE_UPLOAD_PERMISSIONS`). This ensures consistency regardless of the temporary storage mechanism used (`MemoryUploadedFile` or `TemporaryUploadedFile`). The existing functionality of `_save`, which includes handling file saving and integrity checks, should remain intact. After moving a file using `os.rename` or any similar method, an additional step should be added to enforce the permissions as specified.</intended_behavior>, <file>django/core/files/storage.py</file>
+<class>FileSystemStorage</class>
+<method>None</method>
+<code>
+170 class FileSystemStorage(Storage):
+171     """
+172     Standard filesystem storage
+173     """
+174     # The combination of O_CREAT and O_EXCL makes os.open() raise OSError if
+175     # the file already exists before it's opened.
+176     OS_OPEN_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0)
+177 
+178     def __init__(self, location=None, base_url=None, file_permissions_mode=None,
+179                  directory_permissions_mode=None):
+180         self._location = location
+181         self._base_url = base_url
+182         self._file_permissions_mode = file_permissions_mode
+183         self._directory_permissions_mode = directory_permissions_mode
+184         setting_changed.connect(self._clear_cached_properties)
+185 
+186     def _clear_cached_properties(self, setting, **kwargs):
+187         """Reset setting based property values."""
+188         if setting == 'MEDIA_ROOT':
+189             self.__dict__.pop('base_location', None)
+190             self.__dict__.pop('location', None)
+191         elif setting == 'MEDIA_URL':
+192             self.__dict__.pop('base_url', None)
+193         elif setting == 'FILE_UPLOAD_PERMISSIONS':
+194             self.__dict__.pop('file_permissions_mode', None)
+195         elif setting == 'FILE_UPLOAD_DIRECTORY_PERMISSIONS':
+196             self.__dict__.pop('directory_permissions_mode', None)
+197 
+198     def _value_or_setting(self, value, setting):
+199         return setting if value is None else value
+200 
+201     @cached_property
+202     def base_location(self):
+203         return self._value_or_setting(self._location, settings.MEDIA_ROOT)
+204 
+205     @cached_property
+206     def location(self):
+207         return os.path.abspath(self.base_location)
+208 
+209     @cached_property
+210     def base_url(self):
+211         if self._base_url is not None and not self._base_url.endswith('/'):
+212             self._base_url += '/'
+213         return self._value_or_setting(self._base_url, settings.MEDIA_URL)
+214 
+215     @cached_property
+216     def file_permissions_mode(self):
+217         return self._value_or_setting(self._file_permissions_mode, settings.FILE_UPLOAD_PERMISSIONS)
+218 
+219     @cached_property
+220     def directory_permissions_mode(self):
+221         return self._value_or_setting(self._directory_permissions_mode, settings.FILE_UPLOAD_DIRECTORY_PERMISSIONS)
+222 
+223     def _open(self, name, mode='rb'):
+224         return File(open(self.path(name), mode))
+225 
+226     def _save(self, name, content):
+227         full_path = self.path(name)
+228 
+229         # Create any intermediate directories that do not exist.
+230         directory = os.path.dirname(full_path)
+231         try:
+232             if self.directory_permissions_mode is not None:
+233                 # os.makedirs applies the global umask, so we reset it,
+234                 # for consistency with file_permissions_mode behavior.
+235                 old_umask = os.umask(0)
+236                 try:
+237                     os.makedirs(directory, self.directory_permissions_mode, exist_ok=True)
+238                 finally:
+239                     os.umask(old_umask)
+240             else:
+241                 os.makedirs(directory, exist_ok=True)
+242         except FileExistsError:
+243             raise FileExistsError('%s exists and is not a directory.' % directory)
+244 
+245         # There's a potential race condition between get_available_name and
+246         # saving the file; it's possible that two threads might return the
+247         # same name, at which point all sorts of fun happens. So we need to
+248         # try to create the file, but if it already exists we have to go back
+249         # to get_available_name() and try again.
+250 
+251         while True:
+252             try:
+253                 # This file has a file path that we can move.
+254                 if hasattr(content, 'temporary_file_path'):
+255                     file_move_safe(content.temporary_file_path(), full_path)
+256 
+257                 # This is a normal uploadedfile that we can stream.
+258                 else:
+259                     # The current umask value is masked out by os.open!
+260                     fd = os.open(full_path, self.OS_OPEN_FLAGS, 0o666)
+261                     _file = None
+262                     try:
+263                         locks.lock(fd, locks.LOCK_EX)
+264                         for chunk in content.chunks():
+265                             if _file is None:
+266                                 mode = 'wb' if isinstance(chunk, bytes) else 'wt'
+267                                 _file = os.fdopen(fd, mode)
+268                             _file.write(chunk)
+269                     finally:
+270                         locks.unlock(fd)
+271                         if _file is not None:
+272                             _file.close()
+273                         else:
+274                             os.close(fd)
+275             except FileExistsError:
+276                 # A new name is needed if the file exists.
+277                 name = self.get_available_name(name)
+278                 full_path = self.path(name)
+279             else:
+280                 # OK, the file save worked. Break out of the loop.
+281                 break
+282 
+283         if self.file_permissions_mode is not None:
+284             os.chmod(full_path, self.file_permissions_mode)
+285 
+286         # Store filenames with forward slashes, even on Windows.
+287         return name.replace('\\', '/')
+288 
+289     def delete(self, name):
+290         assert name, "The name argument is not allowed to be empty."
+291         name = self.path(name)
+292         # If the file or directory exists, delete it from the filesystem.
+293         try:
+294             if os.path.isdir(name):
+295                 os.rmdir(name)
+296             else:
+297                 os.remove(name)
+298         except FileNotFoundError:
+299             # FileNotFoundError is raised if the file or directory was removed
+300             # concurrently.
+301             pass
+302 
+303     def exists(self, name):
+304         return os.path.exists(self.path(name))
+305 
+306     def listdir(self, path):
+307         path = self.path(path)
+308         directories, files = [], []
+309         for entry in os.scandir(path):
+310             if entry.is_dir():
+311                 directories.append(entry.name)
+312             else:
+313                 files.append(entry.name)
+314         return directories, files
+315 
+316     def path(self, name):
+317         return safe_join(self.location, name)
+318 
+319     def size(self, name):
+320         return os.path.getsize(self.path(name))
+321 
+322     def url(self, name):
+323         if self.base_url is None:
+324             raise ValueError("This file is not accessible via a URL.")
+325         url = filepath_to_uri(name)
+326         if url is not None:
+327             url = url.lstrip('/')
+328         return urljoin(self.base_url, url)
+329 
+330     def _datetime_from_timestamp(self, ts):
+331         """
+332         If timezone support is enabled, make an aware datetime object in UTC;
+333         otherwise make a naive one in the local timezone.
+334         """
+335         if settings.USE_TZ:
+336             # Safe to use .replace() because UTC doesn't have DST
+337             return datetime.utcfromtimestamp(ts).replace(tzinfo=timezone.utc)
+338         else:
+339             return datetime.fromtimestamp(ts)
+340 
+341     def get_accessed_time(self, name):
+342         return self._datetime_from_timestamp(os.path.getatime(self.path(name)))
+343 
+344     def get_created_time(self, name):
+345         return self._datetime_from_timestamp(os.path.getctime(self.path(name)))
+346 
+347     def get_modified_time(self, name):
+348         return self._datetime_from_timestamp(os.path.getmtime(self.path(name)))
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/core/files/move.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2 Move a file in the safest way possible::
+3 
+4     >>> from django.core.files.move import file_move_safe
+5     >>> file_move_safe("/tmp/old_file", "/tmp/new_file")
+6 """
+7 
+8 import errno
+9 import os
+10 from shutil import copystat
+11 
+12 from django.core.files import locks
+13 
+14 __all__ = ['file_move_safe']
+15 
+16 
+17 def _samefile(src, dst):
+18     # Macintosh, Unix.
+19     if hasattr(os.path, 'samefile'):
+20         try:
+21             return os.path.samefile(src, dst)
+22         except OSError:
+23             return False
+24 
+25     # All other platforms: check for same pathname.
+26     return (os.path.normcase(os.path.abspath(src)) ==
+27             os.path.normcase(os.path.abspath(dst)))
+28 
+29 
+30 def file_move_safe(old_file_name, new_file_name, chunk_size=1024 * 64, allow_overwrite=False):
+31     """
+32     Move a file from one location to another in the safest way possible.
+33 
+34     First, try ``os.rename``, which is simple but will break across filesystems.
+35     If that fails, stream manually from one file to another in pure Python.
+36 
+37     If the destination file exists and ``allow_overwrite`` is ``False``, raise
+38     ``FileExistsError``.
+39     """
+40     # There's no reason to move if we don't have to.
+41     if _samefile(old_file_name, new_file_name):
+42         return
+43 
+44     try:
+45         if not allow_overwrite and os.access(new_file_name, os.F_OK):
+46             raise FileExistsError('Destination file %s exists and allow_overwrite is False.' % new_file_name)
+47 
+48         os.rename(old_file_name, new_file_name)
+49         return
+50     except OSError:
+51         # OSError happens with os.rename() if moving to another filesystem or
+52         # when moving opened files on certain operating systems.
+53         pass
+54 
+55     # first open the old file, so that it won't go away
+56     with open(old_file_name, 'rb') as old_file:
+57         # now open the new file, not forgetting allow_overwrite
+58         fd = os.open(new_file_name, (os.O_WRONLY | os.O_CREAT | getattr(os, 'O_BINARY', 0) |
+59                                      (os.O_EXCL if not allow_overwrite else 0)))
+60         try:
+61             locks.lock(fd, locks.LOCK_EX)
+62             current_chunk = None
+63             while current_chunk != b'':
+64                 current_chunk = old_file.read(chunk_size)
+65                 os.write(fd, current_chunk)
+66         finally:
+67             locks.unlock(fd)
+68             os.close(fd)
+69 
+70     try:
+71         copystat(old_file_name, new_file_name)
+72     except PermissionError as e:
+73         # Certain filesystems (e.g. CIFS) fail to copy the file's metadata if
+74         # the type of the destination filesystem isn't the same as the source
+75         # filesystem; ignore that.
+76         if e.errno != errno.EPERM:
+77             raise
+78 
+79     try:
+80         os.remove(old_file_name)
+81     except PermissionError as e:
+82         # Certain operating systems (Cygwin and Windows)
+83         # fail when deleting opened files, ignore it.  (For the
+84         # systems where this happens, temporary files will be auto-deleted
+85         # on close anyway.)
+86         if getattr(e, 'winerror', 0) != 32:
+87             raise
+
+</code><intended_behavior>Wherever `os.rename` is used for moving the uploaded file from temporary to permanent storage, the operation should be followed up by setting the file permissions explicitly to maintain the permissions consistency. If permissions are not actively managed post `os.rename`, there should be a mechanism or wrapper around `os.rename` to ensure file permissions are set according to the `FILE_UPLOAD_PERMISSIONS` setting or default to `0o644` immediately following the move. This adjustment will prevent the permissions from being inadvertently restricted due to the defaults applied by `tempfile.NamedTemporaryFile` and maintained by `os.rename`.</intended_behavior>]
+2025-10-18 10:07:31.004 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-10-18 10:07:31.004 | INFO     | Search-only: skipping patch selection
+2025-10-18 10:07:31.157 | INFO     | Task django__django-10914 completed successfully.
+2025-10-18 10:07:31.158 | INFO     | No patch generated. You can try running ACR again.
