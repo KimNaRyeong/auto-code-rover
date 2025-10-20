@@ -338,16 +338,25 @@ def analysis_result_type():
 
 # --- example usage ---
 if __name__ == "__main__":
-    # # save_bug_locations()
+    # save_bug_locations()
     # filtered_fl_dict1 = extract_fl_results("../only_fl_output")
     # # print(filtered_fl_dict1)
     # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
     # # print(filtered_fl_dict2)
+    filtered_fl_dict3 = extract_fl_results("../only_fl_output3")
+    filtered_fl_dict4 = extract_fl_results("../only_fl_output4")
+    filtered_fl_dict5 = extract_fl_results("../only_fl_output5")
 
     # with open('./fl_results/filtered_fl_result_1.json', 'w') as f:
     #     json.dump(filtered_fl_dict1, f, indent=4)
     # with open('./fl_results/filtered_fl_result_2.json', 'w') as f:
     #     json.dump(filtered_fl_dict2, f, indent=4)
+    with open('./fl_results/filtered_fl_result_3.json', 'w') as f:
+        json.dump(filtered_fl_dict3, f, indent=4)
+    with open('./fl_results/filtered_fl_result_4.json', 'w') as f:
+        json.dump(filtered_fl_dict4, f, indent=4)
+    with open('./fl_results/filtered_fl_result_5.json', 'w') as f:
+        json.dump(filtered_fl_dict5, f, indent=4)
 
     # # save_diff_modif_dict("../only_fl_output")
 
@@ -383,18 +392,18 @@ if __name__ == "__main__":
     #     diff_path = os.path.join(output_dir, instance, 'developer_patch.diff')
     #     fault_location = extract_gt_fl_from_diff(diff_path)
 
-    instance_dir_list = os.listdir(os.path.join('../only_fl_output', 'no_patch'))
-    for instance in instance_dir_list:
-        search_files = os.listdir(os.path.join('../only_fl_output/no_patch', instance, 'output_0/search'))
+    # instance_dir_list = os.listdir(os.path.join('../only_fl_output', 'no_patch'))
+    # for instance in instance_dir_list:
+    #     search_files = os.listdir(os.path.join('../only_fl_output/no_patch', instance, 'output_0/search'))
 
-        max_idx = 0
-        for sf in search_files:
-            if sf.startswith('search_round_'):
-                idx = int(sf.split('_')[-1].removesuffix('.json'))
-                if max_idx < idx:
-                    max_idx = idx
+    #     max_idx = 0
+    #     for sf in search_files:
+    #         if sf.startswith('search_round_'):
+    #             idx = int(sf.split('_')[-1].removesuffix('.json'))
+    #             if max_idx < idx:
+    #                 max_idx = idx
         
-        if max_idx > 5:
-            print(instance)
+    #     if max_idx > 5:
+    #         print(instance)
 
 
