@@ -37,6 +37,7 @@ class Data_generater():
         # self.task_list = ['astropy__astropy-6938']
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
+        # self.task_list = ['scikit-learn__scikit-learn-26400']
         self.trajs_dict = self.extract_trajs_from_logs()
         self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
 
@@ -50,6 +51,8 @@ class Data_generater():
         self.arg_vector_size_dict = self.get_arg_vector_size()
         # print(self.arg_vector_size_dict)
         self.label_dict = self.get_labels_dict()
+        # self.task_list = ['scikit-learn__scikit-learn-26400']
+        # self.task_list = ['astropy__astropy-6938']
     
     def extract_trajs_from_logs(self):
         trajs_dict = defaultdict(dict)
@@ -191,33 +194,61 @@ class Data_generater():
         plt.savefig(filename, format='png')
         plt.close()
 
+    def generate_save_dir(self):
+        if self.nhot:
+            hot_dir = 'nhot'
+        else:
+            hot_dir = 'onehot'
+        
+        if self.including_answer:
+            answer_dir = 'answer'
+        else:
+            answer_dir = 'no_answer'
+
+        if self.add_to_vector:
+            add_dir = 'add'
+        else:
+            add_dir = 'not_add'
+
+        if self.nhot:
+            save_dir = f'./data/{hot_dir}/{answer_dir}/{add_dir}'
+        else:
+            save_dir = f'./data/{hot_dir}/{answer_dir}'
+        return save_dir
 
 
-    def generate_LIG_for_all_k(self, generate_S = True, generate_F = True, generate_FA = True):
+    def generate_LIG_for_all_k(self, save_data):
         def add_weight_edge(G, u, v, weight=1):
             if G.has_edge(u, v):
                 G[u][v]['weight'] += 1
             else:
                 G.add_edge(u, v, weight = weight)
 
-        # for k in self.ks:
         print("Generating the graphs for all tasks and ks")
-        for k in [5]:
+
+        # for k in [5]:
+        for k in self.ks:
             dataset_S = []
             dataset_F = []
             dataset_FA = []
             for task in tqdm(self.task_list):
                 arg_list = list(self.args_dict[task][k])
                 graph = nx.DiGraph()
+
                 for _, rp in enumerate(self.reasoning_paths_dict[task]):
                     if not rp:
-                        graph.add_node('[]')
+                        # graph.add_node('[]')
                         continue
-                    if self.nhot and rp[0] and 'answers' in rp[0][0].keys():
+                    if self.nhot and self.including_answer and rp[0] and 'answers' in rp[0][0].keys():
                         for fl in rp[0][0]['answers']:
+                            graph.add_node(str(fl))
+                    elif not self.nhot and self.including_answer and rp[0] and 'answers' in rp[0].keys():
+                        for fl in rp[0]['answers']:
                             graph.add_node(str(fl))
                     else:
                         graph.add_node(str(rp[0]))
+                if not graph.nodes():
+                    graph.add_node('None')
 
                 for _, rp in enumerate(self.reasoning_paths_dict[task]):
                     if not rp:
@@ -276,14 +307,24 @@ class Data_generater():
                 F_data = from_networkx(graph)
                 FA_data = from_networkx(graph)
 
+                # S_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # F_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # FA_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # print(S_data.edge_attr)
+                # print(S_data.edge_weight)
+
+
                 S_node_x = []
                 F_node_x = []
                 FA_node_x = []
                 # print(arg_list)
+                
+
                 for node_str in graph.nodes():
                     # print(node_str)
                     node = ast.literal_eval(node_str)
                     arg_vector = torch.zeros(self.arg_vector_size_dict[k], dtype=float)
+                    # print(arg_vector)
                     if self.nhot:
                         if not node:
                             func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
@@ -323,16 +364,23 @@ class Data_generater():
                                 arg_vector[arg_list.index(element)] = 1
                         else:
                             func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
-                            if node['func_name'] in self.function_types:
-                                func_idx = self.function_types.index(node['func_name'])
-                            else:
-                                func_idx = -1
-                            func_vector[func_idx] = 1
+                            try:
+                                if node['func_name'] in self.function_types:
+                                    func_idx = self.function_types.index(node['func_name'])
+                                else:
+                                    func_idx = -1
+                                func_vector[func_idx] = 1
+                            except:
+                                print(node)
+                                print(task)
                             
                             for arg in node['arguments'].values():
                                 arg_vector[arg_list.index(arg)] = 1
                     
                     zero_func_vector = torch.ones(len(self.function_types), dtype=torch.float)
+                    # print(func_vector)
+                    # print(arg_vector)
+                    # print("kk")
                     func_answer_vector = torch.cat((func_vector, arg_vector))
 
                     S_node_x.append(zero_func_vector)
@@ -361,12 +409,28 @@ class Data_generater():
                 F_data.y = torch.tensor([self.label_dict[task]], dtype=float)
                 FA_data.y = torch.tensor([self.label_dict[task]], dtype=float)
 
-            dataset_S.append(S_data)
-            dataset_F.append(F_data)
-            dataset_FA.append(FA_data)
+                for d in (S_data, F_data, FA_data):
+                    d.task = task
+                    d.edge_weight = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                    if hasattr(d, 'weight'):
+                        delattr(d, 'weight')
 
-            print(len(dataset_FA))
-            print(dataset_FA[0].x)
+                dataset_S.append(S_data)
+                dataset_F.append(F_data)
+                dataset_FA.append(FA_data)
+
+            if save_data:
+                save_dir = os.path.join(self.generate_save_dir(), str(k))
+                os.makedirs(save_dir, exist_ok=True)
+                torch.save({
+                    "dataset_S": dataset_S,
+                    "dataset_F": dataset_F,
+                    "dataset_FA": dataset_FA
+                }, os.path.join(save_dir, 'gcn_dataset.pth'))
+                print(f"{k}th GCN dataset saved in {save_dir}")
+                
+
+
 
 
         
@@ -495,7 +559,6 @@ if __name__ == '__main__':
     parser.add_argument('--nhot', action='store_true')
     parser.add_argument('--answer', action='store_true', help='including the answer')
     parser.add_argument('--add', action='store_true')
-    parser.add_argument('--one_arg_vector_size', action="store_true", help='use unified size for arg vector')
     args = parser.parse_args()
 
     data_generater = Data_generater(args.repetition, args.nhot, args.answer, args.add)
@@ -523,7 +586,7 @@ if __name__ == '__main__':
     # examine_tool_call_layers() 
     # print(len(data_generater.label_dict.values()))
     # print(sum(data_generater.label_dict.values()))
-    data_generater.generate_LIG_for_all_k()
+    data_generater.generate_LIG_for_all_k(save_data=True)
 
 
 
