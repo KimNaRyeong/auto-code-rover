@@ -3,18 +3,20 @@ import json
 import argparse
 import copy
 import ast
+import torch
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 from torch_geometric.utils import from_networkx
 
 class Data_generater():
-    def __init__(self, repetition, nhot = True, including_answer = True, one_arg_vector_size = False):
+    def __init__(self, repetition, nhot = True, including_answer = True, add = False):
         self.repetition = repetition
         self.nhot = nhot
         self.including_answer = including_answer
-        self.one_arg_vector_size = one_arg_vector_size
+        self.add_to_vector = add
         self.function_types = ['search_class', 'search_class_in_file', 'search_method_in_file', 'search_method_in_class', 'search_method', 'search_code', 'search_code_in_file', 'get_code_around_line']
         if nhot:
             self.ks = list(range(1, 11))
@@ -44,7 +46,9 @@ class Data_generater():
         # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
         # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
         self.args_dict = self.get_args_dict_for_k()
+        # print(self.args_dict)
         self.arg_vector_size_dict = self.get_arg_vector_size()
+        # print(self.arg_vector_size_dict)
         self.label_dict = self.get_labels_dict()
     
     def extract_trajs_from_logs(self):
@@ -195,15 +199,15 @@ class Data_generater():
                 G[u][v]['weight'] += 1
             else:
                 G.add_edge(u, v, weight = weight)
-        
-        dataset_S = []
-        dataset_F = []
-        dataset_FA = []
 
         # for k in self.ks:
         print("Generating the graphs for all tasks and ks")
-        for k in [37]:
+        for k in [5]:
+            dataset_S = []
+            dataset_F = []
+            dataset_FA = []
             for task in tqdm(self.task_list):
+                arg_list = list(self.args_dict[task][k])
                 graph = nx.DiGraph()
                 for _, rp in enumerate(self.reasoning_paths_dict[task]):
                     if not rp:
@@ -248,80 +252,122 @@ class Data_generater():
                             # for edge in graph.edges():
                             #     print(edge)
 
+                ################################################################
+                ############Draw and save the graphs in ./graphs/lig############
+                # if self.nhot:
+                #     if self.including_answer:
+                #         graph_dir = f'./graphs/lig/nhot/including_answer/{k}'
+                #     else:
+                #         graph_dir = f'./graphs/lig/nhot/no_answer/{k}'
+                # else:
+                #     if self.including_answer:
+                #         graph_dir = f'./graphs/lig/onehot/including_answer/{k}'
+                #     else:
+                #         graph_dir = f'./graphs/lig/onehot/no_answer/{k}'
 
-                if self.nhot:
-                    if self.including_answer:
-                        graph_dir = f'./graphs/lig/nhot/including_answer/{k}'
-                    else:
-                        graph_dir = f'./graphs/lig/nhot/no_answer/{k}'
-                else:
-                    if self.including_answer:
-                        graph_dir = f'./graphs/lig/onehot/including_answer/{k}'
-                    else:
-                        graph_dir = f'./graphs/lig/onehot/no_answer/{k}'
+                # os.makedirs(graph_dir, exist_ok=True)
+                # try:
+                #     self.save_graph_image(graph, os.path.join(graph_dir, f'{task}.png'))
+                # except:
+                #     print(f"Failed to save the graph: {os.path.join(graph_dir, f'{task}.png')}")
+                ################################################################
+            
+                S_data = from_networkx(graph)
+                F_data = from_networkx(graph)
+                FA_data = from_networkx(graph)
 
-                os.makedirs(graph_dir, exist_ok=True)
+                S_node_x = []
+                F_node_x = []
+                FA_node_x = []
+                # print(arg_list)
+                for node_str in graph.nodes():
+                    # print(node_str)
+                    node = ast.literal_eval(node_str)
+                    arg_vector = torch.zeros(self.arg_vector_size_dict[k], dtype=float)
+                    if self.nhot:
+                        if not node:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            func_vector[-1] = 1
+                        elif self.including_answer and isinstance(node[0], str):
+                            func_vector = torch.ones(len(self.function_types) + 1, dtype=torch.float)
+                            for element in node:
+                                if self.add_to_vector:
+                                    arg_vector[arg_list.index(element)] += 1
+                                else:
+                                    arg_vector[arg_list.index(element)] = 1
+                        else:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            for func_call in node:
+                                if func_call['func_name'] in self.function_types:
+                                    func_idx = self.function_types.index(func_call['func_name'])
+                                else:
+                                    func_idx = -1
+                                if self.add_to_vector:
+                                    func_vector[func_idx] += 1
+                                else:
+                                    func_vector[func_idx] = 1
+                                
+                                for arg in func_call['arguments'].values():
+                                    if self.add_to_vector:
+                                        arg_vector[arg_list.index(arg)] += 1
+                                    else:
+                                        arg_vector[arg_list.index(arg)] = 1
+                    
+                    else:
+                        if not node:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            func_vector[-1] = 1
+                        elif self.including_answer and isinstance(node, list):
+                            func_vector = torch.ones(len(self.function_types) + 1, dtype=torch.float)
+                            for element in node:
+                                arg_vector[arg_list.index(element)] = 1
+                        else:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            if node['func_name'] in self.function_types:
+                                func_idx = self.function_types.index(node['func_name'])
+                            else:
+                                func_idx = -1
+                            func_vector[func_idx] = 1
+                            
+                            for arg in node['arguments'].values():
+                                arg_vector[arg_list.index(arg)] = 1
+                    
+                    zero_func_vector = torch.ones(len(self.function_types), dtype=torch.float)
+                    func_answer_vector = torch.cat((func_vector, arg_vector))
+
+                    S_node_x.append(zero_func_vector)
+                    F_node_x.append(func_vector)
+                    FA_node_x.append(func_answer_vector)
+                    # print("For S")
+                    # print(zero_func_vector)
+                    # print("For F")
+                    # print(func_vector)
+                    # print("For FA")
+                    # print(func_answer_vector)
                 try:
-                    self.save_graph_image(graph, os.path.join(graph_dir, f'{task}.png'))
+                    S_x_stack = np.vstack(S_node_x)
                 except:
-                    print(f"Failed to save the graph: {os.path.join(graph_dir, f'{task}.png')}")
-            
-                # S_data = from_networkx(graph)
-                # F_data = from_networkx(graph)
-                # FA_data = from_networkx(graph)
+                    print(task)
+                    print(S_node_x)
+                    print(self.reasoning_paths_dict[task])
+                F_x_stack = np.vstack(F_node_x)
+                FA_x_stack = np.vstack(FA_node_x)
 
-                # S_node_x = []
-                # F_node_x = []
-                # FA_node_x = []
+                S_data.x = torch.tensor(S_x_stack, dtype=torch.float)
+                F_data.x = torch.tensor(F_x_stack, dtype=torch.float)
+                FA_data.x = torch.tensor(FA_x_stack, dtype=torch.float)
 
-                # for node_str in graph.nodes():
-                #     func_vector = [0] * (len(self.function_types) + 1)
-                #     if self.nhot:
-                #         if 'answers' in node_str:
+                S_data.y = torch.tensor([self.label_dict[task]], dtype=float)
+                F_data.y = torch.tensor([self.label_dict[task]], dtype=float)
+                FA_data.y = torch.tensor([self.label_dict[task]], dtype=float)
 
-                    # else:
-                    #     if "'answers'" in node_str and self.including_answer:
-                    #         pass
-                    #     else:
-                    #         if node_str == '[]':
-                    #             func_vector[-1] = 1
-                    #         else:
-                    #             node = ast.literal_eval(node_str)
+            dataset_S.append(S_data)
+            dataset_F.append(F_data)
+            dataset_FA.append(FA_data)
 
-                    
+            print(len(dataset_FA))
+            print(dataset_FA[0].x)
 
-                
-
-
-                    
-
-            
-        
-
-
-                
-
-                
-
-                
-        test_graph_list = []
-        test_graph = nx.DiGraph()
-        test_graph.add_node('a')
-        test_graph.add_node('b')
-        add_weight_edge(test_graph, 'a', 'b')
-
-        test_graph_list.append(test_graph)
-
-        test_graph = copy.deepcopy(test_graph)
-        test_graph.add_node('c')
-        test_graph.add_node(str([]))
-        add_weight_edge(test_graph, 'b', 'c')
-
-        test_graph_list.append(test_graph)
-        
-        for graph in test_graph_list:
-            print(graph.nodes())
-        print(test_graph.nodes())
 
         
 
@@ -448,10 +494,11 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--repetition', default=5, type=int)
     parser.add_argument('--nhot', action='store_true')
     parser.add_argument('--answer', action='store_true', help='including the answer')
+    parser.add_argument('--add', action='store_true')
     parser.add_argument('--one_arg_vector_size', action="store_true", help='use unified size for arg vector')
     args = parser.parse_args()
 
-    data_generater = Data_generater(args.repetition, args.nhot, args.answer, args.one_arg_vector_size)
+    data_generater = Data_generater(args.repetition, args.nhot, args.answer, args.add)
 
     # data_generater.draw_length_distribution_graphs()
 
