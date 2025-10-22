@@ -467,7 +467,7 @@ def get_dir_dict(nhot, answer, add):
     else:
         dir_dict = {
             'data': f'../data/{hot_dir}/{answer_dir}',
-            'result': f'../result/{hot_dir}/{answer_dir}',
+            'result': f'../results/{hot_dir}/{answer_dir}',
             'trained_model': f'../trained_model/{hot_dir}/{answer_dir}',
             'graph': f'../results/graphs/{hot_dir}/{answer_dir}'
         }
