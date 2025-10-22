@@ -366,8 +366,13 @@ def vote_and_ranks_final_answers():
             for answer in answer_list:
                 signature = f'{answer["rel_file_path"]}::{answer["class_name"]}#{answer["method_name"]}_{answer["start"]}_{answer["end"]}'
                 voting_score_dict[task][signature] += 1/len(answer_list)
+    # print(voting_score_dict['sphinx-doc__sphinx-9461'])
+    for task, scores_dict in voting_score_dict.items():
 
-
+        for signature in scores_dict.keys():
+            # voting_score_dict[task][signature] /= 5
+            scores_dict[signature] /= 5
+    # print(voting_score_dict['sphinx-doc__sphinx-9461'])
     for task, voting_scores in voting_score_dict.items():
         ranking = []
         groups = defaultdict(list)
@@ -381,8 +386,10 @@ def vote_and_ranks_final_answers():
             else:
                 ranking.extend(tie_break(task, m))
         ranking_dict[task] = ranking
+    
+    combined_result_dict = {'ranking': ranking_dict, 'confidence_score': voting_score_dict}
 
-    return ranking_dict
+    return combined_result_dict
         
 
     
@@ -468,9 +475,9 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    ranking_dict = vote_and_ranks_final_answers()
+    combined_dict = vote_and_ranks_final_answers()
     with open('./combined_fl_results.json', 'w') as f:
-        json.dump(ranking_dict, f, indent=4)
+        json.dump(combined_dict, f, indent=4)
     
 
 

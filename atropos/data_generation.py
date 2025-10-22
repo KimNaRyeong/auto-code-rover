@@ -161,7 +161,7 @@ class Data_generater():
 
         for task in self.task_list:
             labels_dict[task] = 0
-        for task, ranking in combined_result.items():
+        for task, ranking in combined_result["ranking"].items():
             if ranking:
                 final_answer = ranking[0]
                 rel_file_path = final_answer.split('::')[0]
