@@ -299,36 +299,55 @@ def verify_difficulty_of_benchmark():
     print(f"Num success in swe-bench-lite: {num_success_lite}")
 
 def analysis_result_type():
-    with open('../conf/swe_lite_tasks.txt', 'r') as f:
-        swe_lite_tasks = f.read().splitlines()
-    with open('./fl_results/filtered_fl_result_1.json', 'r') as f:
-        fl_result1 = json.load(f)
+    with open('./combined_fl_results.json', 'r') as f:
+        combined_result = json.load(f)
+    # with open('../conf/swe_lite_tasks.txt', 'r') as f:
+    #     swe_lite_tasks = f.read().splitlines()
+    # with open('./fl_results/filtered_fl_result_1.json', 'r') as f:
+        # fl_result1 = json.load(f)
     
-    class_method = 0
-    only_class = 0
-    only_method = 0
+    file_class_method = 0
+    file_class = 0
+    file_method = 0
     only_file =0
+    no_answer = 0
 
 
-    for instance, fl_list in fl_result1.items():
-        if instance not in swe_lite_tasks:
-            continue
-        for fl in fl_list:
-            if fl["class_name"]:
-                if fl["method_name"]:
-                    class_method += 1
-                else:
-                    only_class += 1
+    for instance, fl_list in combined_result['ranking'].items():
+        # if instance not in swe_lite_tasks:
+        #     no_answer += 1
+        file_name, class_function = fl_list[0].split('::')
+        class_name, function_lineno = class_function.split('#')
+        function_name = function_lineno.split('_')[0]
+
+        if class_name == 'None':
+            if function_name == 'None':
+                only_file += 1
             else:
-                if fl["method_name"]:
-                    only_method += 1
-                else:
-                    only_file += 1
+                file_method += 1
+        else:
+            if function_name == 'None':
+                file_class += 1
+            else:
+                file_class_method += 1
+
+        # for fl in fl_list:
+        #     if fl["class_name"]:
+        #         if fl["method_name"]:
+        #             class_method += 1
+        #         else:
+        #             only_class += 1
+        #     else:
+        #         if fl["method_name"]:
+        #             only_method += 1
+        #         else:
+        #             only_file += 1
     
-    print(f"Num class_method: {class_method}")
-    print(f"Num only file: {only_file}")
-    print(f"Num only class: {only_class}")
-    print(f"Num only method: {only_method}")
+    print(f"Num file_class_method: {file_class_method}")
+    print(f"Num only_file: {only_file}")
+    print(f"Num file_class: {file_class}")
+    print(f"Num file_method: {file_method}")
+    print(f"No answer: {no_answer}")
 
 
 def vote_and_ranks_final_answers():
@@ -439,7 +458,7 @@ if __name__ == "__main__":
     #     if task not in instances_in_fl_result:
     #         print(task)
 
-    # analysis_result_type()
+    analysis_result_type()
 
 
 
@@ -475,9 +494,9 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers()
-    with open('./combined_fl_results.json', 'w') as f:
-        json.dump(combined_dict, f, indent=4)
+    # combined_dict = vote_and_ranks_final_answers()
+    # with open('./combined_fl_results.json', 'w') as f:
+    #     json.dump(combined_dict, f, indent=4)
     
 
 
