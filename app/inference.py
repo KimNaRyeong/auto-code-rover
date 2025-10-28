@@ -107,8 +107,8 @@ def run_one_task(task: Task, output_dir: str, model_names: Iterable[str]) -> boo
 
     model_name_cycle = cycle(model_names)
 
-    for idx in range(config.overall_retry_limit):
-        model_name = next(model_name_cycle) # 
+    for idx in range(config.overall_retry_limit): # 3
+        model_name = next(model_name_cycle) # always gpt-4-0125-05-13
         set_model(model_name)
 
         logger.info("Starting overall retry {} with model {}", idx, model_name)

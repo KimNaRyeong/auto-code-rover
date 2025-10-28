@@ -196,6 +196,7 @@ SELECTED_MODEL: Model
 
 def set_model(model_name: str):
     global SELECTED_MODEL
+
     if model_name not in MODEL_HUB and not model_name.startswith("litellm-generic-"):
         print(f"Invalid model name: {model_name}")
         sys.exit(1)
@@ -218,6 +219,7 @@ def set_model(model_name: str):
         )
     else:
         SELECTED_MODEL = MODEL_HUB[model_name]
+
     SELECTED_MODEL.setup()
 
 

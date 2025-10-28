@@ -119,6 +119,21 @@ def main():
         config.only_eval_reproducer = args.eval_reproducer
 
         config.reproduce_and_review = args.reproduce_and_review
+        # print(f"output_dir: {config.output_dir}")
+        # print(f"overall_retry_limit: {config.overall_retry_limit}")
+        # print(f"conv_round_limit: {config.conv_round_limit}")
+        # print(f"enable_sbfl: {config.enable_sbfl}")
+        # print(f"enable_validation: {config.enable_validation}")
+        # print(f"enable_angelic: {config.enable_angelic}")
+        # print(f"enable_perfect_angelic: {config.enable_perfect_angelic}")
+        # print(f"only_save_sbfl_result: {config.only_save_sbfl_result}")
+        # print(f"only_reproduce: {config.only_reproduce}")
+        # print(f"only_eval_reproducer: {config.only_eval_reproducer}")
+        # print(f"reproduce_and_review: {config.reproduce_and_review}")
+        # print(f"test_exec_timeout: {config.test_exec_timeout}")
+        # print(f"models: {config.models}")
+        # print(f"backup_model: {config.backup_model}")
+        # print(f"disable_angelic: {config.disable_angelic}")
 
         groups = group_swe_tasks_by_env(tasks) # The env information is in the setup_map.json, {key(env): [task1, task2, ...]}
 
@@ -467,7 +482,7 @@ def run_task_group(task_group_id: str, task_group_items: list[RawTask]) -> None:
         f"{task_counter.incre_task_group_return_msg()} Finished task group {task_group_id}."
     )
 
-
+# Execute run_raw_task(task) in the child process
 def run_task_in_subprocess(task: RawTask) -> None:
     with ProcessPoolExecutor(max_workers=1) as executor:
         executor.submit(run_raw_task, task)
@@ -587,11 +602,11 @@ def do_inference(python_task: Task, task_output_dir: str) -> bool:
     python_task.setup_project()
 
     try:
-        if config.only_save_sbfl_result:
+        if config.only_save_sbfl_result: # False
             api_manager = ProjectApiManager(python_task, task_output_dir)
             _, _, run_ok = api_manager.fault_localization()
 
-        elif config.only_reproduce:
+        elif config.only_reproduce: # False
             api_manager = ProjectApiManager(python_task, task_output_dir)
             _, _, run_ok = api_manager.reproduce()
 
@@ -602,7 +617,6 @@ def do_inference(python_task: Task, task_output_dir: str) -> bool:
                 run_ok = inference.run_one_task(
                     python_task, task_output_dir, config.models
                 )
-                return
 
             except common.ClaudeContentPolicyViolation:
                 log.log_and_always_print(
