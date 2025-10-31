@@ -1,0 +1,27 @@
+Here is a standalone Python file `reproducer.py` that reproduces the issue:
+
+```python
+import sklearn
+from sklearn.pipeline import Pipeline
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    pipe = Pipeline()
+    len(pipe)
+except Exception as e:
+    print_stacktrace(e)
+    exit(1)
+```
+
+This script attempts to create a pipeline and then call the `len` function on it. If the issue is present, this should raise an exception that is caught by the script and printed with a stack trace.

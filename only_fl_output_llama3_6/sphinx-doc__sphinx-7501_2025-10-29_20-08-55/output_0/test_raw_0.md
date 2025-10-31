@@ -1,0 +1,29 @@
+Here is the reproducer script:
+
+```python
+import os
+import sphinx
+from sphinx.application import SphinxApplication
+
+def main():
+    # Clone the repository and navigate to the doc directory
+    os.system("git clone --depth 1 https://github.com/phpmyadmin/phpmyadmin.git")
+    os.chdir("phpmyadmin/doc")
+
+    # Install Sphinx
+    os.system("pip install 'Sphinx'")
+
+    # Build the documentation
+    app = SphinxApplication()
+    app.build()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+```
+
+This script will clone the PHPMyAdmin repository, navigate to the doc directory, install Sphinx, and then build the documentation. If the issue is present, it will raise an `AssertionError` and print a stack trace using the provided function.

@@ -1,0 +1,20 @@
+import datetime
+from django.forms import Media
+
+def create_media(MediaClass):
+    return MediaClass(css={'all': ['main.css']}, js=['main.js'])
+
+start = datetime.datetime.now()
+media = create_media(Media)
+for i in range(100000):
+    media = media + create_media(Media)
+
+try:
+    print('100000 additions took: %s' % (datetime.datetime.now() - start))
+except Exception as e:
+    print_stacktrace(e)
+    raise
+
+exit_code = 0 if 'AssertionError' not in str(e) else 1
+import sys
+sys.exit(exit_code)

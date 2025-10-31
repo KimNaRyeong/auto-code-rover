@@ -1,0 +1,33 @@
+Here is the reproducer script:
+
+```python
+from django.db import models
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    from django.db import models
+    class A(models.Model):
+        b = models.ManyToManyField('B', symmetrical=True, related_name='a')
+
+    class B(models.Model):
+        pass
+
+    model = type('Model', (models.Model,), {'c': models.ManyToManyField(A)})
+except AssertionError as e:
+    print_stacktrace(e)
+    sys.exit(1)
+
+```
+
+This script will raise an `AssertionError` when you run it, which means the issue is present.

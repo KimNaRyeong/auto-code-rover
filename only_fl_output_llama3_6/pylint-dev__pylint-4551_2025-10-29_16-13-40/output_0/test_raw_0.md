@@ -1,0 +1,22 @@
+Here is the reproducer script:
+
+```python
+import pyreverse
+from typing import Any, Dict
+
+def main():
+    class C:
+        def __init__(self, a: str = None):
+            self.a = a
+    
+    try:
+        pyreverse.generate(C)
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Expected UML generation to include type hints")
+
+if __name__ == "__main__":
+    main()
+```
+
+This script defines the same class `C` with type hinting for its constructor parameter, and then attempts to generate UML using pyreverse. If an exception is raised during this process, it prints a stack trace of the issue and raises an AssertionError.

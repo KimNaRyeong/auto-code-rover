@@ -1,0 +1,16 @@
+Here is the standalone Python file `reproducer.py` to reproduce the issue:
+
+```python
+import sympy as sp
+from sympy import symbols, Mod
+
+def reproducer():
+    i = symbols('i', integer=True)
+    assert Mod(3*i, 2) != Mod(i, 2), "Mod(3*i, 2) should not be simplified to Mod(i, 2)"
+    print_stacktrace(AssertionError("Expected Mod(3*i, 2) not to be equal to Mod(i, 2)"))
+
+if __name__ == "__main__":
+    reproducer()
+```
+
+This script will raise an `AssertionError` when the issue is present and print a stack trace of the issue.

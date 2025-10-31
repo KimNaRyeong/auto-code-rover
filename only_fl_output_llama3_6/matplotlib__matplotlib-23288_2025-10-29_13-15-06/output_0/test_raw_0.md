@@ -1,0 +1,39 @@
+Here is the reproducer script:
+
+```python
+import matplotlib.pyplot as plt
+from io import BytesIO
+import pdfplumber
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_bug():
+    try:
+        plt.text(0.5, 0.5, "Long text with link", rotation=45, url="https://matplotlib.org")
+        buf = BytesIO()
+        plt.savefig(buf, format='pdf')
+        pdf = pdfplumber.open(buf.getvalue())
+        page = pdf.pages[0]
+        clickable_area = page.get_textarea()
+        if not clickable_area:
+            raise AssertionError("URL-sensitive area is not rotated in the PDF output")
+    except Exception as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    reproduce_bug()
+```
+
+This script will attempt to create a PDF with the given code, then open it using `pdfplumber` and check if the clickable area is present. If not, it will raise an `AssertionError`, print the stack trace, and exit with code 1.

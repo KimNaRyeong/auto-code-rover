@@ -1,0 +1,29 @@
+The issue is not reproduced because the script does not actually call `tbl.write(sys.stdout, format="ascii.rst", header_rows=["name", "unit"])` which is supposed to raise an error. The script only imports the necessary modules and tries to run them without actually calling the function that raises the error.
+
+Here's a corrected version of the reproducer script:
+
+```python
+import astropy.units as u
+from astropy.table import QTable
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    tbl = QTable({'wave': [350,950]*u.nm, 'response': [0.7, 1.2]*u.count})
+    tbl.write(sys.stdout, format="ascii.rst", header_rows=["name", "unit"])
+except Exception as e:
+    print_stacktrace(e)
+    raise AssertionError("Issue not fixed")
+```
+
+This script will attempt to reproduce the issue by writing a QTable to stdout in RestructuredText format with header rows. If an exception is raised, it will print the stack trace and then raise an `AssertionError` if the issue is still present.

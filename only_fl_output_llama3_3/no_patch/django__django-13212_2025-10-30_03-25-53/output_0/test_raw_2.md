@@ -1,0 +1,21 @@
+Here is a new reproducer script that should reproduce the issue:
+
+```python
+import django
+from django.core.exceptions import ValidationError
+from django.utils.translation import gettext_lazy as _
+
+def validate_email(value):
+    if not value.endswith('@example.com'):
+        raise ValidationError(_('Invalid email address. %(value)s is not a valid email address.') % {'value': 'test'})
+
+try:
+    validate_email('test@example.com')
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+
+exit(0)
+```
+
+This script attempts to include the string "test" in the error message for a simple email validation. The `validate_email` function raises a `ValidationError` with an error message that includes the string "test".
