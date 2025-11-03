@@ -1,0 +1,36 @@
+Here is the reproducer script:
+
+```python
+import django
+from django.template import Template, Context
+from django.template.loader import get_template, select_template
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        tmpl = Template('{% include var %}')
+        ctx = Context({'var': 'admin/base.html'})
+        tmpl.render(ctx)
+        ctx.update({'var': ['admin/base.html', 'admin/fail.html']})
+        get_template('non_existent_template')
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue reproduced")
+
+if __name__ == "__main__":
+    django.setup()
+    reproduce_issue()
+```
+
+This script should be run in the root directory of a Django project.
