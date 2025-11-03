@@ -1,6 +1,6 @@
-python gcn_model.py --nhot --answer --add
-python gcn_model.py --nhot --answer
-python gcn_model.py --nhot --add
-python gcn_model.py --nhot
-python gcn_model.py --answer
-python gcn_model.py
+python gcn_model_llama3.py --nhot --answer --add
+python gcn_model_llama3.py --nhot --answer
+python gcn_model_llama3.py --nhot --add
+# python gcn_model_llama3.py --nhot
+# python gcn_model_llama3.py --answer
+# python gcn_model_llama3.py

@@ -195,10 +195,11 @@ def extract_fl_results(result_dir):
         
         if not fl_before_process or not fl_after_process:
             filtered_fl_dict[instance_name] = []
+            continue
 
         
         for raw_fl in fl_before_process:
-            intended_behavior = raw_fl["intended_behavior"]
+            intended_behavior = raw_fl.get("intended_behavior", "")
 
             for searched_fl in fl_after_process:
                 searched_fl_intended_behavior = searched_fl["intended_behavior"]
@@ -355,7 +356,7 @@ def vote_and_ranks_final_answers():
         tie_broken_methods = []
 
         for i in range(1, 6):
-            filtered_fl_result_file = f'./fl_results/filtered_fl_result_{i}.json'
+            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
             with open(filtered_fl_result_file, 'r') as f:
                 fl_result = json.load(f)
             answer_list = fl_result[task]
@@ -377,7 +378,7 @@ def vote_and_ranks_final_answers():
         task_list = f.read().splitlines()
 
     for i in range(1, 6):
-        filtered_fl_result_file = f'./fl_results/filtered_fl_result_{i}.json'
+        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
         with open(filtered_fl_result_file, 'r') as f:
             fl_result = json.load(f)
         for task in task_list:
@@ -427,7 +428,10 @@ def vote_and_ranks_final_answers():
 # --- example usage ---
 if __name__ == "__main__":
     # save_bug_locations()
-    # filtered_fl_dict1 = extract_fl_results("../only_fl_output")
+    # for i in range(1, 6):
+    #     filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_{i}")
+    #     with open(f'./fl_results/filtered_fl_result_llama3_{i}.json', 'w') as f:
+    #         json.dump(filtered_fl_dict, f, indent=4)
     # # print(filtered_fl_dict1)
     # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
     # # print(filtered_fl_dict2)
@@ -458,7 +462,7 @@ if __name__ == "__main__":
     #     if task not in instances_in_fl_result:
     #         print(task)
 
-    analysis_result_type()
+    # analysis_result_type()
 
 
 
@@ -494,9 +498,9 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    # combined_dict = vote_and_ranks_final_answers()
-    # with open('./combined_fl_results.json', 'w') as f:
-    #     json.dump(combined_dict, f, indent=4)
+    combined_dict = vote_and_ranks_final_answers()
+    with open('./combined_fl_results_llama3.json', 'w') as f:
+        json.dump(combined_dict, f, indent=4)
     
 
 
