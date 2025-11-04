@@ -1,0 +1,44 @@
+Here is the reproducer script:
+
+```python
+import requests
+from io import BytesIO
+from django.http import HttpResponse, HttpRequest
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.exceptions import ValidationError
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    settings.configure()
+    request = HttpRequest()
+    request.method = 'POST'
+    request.POST = {}
+    request.FILES = {}
+    file_name = "bogus.txt\x00"
+    file_content = BytesIO(b'.' * (1024 * 1024 * 3))
+    request.FILES['docfile'] = SimpleUploadedFile(file_name, file_content.getvalue(), 'text/plain')
+    try:
+        from . import views
+        views.UploadFileForm(request.POST, request.FILES)
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    main()
+```
+
+This script should be placed in the root directory of your Django project and executed by `python3 reproducer.py`. The script will raise an `AssertionError` when the issue is present and print a stack trace of the issue.

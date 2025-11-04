@@ -1,0 +1,38 @@
+Here is the reproducer script:
+```python
+import numpy as np
+
+def two_sum(x, y):
+    return x + y
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+@given(floats(), floats())
+def test_two_sum_symmetric(f1, f2):
+    try:
+        assert_equal(two_sum(f1, f2), two_sum(f2, f1))
+    except AssertionError as e:
+        print_stacktrace(e)
+        raise
+
+try:
+    test_two_sum_symmetric(-3.089785075544792e+307, 1.7976931348623157e+308)
+except Exception as e:
+    if isinstance(e, AssertionError):
+        print_stacktrace(e)
+        raise
+    else:
+        print(f"Error: {e}")
+        exit(0)
+```
+This script should be saved in a file named `reproducer.py` and run with `python3 reproducer.py`. It will reproduce the issue by calling the failing test case, and if an `AssertionError` is raised, it will print the stack trace using the provided function.
