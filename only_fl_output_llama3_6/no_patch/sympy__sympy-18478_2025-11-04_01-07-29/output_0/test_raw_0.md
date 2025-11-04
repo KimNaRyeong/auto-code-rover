@@ -1,0 +1,34 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+from assertpy import assert_that
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    x = sp.symbols('x')
+    try:
+        result1 = (x + sp.cos(x)).subs(x, sp.oo)
+        result2 = (sp.exp(x) + sp.cos(x)).subs(x, sp.oo)
+        assert_that(result1).is_equal_to(sp.oo)
+        assert_that(result2).is_not_equal_to(sp.AccumBounds)
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script uses the `assertpy` library to make assertions about the results of substituting `x` with infinity in the two expressions. If either assertion fails, it prints a stack trace and exits with code 1.
