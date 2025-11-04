@@ -82,7 +82,7 @@ def get_dir_dict(nhot, answer, add):
 
     if nhot:
         dir_dict = {
-            'data': f'./data/{hot_dir}/{answer_dir}/{add_dir}',
+            'data': f'./data/llama3/{hot_dir}/{answer_dir}/{add_dir}',
             'result': f'./results/{hot_dir}/{answer_dir}/{add_dir}',
             'trained_model': f'./trained_model/{hot_dir}/{answer_dir}/{add_dir}',
             'graph': f'./results/graphs/{hot_dir}/{answer_dir}/{add_dir}'
