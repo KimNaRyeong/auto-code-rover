@@ -1,0 +1,43 @@
+Here is a standalone Python file `reproducer.py` that reproduces the issue:
+
+```python
+from docutils import nodes
+from sphinx.ext import autodoc
+from sphinx.util import inspect
+import napoleon as Napoleon
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_issue():
+    try:
+        from mymodule import MyClass
+        Napoleon.set_docstring_types()
+        autodoc.autodoc(MyClass, full=False, members=True, undoc_members=True)
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue not fixed")
+
+test_issue()
+
+class MyClass:
+    __attrs_public_extras__ = {"type": "int"}
+    foo: int
+    bar: str
+
+if __name__ == "__main__":
+    test_issue()
+```
+
+This script defines a class `MyClass` with type hints for its attributes. It then attempts to generate documentation for this class using Sphinx's autodoc extension and Napoleon. If the issue is present, an `AssertionError` will be raised and the stack trace will be printed.
+
+To run the script, save it in a file named `reproducer.py` and execute it with Python: `python3 reproducer.py`.

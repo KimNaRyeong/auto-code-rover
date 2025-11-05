@@ -168,6 +168,8 @@ class Data_generater():
                     for modif in modif_from_diff_dict[task][rel_file_path]:
                         if start <= modif["start_lineno"] and end >= modif["end_lineno"]:
                             labels_dict[task] = 1
+        print(len(combined_result["ranking"]))
+        print(sum(labels_dict.values()))
         return labels_dict
     
     def get_arg_vector_size(self):
@@ -580,7 +582,7 @@ if __name__ == '__main__':
     # examine_tool_call_layers() 
     # print(len(data_generater.label_dict.values()))
     # print(sum(data_generater.label_dict.values()))
-    data_generater.generate_LIG_for_all_k(save_data=True)
+    # data_generater.generate_LIG_for_all_k(save_data=True)
 
 
 
