@@ -1,0 +1,83 @@
+Here is the revised standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+import sys
+
+from django.db import models
+from django.db.models import OuterRef, Subquery
+from django.conf import settings
+
+settings.configure(
+    INSTALLED_APPS=[
+        'django.contrib.contenttypes',
+        'django.contrib.auth',
+        'test_app',  # Add a test app to the installed apps
+    ],
+    DATABASES={
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:'
+        }
+    }
+)
+
+# Create a test app with models
+from django.apps import AppConfig
+
+class TestAppConfig(AppConfig):
+    name = 'test_app'
+    verbose_name = 'Test App'
+
+models_module = sys.modules[__name__]
+
+class Document(models.Model):
+    checklist = models.ForeignKey('Checklist', on_delete=models.CASCADE, null=True)
+    ownershiptransfer = models.ForeignKey('OwnershipTransfer', on_delete=models.CASCADE, null=True)
+    part = models.IntegerField()
+
+class Checklist(models.Model):
+    customer = models.CharField(max_length=255)
+
+class OwnershipTransfer(models.Model):
+    ship_target = models.ForeignKey('ShipTarget', on_delete=models.CASCADE)
+
+class ShipTarget(models.Model):
+    contact = models.CharField(max_length=255)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    cls = Document.objects.filter(
+        checklist__isnull=False,
+        part=OuterRef('id')
+    ).values('checklist__customer', 'created')
+
+    ots = Document.objects.filter(
+        ownershiptransfer__isnull=False,
+        part=OuterRef('id')
+    ).values('ownershiptransfer__ship_target__contact', 'created')
+
+    try:
+        result = Document.objects.annotate(
+            owner=Subquery(cls.union(ots).values('owner')[:1])
+        )
+        assert False, "Expected ValueError"
+    except ValueError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+if __name__ == '__main__':
+    reproduce_issue()
+```
+This script defines the necessary models and settings, creates a test app with models, and tries to reproduce the issue by creating a QuerySet that uses `OuterRef` in a union subquery. If the issue is present, it should raise a `ValueError` exception, which will be caught and printed with a stack trace using the provided `print_stacktrace` function. If the issue is fixed, the script will exit with code 0.
+
+Please save this file as `reproducer.py` in the root directory of your Django project and execute it with `python3 reproducer.py`.

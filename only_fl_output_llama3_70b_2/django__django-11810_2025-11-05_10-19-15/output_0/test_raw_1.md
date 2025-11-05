@@ -1,0 +1,59 @@
+Here is the revised standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'
+
+from django.db import models
+from django.conf import settings
+from django.apps import apps
+
+settings.configure(
+    DATABASES={
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:'
+        }
+    },
+    INSTALLED_APPS=['foobar']
+)
+
+apps.populate(settings.INSTALLED_APPS)
+
+class ModelA(models.Model):
+    pass
+
+class ModelB(models.Model):
+    pass
+
+class ModelC(models.Model):
+    model_a = models.ForeignKey('ModelA', on_delete=models.CASCADE)
+    model_b = models.ForeignKey('ModelB', on_delete=models.CASCADE)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    query_1 = ModelC.objects.select_related('model_a')
+    query_2 = query_1.select_related('model_b')
+
+    assert str(query_1.query) != str(query_2.query), "The two queries are the same"
+
+    print("Issue is fixed, exiting with code 0")
+    exit(0)
+
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+```
+This script defines the necessary models and settings to reproduce the issue. It then creates two QuerySets, `query_1` and `query_2`, and checks if their SQL queries are different. If they are the same, it raises an `AssertionError`. The `print_stacktrace` function is used to print a detailed stack trace of the error.
+
+To run this script, save it as `reproducer.py` in the root directory of your project and execute it with `python3 reproducer.py`.
