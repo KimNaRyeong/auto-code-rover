@@ -1,0 +1,63 @@
+Here is a revised `reproducer.py` file that reproduces the issue:
+```
+import os
+import sys
+
+from django.conf import settings
+from django.apps import AppConfig
+from django.db import models
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+# Set up Django settings
+settings.configure(
+    INSTALLED_APPS=['app1', 'app2'],
+    DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3'}},
+)
+
+# Create apps
+class App1Config(AppConfig):
+    name = 'app1'
+    verbose_name = "App 1"
+
+class App2Config(AppConfig):
+    name = 'app2'
+    verbose_name = "App 2"
+
+# Register apps
+apps = [App1Config, App2Config]
+for app in apps:
+    settings.INSTALLED_APPS.append(app.name)
+
+# Create models for app1 and app2
+class MyModel(models.Model):
+    foo = models.ManyToManyField('self', related_name='+')
+
+sys.modules['app1.models'] = sys.modules[__name__]
+sys.modules['app2.models'] = sys.modules[__name__]
+
+try:
+    # Try to create a migration
+    from django.core.management.commands import makemigrations
+    makemigrations.Command().handle(app_label='app1', verbosity=0)
+    makemigrations.Command().handle(app_label='app2', verbosity=0)
+except Exception as e:
+    print_stacktrace(e)
+    assert False, "Error creating migrations"
+
+print("No error occurred, issue is fixed!")
+sys.exit(0)
+```
+This script sets up a Django project with two apps, each with a model that has the same name and an M2M field with `related_name='+'`. It then tries to create a migration for each app. If an exception occurs during this process, it prints the stack trace using the provided function and exits with a non-zero status code. If no error occurs, it prints a success message and exits with status code 0.
+
+Please note that you need to have Django installed in your Python environment to run this script.

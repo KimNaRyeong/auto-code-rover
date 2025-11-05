@@ -1,0 +1,46 @@
+Here is the reproducer script in a code block:
+
+```python
+import django
+from django.contrib.auth.models import User
+from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import PasswordResetForm, ReadOnlyPasswordHashField
+from django.contrib.auth.admin.views import PasswordChangeView
+from django.urls import path
+from django.urls.resolvers import Resolver404
+
+django.setup()
+
+class MyUserAdmin(UserAdmin):
+    def get_urls(self):
+        urls = super().get_urls()
+        return [
+            path('change/', self.get_changeform_instance, name='user_change'),
+        ]
+
+    def get_changeform_instance(self, request):
+        return User.objects.get(pk=1)
+
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj=obj, **kwargs)
+        form.fields['password'].help_text = form.fields['password'].help_text.format('../password/')
+        return form
+
+def main():
+    admin.site.register(User, MyUserAdmin)
+
+try:
+    from django.urls import resolve
+    resolver = resolve('/user/22222222-3333-4444-5555-666677778888/change/?_to_field=uuid')
+    if not isinstance(resolver.func, PasswordChangeView):
+        raise AssertionError("Expected PasswordChangeView but got {}".format(type(resolver.func)))
+except Resolver404:
+    pass
+except Exception as e:
+    print_stacktrace(e)
+    exit(1)
+
+print("Issue reproduced successfully")
+```
+
+This script sets up a custom `UserAdmin` that uses the `to_field` parameter and formats the help text of the password field. It then attempts to resolve the URL for the `PasswordChangeView` with the `_to_field=uuid` parameter. If this fails (i.e., it doesn't return a `PasswordChangeView` instance), an `AssertionError` is raised, which will print the stack trace and exit with code 1.

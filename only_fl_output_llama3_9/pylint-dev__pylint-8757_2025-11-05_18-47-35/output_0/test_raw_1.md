@@ -1,0 +1,44 @@
+It seems that the issue is not with the reproduction script itself, but rather with the environment in which it's being run. The error message indicates that there is no such file or directory as 'venv/bin/pylint'. This suggests that the Python interpreter cannot find the `pylint` executable.
+
+To reproduce the issue, you can try running the following script:
+
+```python
+import os
+import subprocess
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        # Run pylint with different jobs
+        output1 = subprocess.check_output(['pylint', '--jobs=2', 'app/codein', 'app/melange', 'app/soc', 'app/summerofcode', 'app/settings.py', 'app/urls.py', 'app/main.py', 'tests', 'pavement.py', 'setup.py'], universal_newlines=True)
+        output2 = subprocess.check_output(['pylint', '--jobs=1', 'app/codein', 'app/melange', 'app/soc', 'app/summerofcode', 'app/settings.py', 'app/urls.py', 'app/main.py', 'tests', 'pavement.py', 'setup.py'], universal_newlines=True)
+
+        # Compare outputs
+        if output1 != output2:
+            raise AssertionError("Different output with --jobs=1 and --jobs=2")
+    except subprocess.CalledProcessError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+    except AssertionError as e:
+        print_stacktrace(e)
+        sys.exit(0)
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script runs `pylint` with different jobs (`--jobs=2` and `--jobs=1`) and compares the outputs. If the outputs are different, it raises an `AssertionError`. The script also catches any exceptions that occur during the execution of `pylint`, prints a stack trace using the provided function, and exits with code 0 if an error occurs.
+
+To reproduce the issue, simply run this script: `python3 reproducer.py`

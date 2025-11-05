@@ -1,0 +1,62 @@
+Here is the corrected `reproducer.py` script:
+
+```python
+import os
+import sys
+from django.core.cache.backends.db import DatabaseCache
+from django.db import connections
+from django.utils.timezone import now
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'myproject.settings'  # Set the DJANGO_SETTINGS_MODULE environment variable
+    from django.conf import settings
+
+    cache = DatabaseCache('my_table', {'timeout': 0})
+    cursor = connections['default'].cursor()
+
+    # Simulate setting a value in the DB cache
+    now = now().replace(microsecond=0)
+    num_entries = 10000
+    for i in range(num_entries):
+        cursor.execute(f"INSERT INTO my_table (expires) VALUES (%s)", [now])
+    cursor.execute(f"SELECT COUNT(*) FROM my_table")
+    count = int(cursor.fetchone()[0])
+
+    # Simulate culling the DB cache
+    if count > 100:
+        now = now().replace(microsecond=0)
+        cursor.execute("DELETE FROM my_table WHERE expires < %s", [now])
+        cursor.execute(f"SELECT COUNT(*) FROM my_table")
+        num = int(cursor.fetchone()[0])
+        assert num <= 100, "Expected less than or equal to 100 entries after culling"
+    else:
+        print("No culling needed")
+
+    # Check if the issue is present
+    try:
+        cursor.execute(f"SELECT COUNT(*) FROM my_table")
+        num = int(cursor.fetchone()[0])
+        assert num <= 100, "Expected less than or equal to 100 entries after culling"
+    except AssertionError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script sets the `DJANGO_SETTINGS_MODULE` environment variable before running the test. This should allow the script to access the Django settings and execute the test correctly.
+
+To run this script, save it to a file named `reproducer.py` in the root directory of your project and execute it using `python3 reproducer.py`.
