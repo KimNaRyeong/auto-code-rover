@@ -1,0 +1,39 @@
+Here is the reproducer script:
+
+```python
+import os
+from sphinx.application import SphinxApplication
+from sphinx.config import Config
+
+def main():
+    config = Config()
+    app = SphinxApplication(config)
+
+    # Create a sample project directory
+    project_dir = 'test_project'
+    if not os.path.exists(project_dir):
+        os.makedirs(project_dir)
+    
+    # Create the necessary files for the issue to reproduce
+    with open(os.path.join(project_dir, 'index.rst'), 'w') as f:
+        f.write('.. toctree::\n')
+        f.write('   a.md\n')
+        f.write('   a.rst\n')
+
+    with open(os.path.join(project_dir, 'a.md'), 'w') as f:
+        pass
+
+    with open(os.path.join(project_dir, 'a.rst'), 'w') as f:
+        pass
+
+    try:
+        app.build()
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue not fixed")
+
+if __name__ == '__main__':
+    main()
+```
+
+This script creates a sample project directory and writes the necessary files to reproduce the issue. It then attempts to build the Sphinx application, which should fail due to the unexpected behavior. The `print_stacktrace` function is used to print the stack trace of the exception.

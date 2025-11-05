@@ -1,0 +1,46 @@
+Here is the reproducer script:
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+from io import StringIO
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        x = np.linspace(-1.1, 1.1, 100)
+        y = np.linspace(-1.1, 1.1, 100)
+
+        X, Y = np.meshgrid(x, y)
+        Z = X ** 2 + Y ** 2
+
+        c = plt.contour(X, Y, Z, levels=[1.0], colors="k")
+
+        # reset segments
+        lc = c.collections[0]
+        segments = lc.get_segments()
+        lc.set_segments(segments)
+
+        assert len(lc.get_segments()) == 1, "Expected one segment"
+    except AssertionError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+reproduce_issue()
+```
+
+This script reproduces the issue by calling `lc.set_segments(segments)` which should not have any effect on the plot. However, it seems that this operation is causing the lines to become coarse.

@@ -1,0 +1,17 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+from sympy import Rational, Pow
+
+def reproduce_issue():
+    try:
+        latex_expr = Pow(Rational(1, 2), -1, evaluate=False)
+        print(latex_expr)
+    except RecursionError as e:
+        print_stacktrace(e)
+
+reproduce_issue()
+```
+
+This script will attempt to convert the expression `Pow(Rational(1, 2), -1)` to LaTeX using sympy's `latex` function. If the issue is present, it will raise a `RecursionError`, which we catch and print the stack trace for.

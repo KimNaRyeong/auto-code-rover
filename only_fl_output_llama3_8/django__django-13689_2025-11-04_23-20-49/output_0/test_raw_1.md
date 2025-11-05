@@ -1,0 +1,44 @@
+Here is the reproducer script:
+
+```python
+import django
+from django.db import models
+from django.db.models import Count, BooleanField, Q, ExpressionWrapper
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    from django.db import models
+    class Fred(models.Model):
+        id = models.IntegerField()
+        bob_id = models.IntegerField(null=True)
+
+    result = Fred.objects.annotate(
+        bob_id__is_null=ExpressionWrapper(
+            Q(bob_id=None), 
+            output_field=BooleanField()
+        )
+    ).values(
+        "bob_id__is_null"
+    ).annotate(
+        id__count=Count("id", distinct=True)
+    ).values(
+        "bob_id__is_null", 
+        "id__count"
+    ).query.group_by('bob_id__is_null')
+except Exception as e:
+    print_stacktrace(e)
+    raise AssertionError("Issue present")
+```
+
+This script sets up a Django environment, defines a `Fred` model with a `bob_id` attribute, and then attempts to execute the query that reproduces the issue. If an exception is raised during this process, it prints the stack trace using the provided function and raises an `AssertionError`.

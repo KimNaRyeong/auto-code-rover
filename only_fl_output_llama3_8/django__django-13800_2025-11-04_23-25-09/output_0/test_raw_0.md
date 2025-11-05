@@ -1,0 +1,33 @@
+Here is the reproducer script `reproducer.py`:
+
+```python
+import http.cookies
+from django.utils.http import cookiejar_from_dict
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    cookie_dict = {'messages': '\"123\\\"NOTRECEIVED\"'}
+    try:
+        cookiejar = cookiejar_from_dict(cookie_dict)
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == '__main__':
+    reproduce_issue()
+```
+
+This script attempts to create a Django `CookieJar` from a dictionary representing the problematic cookie. If an exception is raised, it prints the stack trace using the provided function and then raises the same exception again.
+
+To run this script, simply execute it with Python 3: `python3 reproducer.py`.

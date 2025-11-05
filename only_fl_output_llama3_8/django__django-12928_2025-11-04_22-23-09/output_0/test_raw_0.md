@@ -1,0 +1,34 @@
+Here is the reproducer script:
+
+```python
+import os
+from django.template.backends.django import DjangoTemplates
+from django.conf import settings
+
+def main():
+    settings.configure({
+        'TEMPLATES': [
+            {
+                'BACKEND': 'django.template.backends.django.DjangoTemplates',
+                'DIRS': [os.path.join(os.getcwd(), 'templates')],
+                'APP_DIRS': True,
+                'OPTIONS': {
+                    'cache_templates': True, 
+                    'autoreload': True
+                }
+            }
+        ]
+    })
+
+    try:
+        from django.template.loader import get_template
+        template = get_template('test.html')
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    main()
+```
+
+This script sets up a Django settings configuration with the cached template loader and autoreload enabled. It then attempts to load a template, which should fail if the issue is present. The `print_stacktrace` function is used to print the stack trace of the exception.
