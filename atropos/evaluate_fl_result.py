@@ -351,11 +351,11 @@ def analysis_result_type():
     print(f"No answer: {no_answer}")
 
 
-def vote_and_ranks_final_answers():
+def vote_and_ranks_final_answers(r):
     def tie_break(task, tie_methods):
         tie_broken_methods = []
 
-        for i in range(1, 6):
+        for i in range(1, r+1):
             filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
             with open(filtered_fl_result_file, 'r') as f:
                 fl_result = json.load(f)
@@ -377,7 +377,7 @@ def vote_and_ranks_final_answers():
     with open(task_list_file, 'r') as f:
         task_list = f.read().splitlines()
 
-    for i in range(1, 6):
+    for i in range(1, r+1):
         filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
         with open(filtered_fl_result_file, 'r') as f:
             fl_result = json.load(f)
@@ -391,7 +391,7 @@ def vote_and_ranks_final_answers():
 
         for signature in scores_dict.keys():
             # voting_score_dict[task][signature] /= 5
-            scores_dict[signature] /= 5
+            scores_dict[signature] /= r
     # print(voting_score_dict['sphinx-doc__sphinx-9461'])
     for task, voting_scores in voting_score_dict.items():
         ranking = []
@@ -428,7 +428,7 @@ def vote_and_ranks_final_answers():
 # --- example usage ---
 if __name__ == "__main__":
     # save_bug_locations()
-    # for i in range(1, 6):
+    # for i in range(6, 10):
     #     filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_{i}")
     #     with open(f'./fl_results/filtered_fl_result_llama3_{i}.json', 'w') as f:
     #         json.dump(filtered_fl_dict, f, indent=4)
@@ -498,8 +498,8 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers()
-    with open('./combined_fl_results_llama3.json', 'w') as f:
+    combined_dict = vote_and_ranks_final_answers(9)
+    with open('./R9_combined_fl_results_llama3.json', 'w') as f:
         json.dump(combined_dict, f, indent=4)
     
 

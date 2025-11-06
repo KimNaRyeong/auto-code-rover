@@ -440,7 +440,7 @@ def main(dir_dict):
     train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict)
     train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict)
 
-def get_dir_dict(nhot, answer, add):
+def get_dir_dict(repetition, nhot, answer, add):
     if nhot:
         hot_dir = 'nhot'
     else:
@@ -458,29 +458,30 @@ def get_dir_dict(nhot, answer, add):
 
     if nhot:
         dir_dict = {
-            'data': f'../data/llama3/{hot_dir}/{answer_dir}/{add_dir}',
-            'result': f'../results/llama3/{hot_dir}/{answer_dir}/{add_dir}',
-            'trained_model': f'../trained_model/llama3/{hot_dir}/{answer_dir}/{add_dir}',
-            'graph': f'../results/llama3/graphs/{hot_dir}/{answer_dir}/{add_dir}'
+            'data': f'../data/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
+            'result': f'../results/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
+            'trained_model': f'../trained_model/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
+            'graph': f'../results/llama3/R{repetition}/graphs/{hot_dir}/{answer_dir}/{add_dir}'
         }
         
     else:
         dir_dict = {
-            'data': f'../data/llama3/{hot_dir}/{answer_dir}',
-            'result': f'../results/llama3/{hot_dir}/{answer_dir}',
-            'trained_model': f'../trained_model/llama3/{hot_dir}/{answer_dir}',
-            'graph': f'../results/llama3/graphs/{hot_dir}/{answer_dir}'
+            'data': f'../data/llama3/R{repetition}/{hot_dir}/{answer_dir}',
+            'result': f'../results/llama3/R{repetition}/{hot_dir}/{answer_dir}',
+            'trained_model': f'../trained_model/llama3/R{repetition}/{hot_dir}/{answer_dir}',
+            'graph': f'../results/llama3/R{repetition}/graphs/{hot_dir}/{answer_dir}'
         }
     return dir_dict
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('-r', '--repetition', default=5)
     parser.add_argument('--nhot', action='store_true')
     parser.add_argument('--answer', action='store_true', help='including the answer')
     parser.add_argument('--add', action='store_true')
     args = parser.parse_args()
 
-    dir_dict = get_dir_dict(args.nhot, args.answer, args.add)
+    dir_dict = get_dir_dict(args.repetition, args.nhot, args.answer, args.add)
 
     main(dir_dict)
