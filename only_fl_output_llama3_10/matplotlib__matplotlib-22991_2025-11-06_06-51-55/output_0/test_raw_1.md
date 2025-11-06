@@ -1,0 +1,40 @@
+Here is the reproducer script:
+
+```python
+import matplotlib.pyplot as plt
+from unittest import TestCase
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+class Reproducer(TestCase):
+    def test_reproducer(self):
+        try:
+            import matplotlib.pyplot as plt
+
+            fig = plt.figure()
+            subfigs = fig.subfigures(2, 1)
+
+            axarr = subfigs[0].subplots(2, 2)
+
+            plt.sca(axarr[0, 0])
+            self.fail("Expected TypeError")
+
+        except Exception as e:
+            print_stacktrace(e)
+            raise
+
+if __name__ == "__main__":
+    Reproducer().test_reproducer()
+```
+
+This script creates a test case that attempts to reproduce the issue. It sets up the same plot as in the original code, and then calls `plt.sca(axarr[0, 0])`. If an exception is raised, it prints the stack trace using the provided function and raises the exception again.
