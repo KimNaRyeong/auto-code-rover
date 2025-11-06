@@ -1,0 +1,37 @@
+Here is the reproducer script:
+
+```python
+import django
+from django.db.models import Value, Sum, IntegerField
+from django.db.models.functions import ExpressionWrapper
+
+# Set up Django environment
+django.setup()
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def execQuery(expr):
+    expr = ExpressionWrapper(expr, output_field=IntegerField())
+    return django.models.Model.objects.annotate(expr_res=expr).values('expr_res', 'column_a').annotate(sum=Sum('column_b'))
+
+try:
+    result = execQuery(Value(3))
+except Exception as e:
+    print_stacktrace(e)
+    raise AssertionError("Issue should not be present")
+
+print("No issue found, exiting with code 0")
+exit(0)
+```
+
+To run the script, save it to a file named `reproducer.py` and execute it using `python3 reproducer.py`. If the issue is present, an `AssertionError` will be raised and the stack trace of the issue will be printed.

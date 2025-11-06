@@ -1,0 +1,49 @@
+Here is the standalone Python file `reproducer.py` to reproduce the issue:
+```python
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def print_stacktrace(e: Exception):
+    import traceback    
+    import sys    
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    try:
+        import matplotlib
+        matplotlib.use('agg')  # Use a non-interactive backend to avoid displaying the plot
+
+        sns.set_context("paper")
+        sns.set_style("white")
+
+        data = (sns.load_dataset('iris').set_index('species')*1e7).reset_index()
+        g = sns.relplot(data=data, x='sepal_length', y='sepal_width', col='species', 
+                        col_wrap=2, height=2.5)
+        g.set_titles(row_template="{row_name}", col_template="SOMEWHATLONG-{col_name}")
+        for axes in g.axes.flat:
+            axes.ticklabel_format(axis='both', style='scientific', scilimits=(0, 0))
+
+        # Check if the issue is present
+        fig = g.fig
+        labels = [ax.get_xlabel() + ax.get_ylabel() for ax in fig.axes]
+        if any(len(label) > 20 for label in labels):
+            raise AssertionError("Overlapping labels in relplot with seaborn 0.12")
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    main()
+
+exit(0)
+```
+This script will reproduce the issue, create a plot, and then check if any of the axis labels are longer than 20 characters (adjust this value based on your expected label length). If the issue is present, it will raise an `AssertionError` with a stack trace. If the issue is fixed, the script will exit with code 0.
+
+Note: I added `matplotlib.use('agg')` to use a non-interactive backend and avoid displaying the plot.

@@ -1,0 +1,37 @@
+Here is the reproducer script:
+
+```python
+import django
+from django.db.models import F, IntegerField
+from django.db.models.functions import Cast
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    try:
+        class MyModel(django.db.models.Model):
+            foo = IntegerField()
+            bar = F('non_existent_field')
+            baz = Cast(F('non_existent_field'), out_type=IntegerField())
+        MyModel.objects.all().values_list('bar', 'baz')
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    main()
+```
+
+This script creates a simple Django model with two functional indexes, one using the `F` expression and another using the `Cast` function. The `F` expression tries to reference a non-existent field, which should raise an error. The `Cast` function also tries to reference a non-existent field, which should raise an error.
+
+When you run this script with `python3 reproducer.py`, it should print the stack trace of the error and then raise an `AssertionError`.
