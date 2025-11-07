@@ -7,7 +7,7 @@ def get_accuracy(dir_dict):
     all_preds = []
     all_confidences = []
 
-    combined_result_file = './combined_fl_results.json'
+    combined_result_file = './R10_combined_fl_results_llama3.json'
 
     task_list_file = './sampled_tasks.txt'
     with open(task_list_file, 'r') as f:
@@ -82,18 +82,18 @@ def get_dir_dict(nhot, answer, add):
 
     if nhot:
         dir_dict = {
-            'data': f'./data/llama3/{hot_dir}/{answer_dir}/{add_dir}',
-            'result': f'./results/llama3/{hot_dir}/{answer_dir}/{add_dir}',
-            'trained_model': f'./llama3/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
-            'graph': f'./results/llama3/graphs/{hot_dir}/{answer_dir}/{add_dir}'
+            'data': f'./data/llama3/R10/{hot_dir}/{answer_dir}/{add_dir}',
+            'result': f'./results/llama3/R10/{hot_dir}/{answer_dir}/{add_dir}',
+            'trained_model': f'./llama3/R10/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
+            'graph': f'./results/llama3/R10/graphs/{hot_dir}/{answer_dir}/{add_dir}'
         }
         
     else:
         dir_dict = {
-            'data': f'./data/llama3/{hot_dir}/{answer_dir}',
-            'result': f'./results/llama3/{hot_dir}/{answer_dir}',
-            'trained_model': f'./trained_model/llama3/{hot_dir}/{answer_dir}',
-            'graph': f'./results/llama3/graphs/{hot_dir}/{answer_dir}'
+            'data': f'./data/llama3/R10/{hot_dir}/{answer_dir}',
+            'result': f'./results/llama3/R10/{hot_dir}/{answer_dir}',
+            'trained_model': f'./trained_model/llama3/R10/{hot_dir}/{answer_dir}',
+            'graph': f'./results/llama3/R10/graphs/{hot_dir}/{answer_dir}'
         }
     return dir_dict
     
