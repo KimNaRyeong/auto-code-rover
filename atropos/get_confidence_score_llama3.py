@@ -43,6 +43,23 @@ def get_accuracy(dir_dict):
             confidence_score = 0
         all_preds.append(1 if confidence_score >= 0.5 else 0)
         all_confidences.append(confidence_score)
+    tp = 0
+    tn = 0
+    fp = 0
+    fn = 0
+    print(all_labels)
+    print(all_confidences)
+    for i in range(len(all_preds)):
+        if all_labels[i] == 1 and all_confidences[i] >=0.5:
+            tp += 1
+        elif all_labels[i] == 1 and all_confidences[i] < 0.5:
+            fn += 1
+        elif all_labels[i] == 0 and all_confidences[i] >= 0.5:
+            fp += 1
+        else:
+            tn += 1
+    print(tp, tn, fp, fn)
+
     
     accuracy = accuracy_score(all_labels, all_preds)
     roc_auc = roc_auc_score(all_labels, all_confidences)
@@ -58,11 +75,11 @@ def main(dir_dict):
 
     acc_new_line = f'Confidence-score accuracy: {accuracy:.4f}\n'
     auc_new_line = f'Confidence-score roc-auc: {roc_auc:.4f}\n'
-    with open(result_file, 'r') as rf:
-        results = rf.read()
-    print(result_file)
-    with open(result_file, 'w') as rf:
-        rf.write(acc_new_line + auc_new_line + results)
+    # with open(result_file, 'r') as rf:
+    #     results = rf.read()
+    # print(result_file)
+    # with open(result_file, 'w') as rf:
+    #     rf.write(acc_new_line + auc_new_line + results)
 
 def get_dir_dict(nhot, answer, add):
     if nhot:

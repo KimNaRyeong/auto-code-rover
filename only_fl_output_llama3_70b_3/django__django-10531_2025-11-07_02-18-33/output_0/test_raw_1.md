@@ -1,0 +1,67 @@
+Here is the revised `reproducer.py` file to reproduce the issue:
+```
+import os
+import sys
+from django.conf import settings
+from django.test import TestCase
+from django.db import models
+from django.contrib import admin
+from django.contrib.admin.models import LogEntry
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+settings.configure(
+    INSTALLED_APPS=[
+        'django.contrib.admin',
+        'django.contrib.contenttypes',
+        'django.contrib.auth',
+        'django.contrib.sessions',
+        'django.contrib.messages',
+        'django.contrib.staticfiles',
+    ],
+    DATABASES={
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:'
+        }
+    },
+)
+
+class MyModel(models.Model):
+    pub_date = models.DateTimeField("date published")
+
+admin.site.register(MyModel)
+
+class TestVerboseNames(TestCase):
+    def test_verbose_names(self):
+        my_obj = MyModel(pub_date="2022-01-01")
+        my_obj.save()
+
+        # Change the publication date
+        my_obj.pub_date = "2022-01-02"
+        my_obj.save()
+
+        log_entry = LogEntry.objects.latest('id')
+        self.assertIn("Changed date published", log_entry.change_message)
+
+if __name__ == "__main__":
+    try:
+        TestVerboseNames().test_verbose_names()
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+    else:
+        print("Issue is fixed!")
+        exit(0)
+```
+This script sets up the Django environment, defines a `MyModel` with a `pub_date` field, registers it in the admin site, and creates an instance of the model. It then changes the publication date and checks if the log entry message uses the verbose name "date published" instead of the field name "pub_date". If the assertion fails, it prints the stack trace using the provided function and exits with code 1. If the issue is fixed, it prints a success message and exits with code 0.

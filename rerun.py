@@ -15,8 +15,8 @@ def main(result_dir):
         sampled_tasks = f.read().splitlines()
     
     remain_tasks = list(set(sampled_tasks)- set(done_tasks))
-    remain_tasks_file = './atropos/remain_tasks.txt'
-    remain_tasks_file_in_swebench = './SWE-bench/remain_tasks.txt'
+    remain_tasks_file = './atropos/remain_tasks_serve2.txt'
+    remain_tasks_file_in_swebench = './SWE-bench/remain_tasks_serve2.txt'
     with open(remain_tasks_file, 'w') as f:
         f.write('\n'.join(remain_tasks))
 
