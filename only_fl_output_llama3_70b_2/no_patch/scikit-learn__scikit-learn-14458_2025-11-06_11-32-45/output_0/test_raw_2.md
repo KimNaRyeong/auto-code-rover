@@ -1,0 +1,37 @@
+I apologize for the mistake. Here is a new `reproducer.py` file that reproduces the issue:
+```
+import traceback
+import sys
+import numpy as np
+from sklearn.datasets import fetch_openml
+from sklearn.linear_model import Ridge
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    census = fetch_openml(data_id=534, as_frame=True)
+    X, y = census.data, census.target
+    numerical_cols = ['AGE', 'EDUCATION', 'EXPERIENCE']
+    
+    # Convert the dataframe to a numpy array with F-contiguous order
+    X_array = np.array(X[numerical_cols], order='F')
+    
+    model = Ridge(solver='sag').fit(X_array, y)
+
+except ValueError as e:
+    print_stacktrace(e)
+    assert False, "Issue is present"
+else:
+    sys.exit(0)
+```
+This script should reproduce the issue and raise an `AssertionError` with a stack trace when the issue is present. If the issue is fixed, it will exit with code 0.
+
+Please make sure that scikit-learn is installed correctly before running this script.

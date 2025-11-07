@@ -1,0 +1,70 @@
+Here is the revised standalone Python file `reproducer.py` to reproduce the issue:
+```python
+import os
+from sphinx.application import Sphinx
+from sphinx.builders.latex import LaTeXBuilder
+from sphinx.writers.latex import LaTeXWriter
+from docutils.parsers.rst import Directive, directives
+from docutils.nodes import literal_block
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_latex_output():
+    srcdir = os.path.dirname(__file__)
+    outdir = os.path.join(srcdir, 'outdir')
+    confdir = os.path.join(srcdir, 'conf')
+    conffile = os.path.join(confdir, 'conf.py')
+
+    if not os.path.exists(confdir):
+        os.makedirs(confdir)
+
+    with open(conffile, 'w') as f:
+        f.write("extensions = ['sphinx.ext.intersphinx']\n")
+
+    rst_content = """
+.. role:: python(code)
+   :language: python
+   :class: highlight
+
+Inline :python:`def foo(1 + 2 + None + "abc"): pass` code block
+
+.. code-block:: python
+
+   def foo(1 + 2 + None + "abc"): pass
+"""
+
+    with open(os.path.join(srcdir, 'index.rst'), 'w') as f:
+        f.write(rst_content)
+
+    app = Sphinx(srcdir, confdir, outdir, outdir, 'latex', 'ja')
+    app.builder = LaTeXBuilder(app)
+    app.writer = LaTeXWriter(app)
+
+    app.build()
+
+    latex_file = os.path.join(outdir, 'latex', 'index.tex')
+    with open(latex_file, 'r') as f:
+        latex_content = f.read()
+
+    if latex_content.find(r'\sphinxcode{ <--- this produces a space in output') != -1 or \
+       latex_content.find(r' <-- here also }') != -1:
+        raise AssertionError("Whitespace is added at start and end of inline code in LaTeX output")
+
+if __name__ == '__main__':
+    try:
+        test_latex_output()
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+```
+This script creates a minimal Sphinx project with a `conf.py` file, builds it with the LaTeX builder, and checks if the generated LaTeX code contains whitespace at start and end of inline code. If so, it raises an `AssertionError` with a stack trace.

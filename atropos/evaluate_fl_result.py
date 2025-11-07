@@ -428,10 +428,10 @@ def vote_and_ranks_final_answers(r):
 # --- example usage ---
 if __name__ == "__main__":
     # save_bug_locations()
-    # for i in range(6, 10):
-    #     filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_{i}")
-    #     with open(f'./fl_results/filtered_fl_result_llama3_{i}.json', 'w') as f:
-    #         json.dump(filtered_fl_dict, f, indent=4)
+    for i in range(10, 11):
+        filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_{i}")
+        with open(f'./fl_results/filtered_fl_result_llama3_{i}.json', 'w') as f:
+            json.dump(filtered_fl_dict, f, indent=4)
     # # print(filtered_fl_dict1)
     # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
     # # print(filtered_fl_dict2)
@@ -498,8 +498,8 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers(9)
-    with open('./R9_combined_fl_results_llama3.json', 'w') as f:
+    combined_dict = vote_and_ranks_final_answers(10)
+    with open('./R10_combined_fl_results_llama3.json', 'w') as f:
         json.dump(combined_dict, f, indent=4)
     
 

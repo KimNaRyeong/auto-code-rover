@@ -1,0 +1,36 @@
+The issue is not reproduced because the script does not actually attempt to decode a dataset with `scale_factor` as a length-1 list. The error message you provided suggests that there are some issues with importing xarray and numpy, which could be causing the problem.
+
+Here's an updated version of the reproducer script:
+
+```python
+import xarray as xr
+import numpy as np
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        ds = xr.DataArray([0, 1, 2], name='foo',
+                          attrs={'scale_factor': [0.01],
+                                 'add_offset': [1.0]}).to_dataset()
+        ds['var'] = np.array([1, 2, 3])
+        xr.decode_cf(ds)
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue reproduced")
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script creates a DataArray with `scale_factor` and `add_offset` encoded as length-1 lists, then attempts to decode it using `xr.decode_cf`. If the decoding fails, it prints the stack trace of the error and raises an `AssertionError`, indicating that the issue has been reproduced.
