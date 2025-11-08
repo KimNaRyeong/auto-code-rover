@@ -1,0 +1,31 @@
+Here is the reproducer script:
+
+```python
+import os
+import django
+from django.db import models
+
+os.environ['DJANGO_SETTINGS_MODULE'] = 'test_project.settings'
+
+django.setup()
+
+class Article(models.Model):
+    slug = models.CharField(max_length=255)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["slug"], name="%(app_label)s_%(class)s_slug_unq")
+        ]
+
+def main():
+    try:
+        articles = Article.objects.in_bulk(field_name="slug")
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    main()
+```
+
+This script sets up a Django project, defines the `Article` model with a unique constraint on the `slug` field, and then attempts to use the `in_bulk()` method with the `field_name` parameter set to `"slug"`. If the issue is present, it will print the stack trace and raise an `AssertionError`.

@@ -1,0 +1,48 @@
+import os
+from django.db import models
+from django.core.exceptions import ImproperlyConfigured
+from django.test import TestCase
+from django.core.exceptions import AssertionError
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+class PredictionData(models.Model):
+    data = models.JSONField()
+
+def main():
+    try:
+        from django.db.models import Q
+    except ImportError as e:
+        print_stacktrace(e)
+        raise AssertionError("Django not found")
+
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'reproducer.settings')
+    try:
+        from django.conf import settings
+    except ImproperlyConfigured as e:
+        print_stacktrace(e)
+        raise AssertionError("Django setup failed")
+
+    PredictionData.objects.create(data={'value': True})
+    result = PredictionData.objects.values_list('data', 'data__value')
+    if any(x[1] == 1 for x in result):
+        raise AssertionError("Expected boolean, got integer")
+    else:
+        print("Issue not present")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)

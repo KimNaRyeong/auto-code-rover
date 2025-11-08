@@ -1,0 +1,32 @@
+Here is the reproducer script:
+
+```python
+import os
+from pathlib import Path
+from django.core.management.commands.loaddata import Command as LoadDataCommand
+from django.core.management import execute_from_command_line
+from django.test.utils import CaptureHandler
+from django.conf import settings
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+settings.FIXTURE_DIRS = [Path('path1'), Path('path2'), Path('path3')]
+
+try:
+    execute_from_command_line(['manage.py', 'loaddata', 'fixture.json'])
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+```
+
+This script sets the `FIXTURE_DIRS` setting to a list of `Path` instances, then attempts to run the `loaddata` command using Django's management command. If an `AssertionError` is raised during this process, it prints the stack trace and exits with code 1.

@@ -1,0 +1,35 @@
+Here is the `reproducer.py` file:
+```
+import sympy as sp
+from sympy.geometry.util import idiff
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+x, y = sp.symbols('x y')
+f = sp.Function('f')
+
+try:
+    idiff(sp.Eq(y*sp.exp(y), x*sp.exp(x)), y, x)
+except IndexError as e:
+    print_stacktrace(e)
+    assert False, "idiff does not support Eq"
+
+try:
+    idiff(f(x)*sp.exp(f(x)) - x*sp.exp(x), f(x), x)
+except ValueError as e:
+    print_stacktrace(e)
+    assert False, "idiff does not support f(x) instead of y"
+
+print("All tests passed")
+```
+This script will raise an `AssertionError` with a message indicating which test failed, along with the stack trace of the exception. If all tests pass, it will print "All tests passed" and exit with code 0.

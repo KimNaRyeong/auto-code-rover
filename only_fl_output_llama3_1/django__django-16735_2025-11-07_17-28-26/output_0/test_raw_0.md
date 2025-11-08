@@ -1,0 +1,44 @@
+Here is the reproducer script:
+
+```python
+import os
+import django
+from django.conf.urls import i18n_patterns
+from django.contrib import admin
+from django.urls import include, path
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'project.settings'
+    django.setup()
+
+    urlpatterns = i18n_patterns(
+        path("admin/", admin.site.urls), prefix_default_language=False
+    )
+
+    from django.urls import get_resolver
+    resolver = get_resolver(None)
+    try:
+        resolver.resolve('admin/')
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    main()
+```
+
+This script sets up a Django project with the given URL configuration and then attempts to resolve the 'admin/' path. If an exception is raised, it prints the stack trace using the provided function and raises the exception again.
+
+To run this script, save it in a file named `reproducer.py` at the root of your project directory, and then execute it with `python3 reproducer.py`.
