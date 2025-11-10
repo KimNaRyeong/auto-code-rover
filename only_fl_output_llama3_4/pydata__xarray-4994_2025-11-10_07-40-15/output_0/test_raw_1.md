@@ -1,0 +1,35 @@
+Here is the reproducer script:
+
+```python
+import xarray as xr
+import pandas as pd
+import traceback
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    time_coord = pd.date_range("2020-01-01","2020-01-03", freq="12H")
+    da = xr.DataArray([1,2,3,4,5], dims=["time"], coords={'time': time_coord})
+
+    print(da.time.dt.date)  # This line should raise an AttributeError
+
+except Exception as e:
+    print_stacktrace(e)
+
+exit(0 if "AttributeError" in str(e) else 1)
+```
+
+This script will reproduce the issue by attempting to access the `date` attribute of the datetime accessor. If the issue is present, it will print a stack trace and exit with code 0. If the issue is fixed, it will simply exit with code 1.
+
+Please note that you may need to adjust the import statements based on your Python environment.

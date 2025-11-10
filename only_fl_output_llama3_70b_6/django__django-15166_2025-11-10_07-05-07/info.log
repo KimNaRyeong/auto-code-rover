@@ -1,0 +1,1044 @@
+2025-11-10 07:05:08.125 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-10 07:05:10.599 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-10 07:05:10.604 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 07:05:19.636 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 07:05:23.244 | DEBUG    | Extracted a valid json.
+2025-11-10 07:05:23.244 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_class(\"DatabaseCache\")", "search_method_in_class(\"get_query\", \"DatabaseCache\")", "search_code_in_file('Snowflake', 'backends/snowflake/base.py')", "search_code(\"query = \")"],
+    "bug_locations": []
+}
+2025-11-10 07:05:23.319 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-10 07:05:23.320 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-10 07:05:41.442 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 07:05:50.781 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 07:05:53.586 | DEBUG    | Extracted a valid json.
+2025-11-10 07:05:53.586 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"Snowflake\")", "search_class_in_file(\"DatabaseCache\", \"backends/db/base.py\")", "search_method(\"build_query\")"],
+    "bug_locations": []
+}
+2025-11-10 07:05:53.616 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-10 07:05:53.616 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-10 07:06:09.760 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 07:06:18.856 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 07:06:21.544 | DEBUG    | Extracted a valid json.
+2025-11-10 07:06:21.544 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"database backend\")", "search_class_in_file(\"DatabaseCache\", \"db/*\")", "search_method(\"construct_query\")"],
+    "bug_locations":[]
+}
+2025-11-10 07:06:21.626 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-10 07:06:21.627 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-10 07:06:43.603 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 07:06:52.599 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 07:06:57.463 | DEBUG    | Extracted a valid json.
+2025-11-10 07:06:57.463 | DEBUG    | Agent proxy return the following json: {
+"API_calls": [],
+"bug_locations":[{"file": "django/db/backends/utils.py", "class": "", "method": "", "intended_behavior": "Construct queries correctly for Snowflake databases."}, {"file": "django/core/cache/backends/db.py", "class": "DatabaseCache", "method": "", "intended_behavior": "Ensure that queries are constructed correctly for Snowflake databases when using the database cache backend."}]
+}
+2025-11-10 07:06:57.468 | DEBUG    | Bug location extracted successfully: [<file>django/db/backends/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import datetime
+2 import decimal
+3 import functools
+4 import logging
+5 import time
+6 from contextlib import contextmanager
+7 
+8 from django.db import NotSupportedError
+9 from django.utils.crypto import md5
+10 from django.utils.dateparse import parse_time
+11 
+12 logger = logging.getLogger('django.db.backends')
+13 
+14 
+15 class CursorWrapper:
+16     def __init__(self, cursor, db):
+17         self.cursor = cursor
+18         self.db = db
+19 
+20     WRAP_ERROR_ATTRS = frozenset(['fetchone', 'fetchmany', 'fetchall', 'nextset'])
+21 
+22     def __getattr__(self, attr):
+23         cursor_attr = getattr(self.cursor, attr)
+24         if attr in CursorWrapper.WRAP_ERROR_ATTRS:
+25             return self.db.wrap_database_errors(cursor_attr)
+26         else:
+27             return cursor_attr
+28 
+29     def __iter__(self):
+30         with self.db.wrap_database_errors:
+31             yield from self.cursor
+32 
+33     def __enter__(self):
+34         return self
+35 
+36     def __exit__(self, type, value, traceback):
+37         # Close instead of passing through to avoid backend-specific behavior
+38         # (#17671). Catch errors liberally because errors in cleanup code
+39         # aren't useful.
+40         try:
+41             self.close()
+42         except self.db.Database.Error:
+43             pass
+44 
+45     # The following methods cannot be implemented in __getattr__, because the
+46     # code must run when the method is invoked, not just when it is accessed.
+47 
+48     def callproc(self, procname, params=None, kparams=None):
+49         # Keyword parameters for callproc aren't supported in PEP 249, but the
+50         # database driver may support them (e.g. cx_Oracle).
+51         if kparams is not None and not self.db.features.supports_callproc_kwargs:
+52             raise NotSupportedError(
+53                 'Keyword parameters for callproc are not supported on this '
+54                 'database backend.'
+55             )
+56         self.db.validate_no_broken_transaction()
+57         with self.db.wrap_database_errors:
+58             if params is None and kparams is None:
+59                 return self.cursor.callproc(procname)
+60             elif kparams is None:
+61                 return self.cursor.callproc(procname, params)
+62             else:
+63                 params = params or ()
+64                 return self.cursor.callproc(procname, params, kparams)
+65 
+66     def execute(self, sql, params=None):
+67         return self._execute_with_wrappers(sql, params, many=False, executor=self._execute)
+68 
+69     def executemany(self, sql, param_list):
+70         return self._execute_with_wrappers(sql, param_list, many=True, executor=self._executemany)
+71 
+72     def _execute_with_wrappers(self, sql, params, many, executor):
+73         context = {'connection': self.db, 'cursor': self}
+74         for wrapper in reversed(self.db.execute_wrappers):
+75             executor = functools.partial(wrapper, executor)
+76         return executor(sql, params, many, context)
+77 
+78     def _execute(self, sql, params, *ignored_wrapper_args):
+79         self.db.validate_no_broken_transaction()
+80         with self.db.wrap_database_errors:
+81             if params is None:
+82                 # params default might be backend specific.
+83                 return self.cursor.execute(sql)
+84             else:
+85                 return self.cursor.execute(sql, params)
+86 
+87     def _executemany(self, sql, param_list, *ignored_wrapper_args):
+88         self.db.validate_no_broken_transaction()
+89         with self.db.wrap_database_errors:
+90             return self.cursor.executemany(sql, param_list)
+91 
+92 
+93 class CursorDebugWrapper(CursorWrapper):
+94 
+95     # XXX callproc isn't instrumented at this time.
+96 
+97     def execute(self, sql, params=None):
+98         with self.debug_sql(sql, params, use_last_executed_query=True):
+99             return super().execute(sql, params)
+100 
+101     def executemany(self, sql, param_list):
+102         with self.debug_sql(sql, param_list, many=True):
+103             return super().executemany(sql, param_list)
+104 
+105     @contextmanager
+106     def debug_sql(self, sql=None, params=None, use_last_executed_query=False, many=False):
+107         start = time.monotonic()
+108         try:
+109             yield
+110         finally:
+111             stop = time.monotonic()
+112             duration = stop - start
+113             if use_last_executed_query:
+114                 sql = self.db.ops.last_executed_query(self.cursor, sql, params)
+115             try:
+116                 times = len(params) if many else ''
+117             except TypeError:
+118                 # params could be an iterator.
+119                 times = '?'
+120             self.db.queries_log.append({
+121                 'sql': '%s times: %s' % (times, sql) if many else sql,
+122                 'time': '%.3f' % duration,
+123             })
+124             logger.debug(
+125                 '(%.3f) %s; args=%s; alias=%s',
+126                 duration,
+127                 sql,
+128                 params,
+129                 self.db.alias,
+130                 extra={'duration': duration, 'sql': sql, 'params': params, 'alias': self.db.alias},
+131             )
+132 
+133 
+134 def split_tzname_delta(tzname):
+135     """
+136     Split a time zone name into a 3-tuple of (name, sign, offset).
+137     """
+138     for sign in ['+', '-']:
+139         if sign in tzname:
+140             name, offset = tzname.rsplit(sign, 1)
+141             if offset and parse_time(offset):
+142                 return name, sign, offset
+143     return tzname, None, None
+144 
+145 
+146 ###############################################
+147 # Converters from database (string) to Python #
+148 ###############################################
+149 
+150 def typecast_date(s):
+151     return datetime.date(*map(int, s.split('-'))) if s else None  # return None if s is null
+152 
+153 
+154 def typecast_time(s):  # does NOT store time zone information
+155     if not s:
+156         return None
+157     hour, minutes, seconds = s.split(':')
+158     if '.' in seconds:  # check whether seconds have a fractional part
+159         seconds, microseconds = seconds.split('.')
+160     else:
+161         microseconds = '0'
+162     return datetime.time(int(hour), int(minutes), int(seconds), int((microseconds + '000000')[:6]))
+163 
+164 
+165 def typecast_timestamp(s):  # does NOT store time zone information
+166     # "2005-07-29 15:48:00.590358-05"
+167     # "2005-07-29 09:56:00-05"
+168     if not s:
+169         return None
+170     if ' ' not in s:
+171         return typecast_date(s)
+172     d, t = s.split()
+173     # Remove timezone information.
+174     if '-' in t:
+175         t, _ = t.split('-', 1)
+176     elif '+' in t:
+177         t, _ = t.split('+', 1)
+178     dates = d.split('-')
+179     times = t.split(':')
+180     seconds = times[2]
+181     if '.' in seconds:  # check whether seconds have a fractional part
+182         seconds, microseconds = seconds.split('.')
+183     else:
+184         microseconds = '0'
+185     return datetime.datetime(
+186         int(dates[0]), int(dates[1]), int(dates[2]),
+187         int(times[0]), int(times[1]), int(seconds),
+188         int((microseconds + '000000')[:6])
+189     )
+190 
+191 
+192 ###############################################
+193 # Converters from Python to database (string) #
+194 ###############################################
+195 
+196 def split_identifier(identifier):
+197     """
+198     Split an SQL identifier into a two element tuple of (namespace, name).
+199 
+200     The identifier could be a table, column, or sequence name might be prefixed
+201     by a namespace.
+202     """
+203     try:
+204         namespace, name = identifier.split('"."')
+205     except ValueError:
+206         namespace, name = '', identifier
+207     return namespace.strip('"'), name.strip('"')
+208 
+209 
+210 def truncate_name(identifier, length=None, hash_len=4):
+211     """
+212     Shorten an SQL identifier to a repeatable mangled version with the given
+213     length.
+214 
+215     If a quote stripped name contains a namespace, e.g. USERNAME"."TABLE,
+216     truncate the table portion only.
+217     """
+218     namespace, name = split_identifier(identifier)
+219 
+220     if length is None or len(name) <= length:
+221         return identifier
+222 
+223     digest = names_digest(name, length=hash_len)
+224     return '%s%s%s' % ('%s"."' % namespace if namespace else '', name[:length - hash_len], digest)
+225 
+226 
+227 def names_digest(*args, length):
+228     """
+229     Generate a 32-bit digest of a set of arguments that can be used to shorten
+230     identifying names.
+231     """
+232     h = md5(usedforsecurity=False)
+233     for arg in args:
+234         h.update(arg.encode())
+235     return h.hexdigest()[:length]
+236 
+237 
+238 def format_number(value, max_digits, decimal_places):
+239     """
+240     Format a number into a string with the requisite number of digits and
+241     decimal places.
+242     """
+243     if value is None:
+244         return None
+245     context = decimal.getcontext().copy()
+246     if max_digits is not None:
+247         context.prec = max_digits
+248     if decimal_places is not None:
+249         value = value.quantize(decimal.Decimal(1).scaleb(-decimal_places), context=context)
+250     else:
+251         context.traps[decimal.Rounded] = 1
+252         value = context.create_decimal(value)
+253     return "{:f}".format(value)
+254 
+255 
+256 def strip_quotes(table_name):
+257     """
+258     Strip quotes off of quoted table names to make them safe for use in index
+259     names, sequence names, etc. For example '"USER"."TABLE"' (an Oracle naming
+260     scheme) becomes 'USER"."TABLE'.
+261     """
+262     has_quotes = table_name.startswith('"') and table_name.endswith('"')
+263     return table_name[1:-1] if has_quotes else table_name
+
+</code><intended_behavior>Construct queries correctly for Snowflake databases.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {self.make_and_validate_key(key, version=version): key for key in keys}
+58 
+59         db = router.db_for_read(self.cache_model_class)
+60         connection = connections[db]
+61         quote_name = connection.ops.quote_name
+62         table = quote_name(self._table)
+63 
+64         with connection.cursor() as cursor:
+65             cursor.execute(
+66                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+67                     quote_name('cache_key'),
+68                     quote_name('value'),
+69                     quote_name('expires'),
+70                     table,
+71                     quote_name('cache_key'),
+72                     ', '.join(['%s'] * len(key_map)),
+73                 ),
+74                 list(key_map),
+75             )
+76             rows = cursor.fetchall()
+77 
+78         result = {}
+79         expired_keys = []
+80         expression = models.Expression(output_field=models.DateTimeField())
+81         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+82         for key, value, expires in rows:
+83             for converter in converters:
+84                 expires = converter(expires, expression, connection)
+85             if expires < timezone.now():
+86                 expired_keys.append(key)
+87             else:
+88                 value = connection.ops.process_clob(value)
+89                 value = pickle.loads(base64.b64decode(value.encode()))
+90                 result[key_map.get(key)] = value
+91         self._base_delete_many(expired_keys)
+92         return result
+93 
+94     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+95         key = self.make_and_validate_key(key, version=version)
+96         self._base_set('set', key, value, timeout)
+97 
+98     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+99         key = self.make_and_validate_key(key, version=version)
+100         return self._base_set('add', key, value, timeout)
+101 
+102     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_and_validate_key(key, version=version)
+104         return self._base_set('touch', key, None, timeout)
+105 
+106     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+107         timeout = self.get_backend_timeout(timeout)
+108         db = router.db_for_write(self.cache_model_class)
+109         connection = connections[db]
+110         quote_name = connection.ops.quote_name
+111         table = quote_name(self._table)
+112 
+113         with connection.cursor() as cursor:
+114             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+115             num = cursor.fetchone()[0]
+116             now = timezone.now()
+117             now = now.replace(microsecond=0)
+118             if timeout is None:
+119                 exp = datetime.max
+120             else:
+121                 tz = timezone.utc if settings.USE_TZ else None
+122                 exp = datetime.fromtimestamp(timeout, tz=tz)
+123             exp = exp.replace(microsecond=0)
+124             if num > self._max_entries:
+125                 self._cull(db, cursor, now, num)
+126             pickled = pickle.dumps(value, self.pickle_protocol)
+127             # The DB column is expecting a string, so make sure the value is a
+128             # string, not bytes. Refs #19274.
+129             b64encoded = base64.b64encode(pickled).decode('latin1')
+130             try:
+131                 # Note: typecasting for datetimes is needed by some 3rd party
+132                 # database backends. All core backends work without typecasting,
+133                 # so be careful about changes here - test suite will NOT pick
+134                 # regressions.
+135                 with transaction.atomic(using=db):
+136                     cursor.execute(
+137                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+138                             quote_name('cache_key'),
+139                             quote_name('expires'),
+140                             table,
+141                             quote_name('cache_key'),
+142                         ),
+143                         [key]
+144                     )
+145                     result = cursor.fetchone()
+146 
+147                     if result:
+148                         current_expires = result[1]
+149                         expression = models.Expression(output_field=models.DateTimeField())
+150                         for converter in (connection.ops.get_db_converters(expression) +
+151                                           expression.get_db_converters(connection)):
+152                             current_expires = converter(current_expires, expression, connection)
+153 
+154                     exp = connection.ops.adapt_datetimefield_value(exp)
+155                     if result and mode == 'touch':
+156                         cursor.execute(
+157                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+158                                 table,
+159                                 quote_name('expires'),
+160                                 quote_name('cache_key')
+161                             ),
+162                             [exp, key]
+163                         )
+164                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+165                         cursor.execute(
+166                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+167                                 table,
+168                                 quote_name('value'),
+169                                 quote_name('expires'),
+170                                 quote_name('cache_key'),
+171                             ),
+172                             [b64encoded, exp, key]
+173                         )
+174                     elif mode != 'touch':
+175                         cursor.execute(
+176                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+177                                 table,
+178                                 quote_name('cache_key'),
+179                                 quote_name('value'),
+180                                 quote_name('expires'),
+181                             ),
+182                             [key, b64encoded, exp]
+183                         )
+184                     else:
+185                         return False  # touch failed.
+186             except DatabaseError:
+187                 # To be threadsafe, updates/inserts are allowed to fail silently
+188                 return False
+189             else:
+190                 return True
+191 
+192     def delete(self, key, version=None):
+193         key = self.make_and_validate_key(key, version=version)
+194         return self._base_delete_many([key])
+195 
+196     def delete_many(self, keys, version=None):
+197         keys = [self.make_and_validate_key(key, version=version) for key in keys]
+198         self._base_delete_many(keys)
+199 
+200     def _base_delete_many(self, keys):
+201         if not keys:
+202             return False
+203 
+204         db = router.db_for_write(self.cache_model_class)
+205         connection = connections[db]
+206         quote_name = connection.ops.quote_name
+207         table = quote_name(self._table)
+208 
+209         with connection.cursor() as cursor:
+210             cursor.execute(
+211                 'DELETE FROM %s WHERE %s IN (%s)' % (
+212                     table,
+213                     quote_name('cache_key'),
+214                     ', '.join(['%s'] * len(keys)),
+215                 ),
+216                 keys,
+217             )
+218             return bool(cursor.rowcount)
+219 
+220     def has_key(self, key, version=None):
+221         key = self.make_and_validate_key(key, version=version)
+222 
+223         db = router.db_for_read(self.cache_model_class)
+224         connection = connections[db]
+225         quote_name = connection.ops.quote_name
+226 
+227         now = timezone.now().replace(microsecond=0, tzinfo=None)
+228 
+229         with connection.cursor() as cursor:
+230             cursor.execute(
+231                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+232                     quote_name('cache_key'),
+233                     quote_name(self._table),
+234                     quote_name('cache_key'),
+235                 ),
+236                 [key, connection.ops.adapt_datetimefield_value(now)]
+237             )
+238             return cursor.fetchone() is not None
+239 
+240     def _cull(self, db, cursor, now, num):
+241         if self._cull_frequency == 0:
+242             self.clear()
+243         else:
+244             connection = connections[db]
+245             table = connection.ops.quote_name(self._table)
+246             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+247                            [connection.ops.adapt_datetimefield_value(now)])
+248             deleted_count = cursor.rowcount
+249             remaining_num = num - deleted_count
+250             if remaining_num > self._max_entries:
+251                 cull_num = remaining_num // self._cull_frequency
+252                 cursor.execute(
+253                     connection.ops.cache_key_culling_sql() % table,
+254                     [cull_num])
+255                 last_cache_key = cursor.fetchone()
+256                 if last_cache_key:
+257                     cursor.execute(
+258                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+259                         [last_cache_key[0]],
+260                     )
+261 
+262     def clear(self):
+263         db = router.db_for_write(self.cache_model_class)
+264         connection = connections[db]
+265         table = connection.ops.quote_name(self._table)
+266         with connection.cursor() as cursor:
+267             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>Ensure that queries are constructed correctly for Snowflake databases when using the database cache backend.</intended_behavior>]
+2025-11-10 07:06:57.468 | INFO     | Search completed. Bug locations: [<file>django/db/backends/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import datetime
+2 import decimal
+3 import functools
+4 import logging
+5 import time
+6 from contextlib import contextmanager
+7 
+8 from django.db import NotSupportedError
+9 from django.utils.crypto import md5
+10 from django.utils.dateparse import parse_time
+11 
+12 logger = logging.getLogger('django.db.backends')
+13 
+14 
+15 class CursorWrapper:
+16     def __init__(self, cursor, db):
+17         self.cursor = cursor
+18         self.db = db
+19 
+20     WRAP_ERROR_ATTRS = frozenset(['fetchone', 'fetchmany', 'fetchall', 'nextset'])
+21 
+22     def __getattr__(self, attr):
+23         cursor_attr = getattr(self.cursor, attr)
+24         if attr in CursorWrapper.WRAP_ERROR_ATTRS:
+25             return self.db.wrap_database_errors(cursor_attr)
+26         else:
+27             return cursor_attr
+28 
+29     def __iter__(self):
+30         with self.db.wrap_database_errors:
+31             yield from self.cursor
+32 
+33     def __enter__(self):
+34         return self
+35 
+36     def __exit__(self, type, value, traceback):
+37         # Close instead of passing through to avoid backend-specific behavior
+38         # (#17671). Catch errors liberally because errors in cleanup code
+39         # aren't useful.
+40         try:
+41             self.close()
+42         except self.db.Database.Error:
+43             pass
+44 
+45     # The following methods cannot be implemented in __getattr__, because the
+46     # code must run when the method is invoked, not just when it is accessed.
+47 
+48     def callproc(self, procname, params=None, kparams=None):
+49         # Keyword parameters for callproc aren't supported in PEP 249, but the
+50         # database driver may support them (e.g. cx_Oracle).
+51         if kparams is not None and not self.db.features.supports_callproc_kwargs:
+52             raise NotSupportedError(
+53                 'Keyword parameters for callproc are not supported on this '
+54                 'database backend.'
+55             )
+56         self.db.validate_no_broken_transaction()
+57         with self.db.wrap_database_errors:
+58             if params is None and kparams is None:
+59                 return self.cursor.callproc(procname)
+60             elif kparams is None:
+61                 return self.cursor.callproc(procname, params)
+62             else:
+63                 params = params or ()
+64                 return self.cursor.callproc(procname, params, kparams)
+65 
+66     def execute(self, sql, params=None):
+67         return self._execute_with_wrappers(sql, params, many=False, executor=self._execute)
+68 
+69     def executemany(self, sql, param_list):
+70         return self._execute_with_wrappers(sql, param_list, many=True, executor=self._executemany)
+71 
+72     def _execute_with_wrappers(self, sql, params, many, executor):
+73         context = {'connection': self.db, 'cursor': self}
+74         for wrapper in reversed(self.db.execute_wrappers):
+75             executor = functools.partial(wrapper, executor)
+76         return executor(sql, params, many, context)
+77 
+78     def _execute(self, sql, params, *ignored_wrapper_args):
+79         self.db.validate_no_broken_transaction()
+80         with self.db.wrap_database_errors:
+81             if params is None:
+82                 # params default might be backend specific.
+83                 return self.cursor.execute(sql)
+84             else:
+85                 return self.cursor.execute(sql, params)
+86 
+87     def _executemany(self, sql, param_list, *ignored_wrapper_args):
+88         self.db.validate_no_broken_transaction()
+89         with self.db.wrap_database_errors:
+90             return self.cursor.executemany(sql, param_list)
+91 
+92 
+93 class CursorDebugWrapper(CursorWrapper):
+94 
+95     # XXX callproc isn't instrumented at this time.
+96 
+97     def execute(self, sql, params=None):
+98         with self.debug_sql(sql, params, use_last_executed_query=True):
+99             return super().execute(sql, params)
+100 
+101     def executemany(self, sql, param_list):
+102         with self.debug_sql(sql, param_list, many=True):
+103             return super().executemany(sql, param_list)
+104 
+105     @contextmanager
+106     def debug_sql(self, sql=None, params=None, use_last_executed_query=False, many=False):
+107         start = time.monotonic()
+108         try:
+109             yield
+110         finally:
+111             stop = time.monotonic()
+112             duration = stop - start
+113             if use_last_executed_query:
+114                 sql = self.db.ops.last_executed_query(self.cursor, sql, params)
+115             try:
+116                 times = len(params) if many else ''
+117             except TypeError:
+118                 # params could be an iterator.
+119                 times = '?'
+120             self.db.queries_log.append({
+121                 'sql': '%s times: %s' % (times, sql) if many else sql,
+122                 'time': '%.3f' % duration,
+123             })
+124             logger.debug(
+125                 '(%.3f) %s; args=%s; alias=%s',
+126                 duration,
+127                 sql,
+128                 params,
+129                 self.db.alias,
+130                 extra={'duration': duration, 'sql': sql, 'params': params, 'alias': self.db.alias},
+131             )
+132 
+133 
+134 def split_tzname_delta(tzname):
+135     """
+136     Split a time zone name into a 3-tuple of (name, sign, offset).
+137     """
+138     for sign in ['+', '-']:
+139         if sign in tzname:
+140             name, offset = tzname.rsplit(sign, 1)
+141             if offset and parse_time(offset):
+142                 return name, sign, offset
+143     return tzname, None, None
+144 
+145 
+146 ###############################################
+147 # Converters from database (string) to Python #
+148 ###############################################
+149 
+150 def typecast_date(s):
+151     return datetime.date(*map(int, s.split('-'))) if s else None  # return None if s is null
+152 
+153 
+154 def typecast_time(s):  # does NOT store time zone information
+155     if not s:
+156         return None
+157     hour, minutes, seconds = s.split(':')
+158     if '.' in seconds:  # check whether seconds have a fractional part
+159         seconds, microseconds = seconds.split('.')
+160     else:
+161         microseconds = '0'
+162     return datetime.time(int(hour), int(minutes), int(seconds), int((microseconds + '000000')[:6]))
+163 
+164 
+165 def typecast_timestamp(s):  # does NOT store time zone information
+166     # "2005-07-29 15:48:00.590358-05"
+167     # "2005-07-29 09:56:00-05"
+168     if not s:
+169         return None
+170     if ' ' not in s:
+171         return typecast_date(s)
+172     d, t = s.split()
+173     # Remove timezone information.
+174     if '-' in t:
+175         t, _ = t.split('-', 1)
+176     elif '+' in t:
+177         t, _ = t.split('+', 1)
+178     dates = d.split('-')
+179     times = t.split(':')
+180     seconds = times[2]
+181     if '.' in seconds:  # check whether seconds have a fractional part
+182         seconds, microseconds = seconds.split('.')
+183     else:
+184         microseconds = '0'
+185     return datetime.datetime(
+186         int(dates[0]), int(dates[1]), int(dates[2]),
+187         int(times[0]), int(times[1]), int(seconds),
+188         int((microseconds + '000000')[:6])
+189     )
+190 
+191 
+192 ###############################################
+193 # Converters from Python to database (string) #
+194 ###############################################
+195 
+196 def split_identifier(identifier):
+197     """
+198     Split an SQL identifier into a two element tuple of (namespace, name).
+199 
+200     The identifier could be a table, column, or sequence name might be prefixed
+201     by a namespace.
+202     """
+203     try:
+204         namespace, name = identifier.split('"."')
+205     except ValueError:
+206         namespace, name = '', identifier
+207     return namespace.strip('"'), name.strip('"')
+208 
+209 
+210 def truncate_name(identifier, length=None, hash_len=4):
+211     """
+212     Shorten an SQL identifier to a repeatable mangled version with the given
+213     length.
+214 
+215     If a quote stripped name contains a namespace, e.g. USERNAME"."TABLE,
+216     truncate the table portion only.
+217     """
+218     namespace, name = split_identifier(identifier)
+219 
+220     if length is None or len(name) <= length:
+221         return identifier
+222 
+223     digest = names_digest(name, length=hash_len)
+224     return '%s%s%s' % ('%s"."' % namespace if namespace else '', name[:length - hash_len], digest)
+225 
+226 
+227 def names_digest(*args, length):
+228     """
+229     Generate a 32-bit digest of a set of arguments that can be used to shorten
+230     identifying names.
+231     """
+232     h = md5(usedforsecurity=False)
+233     for arg in args:
+234         h.update(arg.encode())
+235     return h.hexdigest()[:length]
+236 
+237 
+238 def format_number(value, max_digits, decimal_places):
+239     """
+240     Format a number into a string with the requisite number of digits and
+241     decimal places.
+242     """
+243     if value is None:
+244         return None
+245     context = decimal.getcontext().copy()
+246     if max_digits is not None:
+247         context.prec = max_digits
+248     if decimal_places is not None:
+249         value = value.quantize(decimal.Decimal(1).scaleb(-decimal_places), context=context)
+250     else:
+251         context.traps[decimal.Rounded] = 1
+252         value = context.create_decimal(value)
+253     return "{:f}".format(value)
+254 
+255 
+256 def strip_quotes(table_name):
+257     """
+258     Strip quotes off of quoted table names to make them safe for use in index
+259     names, sequence names, etc. For example '"USER"."TABLE"' (an Oracle naming
+260     scheme) becomes 'USER"."TABLE'.
+261     """
+262     has_quotes = table_name.startswith('"') and table_name.endswith('"')
+263     return table_name[1:-1] if has_quotes else table_name
+
+</code><intended_behavior>Construct queries correctly for Snowflake databases.</intended_behavior>, <file>django/core/cache/backends/db.py</file>
+<class>DatabaseCache</class>
+<method>None</method>
+<code>
+40 class DatabaseCache(BaseDatabaseCache):
+41 
+42     # This class uses cursors provided by the database connection. This means
+43     # it reads expiration values as aware or naive datetimes, depending on the
+44     # value of USE_TZ and whether the database supports time zones. The ORM's
+45     # conversion and adaptation infrastructure is then used to avoid comparing
+46     # aware and naive datetimes accidentally.
+47 
+48     pickle_protocol = pickle.HIGHEST_PROTOCOL
+49 
+50     def get(self, key, default=None, version=None):
+51         return self.get_many([key], version).get(key, default)
+52 
+53     def get_many(self, keys, version=None):
+54         if not keys:
+55             return {}
+56 
+57         key_map = {self.make_and_validate_key(key, version=version): key for key in keys}
+58 
+59         db = router.db_for_read(self.cache_model_class)
+60         connection = connections[db]
+61         quote_name = connection.ops.quote_name
+62         table = quote_name(self._table)
+63 
+64         with connection.cursor() as cursor:
+65             cursor.execute(
+66                 'SELECT %s, %s, %s FROM %s WHERE %s IN (%s)' % (
+67                     quote_name('cache_key'),
+68                     quote_name('value'),
+69                     quote_name('expires'),
+70                     table,
+71                     quote_name('cache_key'),
+72                     ', '.join(['%s'] * len(key_map)),
+73                 ),
+74                 list(key_map),
+75             )
+76             rows = cursor.fetchall()
+77 
+78         result = {}
+79         expired_keys = []
+80         expression = models.Expression(output_field=models.DateTimeField())
+81         converters = (connection.ops.get_db_converters(expression) + expression.get_db_converters(connection))
+82         for key, value, expires in rows:
+83             for converter in converters:
+84                 expires = converter(expires, expression, connection)
+85             if expires < timezone.now():
+86                 expired_keys.append(key)
+87             else:
+88                 value = connection.ops.process_clob(value)
+89                 value = pickle.loads(base64.b64decode(value.encode()))
+90                 result[key_map.get(key)] = value
+91         self._base_delete_many(expired_keys)
+92         return result
+93 
+94     def set(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+95         key = self.make_and_validate_key(key, version=version)
+96         self._base_set('set', key, value, timeout)
+97 
+98     def add(self, key, value, timeout=DEFAULT_TIMEOUT, version=None):
+99         key = self.make_and_validate_key(key, version=version)
+100         return self._base_set('add', key, value, timeout)
+101 
+102     def touch(self, key, timeout=DEFAULT_TIMEOUT, version=None):
+103         key = self.make_and_validate_key(key, version=version)
+104         return self._base_set('touch', key, None, timeout)
+105 
+106     def _base_set(self, mode, key, value, timeout=DEFAULT_TIMEOUT):
+107         timeout = self.get_backend_timeout(timeout)
+108         db = router.db_for_write(self.cache_model_class)
+109         connection = connections[db]
+110         quote_name = connection.ops.quote_name
+111         table = quote_name(self._table)
+112 
+113         with connection.cursor() as cursor:
+114             cursor.execute("SELECT COUNT(*) FROM %s" % table)
+115             num = cursor.fetchone()[0]
+116             now = timezone.now()
+117             now = now.replace(microsecond=0)
+118             if timeout is None:
+119                 exp = datetime.max
+120             else:
+121                 tz = timezone.utc if settings.USE_TZ else None
+122                 exp = datetime.fromtimestamp(timeout, tz=tz)
+123             exp = exp.replace(microsecond=0)
+124             if num > self._max_entries:
+125                 self._cull(db, cursor, now, num)
+126             pickled = pickle.dumps(value, self.pickle_protocol)
+127             # The DB column is expecting a string, so make sure the value is a
+128             # string, not bytes. Refs #19274.
+129             b64encoded = base64.b64encode(pickled).decode('latin1')
+130             try:
+131                 # Note: typecasting for datetimes is needed by some 3rd party
+132                 # database backends. All core backends work without typecasting,
+133                 # so be careful about changes here - test suite will NOT pick
+134                 # regressions.
+135                 with transaction.atomic(using=db):
+136                     cursor.execute(
+137                         'SELECT %s, %s FROM %s WHERE %s = %%s' % (
+138                             quote_name('cache_key'),
+139                             quote_name('expires'),
+140                             table,
+141                             quote_name('cache_key'),
+142                         ),
+143                         [key]
+144                     )
+145                     result = cursor.fetchone()
+146 
+147                     if result:
+148                         current_expires = result[1]
+149                         expression = models.Expression(output_field=models.DateTimeField())
+150                         for converter in (connection.ops.get_db_converters(expression) +
+151                                           expression.get_db_converters(connection)):
+152                             current_expires = converter(current_expires, expression, connection)
+153 
+154                     exp = connection.ops.adapt_datetimefield_value(exp)
+155                     if result and mode == 'touch':
+156                         cursor.execute(
+157                             'UPDATE %s SET %s = %%s WHERE %s = %%s' % (
+158                                 table,
+159                                 quote_name('expires'),
+160                                 quote_name('cache_key')
+161                             ),
+162                             [exp, key]
+163                         )
+164                     elif result and (mode == 'set' or (mode == 'add' and current_expires < now)):
+165                         cursor.execute(
+166                             'UPDATE %s SET %s = %%s, %s = %%s WHERE %s = %%s' % (
+167                                 table,
+168                                 quote_name('value'),
+169                                 quote_name('expires'),
+170                                 quote_name('cache_key'),
+171                             ),
+172                             [b64encoded, exp, key]
+173                         )
+174                     elif mode != 'touch':
+175                         cursor.execute(
+176                             'INSERT INTO %s (%s, %s, %s) VALUES (%%s, %%s, %%s)' % (
+177                                 table,
+178                                 quote_name('cache_key'),
+179                                 quote_name('value'),
+180                                 quote_name('expires'),
+181                             ),
+182                             [key, b64encoded, exp]
+183                         )
+184                     else:
+185                         return False  # touch failed.
+186             except DatabaseError:
+187                 # To be threadsafe, updates/inserts are allowed to fail silently
+188                 return False
+189             else:
+190                 return True
+191 
+192     def delete(self, key, version=None):
+193         key = self.make_and_validate_key(key, version=version)
+194         return self._base_delete_many([key])
+195 
+196     def delete_many(self, keys, version=None):
+197         keys = [self.make_and_validate_key(key, version=version) for key in keys]
+198         self._base_delete_many(keys)
+199 
+200     def _base_delete_many(self, keys):
+201         if not keys:
+202             return False
+203 
+204         db = router.db_for_write(self.cache_model_class)
+205         connection = connections[db]
+206         quote_name = connection.ops.quote_name
+207         table = quote_name(self._table)
+208 
+209         with connection.cursor() as cursor:
+210             cursor.execute(
+211                 'DELETE FROM %s WHERE %s IN (%s)' % (
+212                     table,
+213                     quote_name('cache_key'),
+214                     ', '.join(['%s'] * len(keys)),
+215                 ),
+216                 keys,
+217             )
+218             return bool(cursor.rowcount)
+219 
+220     def has_key(self, key, version=None):
+221         key = self.make_and_validate_key(key, version=version)
+222 
+223         db = router.db_for_read(self.cache_model_class)
+224         connection = connections[db]
+225         quote_name = connection.ops.quote_name
+226 
+227         now = timezone.now().replace(microsecond=0, tzinfo=None)
+228 
+229         with connection.cursor() as cursor:
+230             cursor.execute(
+231                 'SELECT %s FROM %s WHERE %s = %%s and expires > %%s' % (
+232                     quote_name('cache_key'),
+233                     quote_name(self._table),
+234                     quote_name('cache_key'),
+235                 ),
+236                 [key, connection.ops.adapt_datetimefield_value(now)]
+237             )
+238             return cursor.fetchone() is not None
+239 
+240     def _cull(self, db, cursor, now, num):
+241         if self._cull_frequency == 0:
+242             self.clear()
+243         else:
+244             connection = connections[db]
+245             table = connection.ops.quote_name(self._table)
+246             cursor.execute("DELETE FROM %s WHERE expires < %%s" % table,
+247                            [connection.ops.adapt_datetimefield_value(now)])
+248             deleted_count = cursor.rowcount
+249             remaining_num = num - deleted_count
+250             if remaining_num > self._max_entries:
+251                 cull_num = remaining_num // self._cull_frequency
+252                 cursor.execute(
+253                     connection.ops.cache_key_culling_sql() % table,
+254                     [cull_num])
+255                 last_cache_key = cursor.fetchone()
+256                 if last_cache_key:
+257                     cursor.execute(
+258                         'DELETE FROM %s WHERE cache_key < %%s' % table,
+259                         [last_cache_key[0]],
+260                     )
+261 
+262     def clear(self):
+263         db = router.db_for_write(self.cache_model_class)
+264         connection = connections[db]
+265         table = connection.ops.quote_name(self._table)
+266         with connection.cursor() as cursor:
+267             cursor.execute('DELETE FROM %s' % table)
+
+</code><intended_behavior>Ensure that queries are constructed correctly for Snowflake databases when using the database cache backend.</intended_behavior>]
+2025-11-10 07:06:57.468 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-10 07:06:57.468 | INFO     | Search-only: skipping patch selection
+2025-11-10 07:06:57.608 | INFO     | Task django__django-15166 completed successfully.
+2025-11-10 07:06:57.609 | INFO     | No patch generated. You can try running ACR again.

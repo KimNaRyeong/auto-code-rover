@@ -1,0 +1,22 @@
+Here is the reproducer script:
+
+```python
+import django
+from django.db import transaction
+
+def my_signal_handler(sender, instance, **kwargs):
+    transaction.on_commit(lambda: None)  # This line should raise an error
+
+django.setup()
+post_save.connect(my_signal_handler)
+
+try:
+    transaction.on_commit(None)
+except TypeError as e:
+    print_stacktrace(e)
+    raise AssertionError("Issue reproduced")
+
+exit(0)  # Exit with code 0 if no issue found
+```
+
+To run this script, save it to a file named `reproducer.py` and execute it using the command `python3 reproducer.py`.

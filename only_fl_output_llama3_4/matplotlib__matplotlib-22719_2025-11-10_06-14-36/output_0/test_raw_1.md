@@ -1,0 +1,30 @@
+I apologize for the mistake earlier. Here is a new reproducer script that should reproduce the issue:
+
+```python
+import matplotlib.pyplot as plt
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    f, ax = plt.subplots()
+    ax.xaxis.update_units(["a", "b"])
+    ax.plot([], [], warn=False)  # This line should raise the deprecation warning
+    assert False, "Expected MatplotlibDeprecationWarning"
+except MatplotlibDeprecationWarning as e:
+    print_stacktrace(e)
+    sys.exit(1)
+```
+
+This script will reproduce the issue and print a stack trace when it happens.

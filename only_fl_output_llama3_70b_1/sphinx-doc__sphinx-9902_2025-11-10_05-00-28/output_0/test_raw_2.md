@@ -1,0 +1,60 @@
+I apologize for the previous mistake. Here is a new standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    # Create a temporary directory for the documentation
+    doc_dir = 'doc'
+    os.makedirs(doc_dir, exist_ok=True)
+
+    # Create a module with a class
+    module1_path = os.path.join(doc_dir, 'my_library', 'module1.py')
+    os.makedirs(os.path.dirname(module1_path), exist_ok=True)
+    with open(module1_path, 'w') as f:
+        f.write('from .module2 import Unit\n')
+        f.write('mol = Unit("mol")\n')
+
+    module2_path = os.path.join(doc_dir, 'my_library', 'module2.py')
+    with open(module2_path, 'w') as f:
+        f.write('class Unit:\n')
+        f.write('    pass\n')
+
+    # Create a documentation file for module1
+    doc_path = os.path.join(doc_dir, 'my_library', 'module1.rst')
+    with open(doc_path, 'w') as f:
+        f.write('.. py:data:: mol\n')
+        f.write('    :type: Unit\n')
+        f.write('    :value: \'mol\'\n')
+
+    # Run Sphinx
+    os.system(f'sphinx-build -b html {doc_dir} {os.path.join(doc_dir, "_build")}')
+
+    # Check if the link is not clickable
+    with open(os.path.join(doc_dir, '_build', 'html', 'my_library.module1.html'), 'r') as f:
+        html = f.read()
+        if '<a href' not in html:
+            raise AssertionError("The link is not clickable")
+
+if __name__ == '__main__':
+    try:
+        reproduce_issue()
+    except Exception as e:
+        print_stacktrace(e)
+        sys.exit(1)
+```
+This script creates a temporary directory for the documentation, creates two Python modules with a class, runs Sphinx to build the documentation, and checks if the link is not clickable. If the issue is present, it raises an `AssertionError` and prints a stack trace of the issue.
+
+Please note that you need to have Sphinx installed in your environment to run this script. Also, make sure that the `sphinx-build` command is available in your system's PATH.
