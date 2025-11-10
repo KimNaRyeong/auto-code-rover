@@ -1,0 +1,67 @@
+Here is the `reproducer.py` file to reproduce the issue:
+```
+import os
+import sys
+
+from django.db import models
+from django.apps.config import AppConfig
+from django.core.management import call_command
+
+class MyAppConfig(AppConfig):
+    name = 'myapp'
+    verbose_name = 'My App'
+
+class Vulnerability(models.Model):
+    cve_id = models.CharField(max_length=15, primary_key=True)
+    app = models.ManyToManyField('AppVersion')
+
+class AppVersion(models.Model):
+    pass
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    os.environ['DJANGO_SETTINGS_MODULE'] = 'reproducer.settings'
+    import reproducer.settings
+
+    call_command('makemigrations', verbosity=0, interactive=False)
+    call_command('migrate', verbosity=0, interactive=False)
+
+    # Change the max_length of cve_id
+    Vulnerability.cve_id.field.max_length = 100
+
+    call_command('makemigrations', verbosity=0, interactive=False)
+    call_command('migrate', verbosity=0, interactive=False)
+
+    from django.db import connection
+    cursor = connection.cursor()
+    cursor.execute("SELECT character_maximum_length FROM information_schema.columns WHERE table_name='vulnerability_app' AND column_name='vulnerability_id';")
+    result = cursor.fetchone()
+
+    if result[0] != 100:
+        raise AssertionError("Migration didn't detect precision changes in fields that ManyToMany points to.")
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+sys.exit(0)
+```
+This script creates a Django app with two models, `Vulnerability` and `AppVersion`, and a ManyToMany field between them. It then runs the migrations to create the tables, changes the max_length of the `cve_id` field, and runs the migrations again.
+
+Finally, it checks if the length of the `vulnerability_id` column in the `vulnerability_app` table has been updated correctly. If not, it raises an `AssertionError` with a stack trace.
+
+You can run this script by executing `python3 reproducer.py` in the root directory of your project.

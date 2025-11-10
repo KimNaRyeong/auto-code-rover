@@ -1,0 +1,23 @@
+Here is the reproducer script:
+
+```python
+from astroid import AbstractClassDefinitionError, ClassDef
+import pytest
+import astroid
+
+def test_reproducer():
+    try:
+        class YamlFile(pytest.File):
+            def collect(self):  # The only method in this class
+                pass
+    except (AbstractClassDefinitionError, Exception) as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue should not be present")
+
+if __name__ == "__main__":
+    test_reproducer()
+```
+
+This script defines a `YamlFile` class that is identical to the one in your original code. It then tries to define this class, which should trigger the issue if it's present.
+
+If the issue is present, the script will print the stack trace using the provided function and raise an `AssertionError`. If the issue is fixed, the script will simply exit with code 0.

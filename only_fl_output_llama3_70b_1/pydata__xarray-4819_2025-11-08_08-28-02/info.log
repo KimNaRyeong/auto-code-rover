@@ -1,0 +1,3039 @@
+2025-11-08 08:28:02.621 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-08 08:29:02.939 | INFO     | registered non reproducing test 0
+2025-11-08 08:30:19.506 | INFO     | registered non reproducing test 1
+2025-11-08 08:31:37.661 | INFO     | registered non reproducing test 2
+2025-11-08 08:31:37.661 | WARNING  | Failed to write a reproducer test; skipping reproducer tracing
+2025-11-08 08:31:37.668 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 08:32:22.533 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 08:32:35.149 | DEBUG    | Extracted a valid json.
+2025-11-08 08:32:35.150 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_method(\"drop_sel\")", "search_class(\"Dataset\")", "search_code_in_file(\"xr.Dataset\", \"xarray/dataset.py\")", "search_method_in_class(\"isel\", \"Dataset\")"],
+    "bug_locations": []
+}
+2025-11-08 08:32:35.266 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-08 08:32:35.267 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-08 08:33:26.267 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 08:33:44.484 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 08:33:51.644 | DEBUG    | Extracted a valid json.
+2025-11-08 08:33:51.644 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"filename encoding\")", "search_code(\"internationalization\")"],
+    "bug_locations": []
+}
+2025-11-08 08:33:51.661 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-08 08:33:51.662 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-08 08:34:15.235 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 08:34:33.675 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 08:34:40.845 | DEBUG    | Extracted a valid json.
+2025-11-08 08:34:40.846 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"filename\")", "search_code(\"upload error handling\")"],
+    "bug_locations": []
+}
+2025-11-08 08:34:40.920 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-08 08:34:40.920 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-08 08:35:45.975 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 08:36:08.735 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 08:36:30.585 | DEBUG    | Extracted a valid json.
+2025-11-08 08:36:30.585 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "xarray/backends/netCDF4_.py", "class": "", "method": "", "intended_behavior": "Correctly encode and decode filenames with non-English characters when reading or writing data from/to netCDF files."}, {"file": "xarray/core/utils.py", "class": "", "method": "", "intended_behavior": "Provide utility methods for correctly handling and encoding/decoding filenames with non-English characters in a general context."}]
+}
+2025-11-08 08:36:30.591 | DEBUG    | Bug location extracted successfully: [<file>xarray/backends/netCDF4_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import functools
+2 import operator
+3 import os
+4 import pathlib
+5 from contextlib import suppress
+6 
+7 import numpy as np
+8 
+9 from .. import coding
+10 from ..coding.variables import pop_to
+11 from ..core import indexing
+12 from ..core.utils import FrozenDict, close_on_error, is_remote_uri
+13 from ..core.variable import Variable
+14 from .common import (
+15     BackendArray,
+16     BackendEntrypoint,
+17     WritableCFDataStore,
+18     find_root_and_group,
+19     robust_getitem,
+20 )
+21 from .file_manager import CachingFileManager, DummyFileManager
+22 from .locks import HDF5_LOCK, NETCDFC_LOCK, combine_locks, ensure_lock, get_write_lock
+23 from .netcdf3 import encode_nc3_attr_value, encode_nc3_variable
+24 from .store import open_backend_dataset_store
+25 
+26 # This lookup table maps from dtype.byteorder to a readable endian
+27 # string used by netCDF4.
+28 _endian_lookup = {"=": "native", ">": "big", "<": "little", "|": "native"}
+29 
+30 
+31 NETCDF4_PYTHON_LOCK = combine_locks([NETCDFC_LOCK, HDF5_LOCK])
+32 
+33 
+34 class BaseNetCDF4Array(BackendArray):
+35     __slots__ = ("datastore", "dtype", "shape", "variable_name")
+36 
+37     def __init__(self, variable_name, datastore):
+38         self.datastore = datastore
+39         self.variable_name = variable_name
+40 
+41         array = self.get_array()
+42         self.shape = array.shape
+43 
+44         dtype = array.dtype
+45         if dtype is str:
+46             # use object dtype because that's the only way in numpy to
+47             # represent variable length strings; it also prevents automatic
+48             # string concatenation via conventions.decode_cf_variable
+49             dtype = np.dtype("O")
+50         self.dtype = dtype
+51 
+52     def __setitem__(self, key, value):
+53         with self.datastore.lock:
+54             data = self.get_array(needs_lock=False)
+55             data[key] = value
+56             if self.datastore.autoclose:
+57                 self.datastore.close(needs_lock=False)
+58 
+59     def get_array(self, needs_lock=True):
+60         raise NotImplementedError("Virtual Method")
+61 
+62 
+63 class NetCDF4ArrayWrapper(BaseNetCDF4Array):
+64     __slots__ = ()
+65 
+66     def get_array(self, needs_lock=True):
+67         ds = self.datastore._acquire(needs_lock)
+68         variable = ds.variables[self.variable_name]
+69         variable.set_auto_maskandscale(False)
+70         # only added in netCDF4-python v1.2.8
+71         with suppress(AttributeError):
+72             variable.set_auto_chartostring(False)
+73         return variable
+74 
+75     def __getitem__(self, key):
+76         return indexing.explicit_indexing_adapter(
+77             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+78         )
+79 
+80     def _getitem(self, key):
+81         if self.datastore.is_remote:  # pragma: no cover
+82             getitem = functools.partial(robust_getitem, catch=RuntimeError)
+83         else:
+84             getitem = operator.getitem
+85 
+86         try:
+87             with self.datastore.lock:
+88                 original_array = self.get_array(needs_lock=False)
+89                 array = getitem(original_array, key)
+90         except IndexError:
+91             # Catch IndexError in netCDF4 and return a more informative
+92             # error message.  This is most often called when an unsorted
+93             # indexer is used before the data is loaded from disk.
+94             msg = (
+95                 "The indexing operation you are attempting to perform "
+96                 "is not valid on netCDF4.Variable object. Try loading "
+97                 "your data into memory first by calling .load()."
+98             )
+99             raise IndexError(msg)
+100         return array
+101 
+102 
+103 def _encode_nc4_variable(var):
+104     for coder in [
+105         coding.strings.EncodedStringCoder(allows_unicode=True),
+106         coding.strings.CharacterArrayCoder(),
+107     ]:
+108         var = coder.encode(var)
+109     return var
+110 
+111 
+112 def _check_encoding_dtype_is_vlen_string(dtype):
+113     if dtype is not str:
+114         raise AssertionError(  # pragma: no cover
+115             "unexpected dtype encoding %r. This shouldn't happen: please "
+116             "file a bug report at github.com/pydata/xarray" % dtype
+117         )
+118 
+119 
+120 def _get_datatype(var, nc_format="NETCDF4", raise_on_invalid_encoding=False):
+121     if nc_format == "NETCDF4":
+122         datatype = _nc4_dtype(var)
+123     else:
+124         if "dtype" in var.encoding:
+125             encoded_dtype = var.encoding["dtype"]
+126             _check_encoding_dtype_is_vlen_string(encoded_dtype)
+127             if raise_on_invalid_encoding:
+128                 raise ValueError(
+129                     "encoding dtype=str for vlen strings is only supported "
+130                     "with format='NETCDF4'."
+131                 )
+132         datatype = var.dtype
+133     return datatype
+134 
+135 
+136 def _nc4_dtype(var):
+137     if "dtype" in var.encoding:
+138         dtype = var.encoding.pop("dtype")
+139         _check_encoding_dtype_is_vlen_string(dtype)
+140     elif coding.strings.is_unicode_dtype(var.dtype):
+141         dtype = str
+142     elif var.dtype.kind in ["i", "u", "f", "c", "S"]:
+143         dtype = var.dtype
+144     else:
+145         raise ValueError(f"unsupported dtype for netCDF4 variable: {var.dtype}")
+146     return dtype
+147 
+148 
+149 def _netcdf4_create_group(dataset, name):
+150     return dataset.createGroup(name)
+151 
+152 
+153 def _nc4_require_group(ds, group, mode, create_group=_netcdf4_create_group):
+154     if group in {None, "", "/"}:
+155         # use the root group
+156         return ds
+157     else:
+158         # make sure it's a string
+159         if not isinstance(group, str):
+160             raise ValueError("group must be a string or None")
+161         # support path-like syntax
+162         path = group.strip("/").split("/")
+163         for key in path:
+164             try:
+165                 ds = ds.groups[key]
+166             except KeyError as e:
+167                 if mode != "r":
+168                     ds = create_group(ds, key)
+169                 else:
+170                     # wrap error to provide slightly more helpful message
+171                     raise OSError("group not found: %s" % key, e)
+172         return ds
+173 
+174 
+175 def _ensure_fill_value_valid(data, attributes):
+176     # work around for netCDF4/scipy issue where _FillValue has the wrong type:
+177     # https://github.com/Unidata/netcdf4-python/issues/271
+178     if data.dtype.kind == "S" and "_FillValue" in attributes:
+179         attributes["_FillValue"] = np.string_(attributes["_FillValue"])
+180 
+181 
+182 def _force_native_endianness(var):
+183     # possible values for byteorder are:
+184     #     =    native
+185     #     <    little-endian
+186     #     >    big-endian
+187     #     |    not applicable
+188     # Below we check if the data type is not native or NA
+189     if var.dtype.byteorder not in ["=", "|"]:
+190         # if endianness is specified explicitly, convert to the native type
+191         data = var.data.astype(var.dtype.newbyteorder("="))
+192         var = Variable(var.dims, data, var.attrs, var.encoding)
+193         # if endian exists, remove it from the encoding.
+194         var.encoding.pop("endian", None)
+195     # check to see if encoding has a value for endian its 'native'
+196     if not var.encoding.get("endian", "native") == "native":
+197         raise NotImplementedError(
+198             "Attempt to write non-native endian type, "
+199             "this is not supported by the netCDF4 "
+200             "python library."
+201         )
+202     return var
+203 
+204 
+205 def _extract_nc4_variable_encoding(
+206     variable,
+207     raise_on_invalid=False,
+208     lsd_okay=True,
+209     h5py_okay=False,
+210     backend="netCDF4",
+211     unlimited_dims=None,
+212 ):
+213     if unlimited_dims is None:
+214         unlimited_dims = ()
+215 
+216     encoding = variable.encoding.copy()
+217 
+218     safe_to_drop = {"source", "original_shape"}
+219     valid_encodings = {
+220         "zlib",
+221         "complevel",
+222         "fletcher32",
+223         "contiguous",
+224         "chunksizes",
+225         "shuffle",
+226         "_FillValue",
+227         "dtype",
+228     }
+229     if lsd_okay:
+230         valid_encodings.add("least_significant_digit")
+231     if h5py_okay:
+232         valid_encodings.add("compression")
+233         valid_encodings.add("compression_opts")
+234 
+235     if not raise_on_invalid and encoding.get("chunksizes") is not None:
+236         # It's possible to get encoded chunksizes larger than a dimension size
+237         # if the original file had an unlimited dimension. This is problematic
+238         # if the new file no longer has an unlimited dimension.
+239         chunksizes = encoding["chunksizes"]
+240         chunks_too_big = any(
+241             c > d and dim not in unlimited_dims
+242             for c, d, dim in zip(chunksizes, variable.shape, variable.dims)
+243         )
+244         has_original_shape = "original_shape" in encoding
+245         changed_shape = (
+246             has_original_shape and encoding.get("original_shape") != variable.shape
+247         )
+248         if chunks_too_big or changed_shape:
+249             del encoding["chunksizes"]
+250 
+251     var_has_unlim_dim = any(dim in unlimited_dims for dim in variable.dims)
+252     if not raise_on_invalid and var_has_unlim_dim and "contiguous" in encoding.keys():
+253         del encoding["contiguous"]
+254 
+255     for k in safe_to_drop:
+256         if k in encoding:
+257             del encoding[k]
+258 
+259     if raise_on_invalid:
+260         invalid = [k for k in encoding if k not in valid_encodings]
+261         if invalid:
+262             raise ValueError(
+263                 "unexpected encoding parameters for %r backend: %r. Valid "
+264                 "encodings are: %r" % (backend, invalid, valid_encodings)
+265             )
+266     else:
+267         for k in list(encoding):
+268             if k not in valid_encodings:
+269                 del encoding[k]
+270 
+271     return encoding
+272 
+273 
+274 def _is_list_of_strings(value):
+275     if np.asarray(value).dtype.kind in ["U", "S"] and np.asarray(value).size > 1:
+276         return True
+277     else:
+278         return False
+279 
+280 
+281 class NetCDF4DataStore(WritableCFDataStore):
+282     """Store for reading and writing data via the Python-NetCDF4 library.
+283 
+284     This store supports NetCDF3, NetCDF4 and OpenDAP datasets.
+285     """
+286 
+287     __slots__ = (
+288         "autoclose",
+289         "format",
+290         "is_remote",
+291         "lock",
+292         "_filename",
+293         "_group",
+294         "_manager",
+295         "_mode",
+296     )
+297 
+298     def __init__(
+299         self, manager, group=None, mode=None, lock=NETCDF4_PYTHON_LOCK, autoclose=False
+300     ):
+301         import netCDF4
+302 
+303         if isinstance(manager, netCDF4.Dataset):
+304             if group is None:
+305                 root, group = find_root_and_group(manager)
+306             else:
+307                 if not type(manager) is netCDF4.Dataset:
+308                     raise ValueError(
+309                         "must supply a root netCDF4.Dataset if the group "
+310                         "argument is provided"
+311                     )
+312                 root = manager
+313             manager = DummyFileManager(root)
+314 
+315         self._manager = manager
+316         self._group = group
+317         self._mode = mode
+318         self.format = self.ds.data_model
+319         self._filename = self.ds.filepath()
+320         self.is_remote = is_remote_uri(self._filename)
+321         self.lock = ensure_lock(lock)
+322         self.autoclose = autoclose
+323 
+324     @classmethod
+325     def open(
+326         cls,
+327         filename,
+328         mode="r",
+329         format="NETCDF4",
+330         group=None,
+331         clobber=True,
+332         diskless=False,
+333         persist=False,
+334         lock=None,
+335         lock_maker=None,
+336         autoclose=False,
+337     ):
+338         import netCDF4
+339 
+340         if isinstance(filename, pathlib.Path):
+341             filename = os.fspath(filename)
+342 
+343         if not isinstance(filename, str):
+344             raise ValueError(
+345                 "can only read bytes or file-like objects "
+346                 "with engine='scipy' or 'h5netcdf'"
+347             )
+348 
+349         if format is None:
+350             format = "NETCDF4"
+351 
+352         if lock is None:
+353             if mode == "r":
+354                 if is_remote_uri(filename):
+355                     lock = NETCDFC_LOCK
+356                 else:
+357                     lock = NETCDF4_PYTHON_LOCK
+358             else:
+359                 if format is None or format.startswith("NETCDF4"):
+360                     base_lock = NETCDF4_PYTHON_LOCK
+361                 else:
+362                     base_lock = NETCDFC_LOCK
+363                 lock = combine_locks([base_lock, get_write_lock(filename)])
+364 
+365         kwargs = dict(
+366             clobber=clobber, diskless=diskless, persist=persist, format=format
+367         )
+368         manager = CachingFileManager(
+369             netCDF4.Dataset, filename, mode=mode, kwargs=kwargs
+370         )
+371         return cls(manager, group=group, mode=mode, lock=lock, autoclose=autoclose)
+372 
+373     def _acquire(self, needs_lock=True):
+374         with self._manager.acquire_context(needs_lock) as root:
+375             ds = _nc4_require_group(root, self._group, self._mode)
+376         return ds
+377 
+378     @property
+379     def ds(self):
+380         return self._acquire()
+381 
+382     def open_store_variable(self, name, var):
+383         dimensions = var.dimensions
+384         data = indexing.LazilyOuterIndexedArray(NetCDF4ArrayWrapper(name, self))
+385         attributes = {k: var.getncattr(k) for k in var.ncattrs()}
+386         _ensure_fill_value_valid(data, attributes)
+387         # netCDF4 specific encoding; save _FillValue for later
+388         encoding = {}
+389         filters = var.filters()
+390         if filters is not None:
+391             encoding.update(filters)
+392         chunking = var.chunking()
+393         if chunking is not None:
+394             if chunking == "contiguous":
+395                 encoding["contiguous"] = True
+396                 encoding["chunksizes"] = None
+397             else:
+398                 encoding["contiguous"] = False
+399                 encoding["chunksizes"] = tuple(chunking)
+400         # TODO: figure out how to round-trip "endian-ness" without raising
+401         # warnings from netCDF4
+402         # encoding['endian'] = var.endian()
+403         pop_to(attributes, encoding, "least_significant_digit")
+404         # save source so __repr__ can detect if it's local or not
+405         encoding["source"] = self._filename
+406         encoding["original_shape"] = var.shape
+407         encoding["dtype"] = var.dtype
+408 
+409         return Variable(dimensions, data, attributes, encoding)
+410 
+411     def get_variables(self):
+412         dsvars = FrozenDict(
+413             (k, self.open_store_variable(k, v)) for k, v in self.ds.variables.items()
+414         )
+415         return dsvars
+416 
+417     def get_attrs(self):
+418         attrs = FrozenDict((k, self.ds.getncattr(k)) for k in self.ds.ncattrs())
+419         return attrs
+420 
+421     def get_dimensions(self):
+422         dims = FrozenDict((k, len(v)) for k, v in self.ds.dimensions.items())
+423         return dims
+424 
+425     def get_encoding(self):
+426         encoding = {}
+427         encoding["unlimited_dims"] = {
+428             k for k, v in self.ds.dimensions.items() if v.isunlimited()
+429         }
+430         return encoding
+431 
+432     def set_dimension(self, name, length, is_unlimited=False):
+433         dim_length = length if not is_unlimited else None
+434         self.ds.createDimension(name, size=dim_length)
+435 
+436     def set_attribute(self, key, value):
+437         if self.format != "NETCDF4":
+438             value = encode_nc3_attr_value(value)
+439         if _is_list_of_strings(value):
+440             # encode as NC_STRING if attr is list of strings
+441             self.ds.setncattr_string(key, value)
+442         else:
+443             self.ds.setncattr(key, value)
+444 
+445     def encode_variable(self, variable):
+446         variable = _force_native_endianness(variable)
+447         if self.format == "NETCDF4":
+448             variable = _encode_nc4_variable(variable)
+449         else:
+450             variable = encode_nc3_variable(variable)
+451         return variable
+452 
+453     def prepare_variable(
+454         self, name, variable, check_encoding=False, unlimited_dims=None
+455     ):
+456         datatype = _get_datatype(
+457             variable, self.format, raise_on_invalid_encoding=check_encoding
+458         )
+459         attrs = variable.attrs.copy()
+460 
+461         fill_value = attrs.pop("_FillValue", None)
+462 
+463         if datatype is str and fill_value is not None:
+464             raise NotImplementedError(
+465                 "netCDF4 does not yet support setting a fill value for "
+466                 "variable-length strings "
+467                 "(https://github.com/Unidata/netcdf4-python/issues/730). "
+468                 "Either remove '_FillValue' from encoding on variable %r "
+469                 "or set {'dtype': 'S1'} in encoding to use the fixed width "
+470                 "NC_CHAR type." % name
+471             )
+472 
+473         encoding = _extract_nc4_variable_encoding(
+474             variable, raise_on_invalid=check_encoding, unlimited_dims=unlimited_dims
+475         )
+476 
+477         if name in self.ds.variables:
+478             nc4_var = self.ds.variables[name]
+479         else:
+480             nc4_var = self.ds.createVariable(
+481                 varname=name,
+482                 datatype=datatype,
+483                 dimensions=variable.dims,
+484                 zlib=encoding.get("zlib", False),
+485                 complevel=encoding.get("complevel", 4),
+486                 shuffle=encoding.get("shuffle", True),
+487                 fletcher32=encoding.get("fletcher32", False),
+488                 contiguous=encoding.get("contiguous", False),
+489                 chunksizes=encoding.get("chunksizes"),
+490                 endian="native",
+491                 least_significant_digit=encoding.get("least_significant_digit"),
+492                 fill_value=fill_value,
+493             )
+494 
+495         nc4_var.setncatts(attrs)
+496 
+497         target = NetCDF4ArrayWrapper(name, self)
+498 
+499         return target, variable.data
+500 
+501     def sync(self):
+502         self.ds.sync()
+503 
+504     def close(self, **kwargs):
+505         self._manager.close(**kwargs)
+506 
+507 
+508 def guess_can_open_netcdf4(store_spec):
+509     if isinstance(store_spec, str) and is_remote_uri(store_spec):
+510         return True
+511     try:
+512         _, ext = os.path.splitext(store_spec)
+513     except TypeError:
+514         return False
+515     return ext in {".nc", ".nc4", ".cdf"}
+516 
+517 
+518 def open_backend_dataset_netcdf4(
+519     filename_or_obj,
+520     mask_and_scale=True,
+521     decode_times=None,
+522     concat_characters=None,
+523     decode_coords=None,
+524     drop_variables=None,
+525     use_cftime=None,
+526     decode_timedelta=None,
+527     group=None,
+528     mode="r",
+529     format="NETCDF4",
+530     clobber=True,
+531     diskless=False,
+532     persist=False,
+533     lock=None,
+534     autoclose=False,
+535 ):
+536 
+537     store = NetCDF4DataStore.open(
+538         filename_or_obj,
+539         mode=mode,
+540         format=format,
+541         group=group,
+542         clobber=clobber,
+543         diskless=diskless,
+544         persist=persist,
+545         lock=lock,
+546         autoclose=autoclose,
+547     )
+548 
+549     with close_on_error(store):
+550         ds = open_backend_dataset_store(
+551             store,
+552             mask_and_scale=mask_and_scale,
+553             decode_times=decode_times,
+554             concat_characters=concat_characters,
+555             decode_coords=decode_coords,
+556             drop_variables=drop_variables,
+557             use_cftime=use_cftime,
+558             decode_timedelta=decode_timedelta,
+559         )
+560     return ds
+561 
+562 
+563 netcdf4_backend = BackendEntrypoint(
+564     open_dataset=open_backend_dataset_netcdf4, guess_can_open=guess_can_open_netcdf4
+565 )
+
+</code><intended_behavior>Correctly encode and decode filenames with non-English characters when reading or writing data from/to netCDF files.</intended_behavior>, <file>xarray/core/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Internal utilties; not for external use
+2 """
+3 import contextlib
+4 import functools
+5 import io
+6 import itertools
+7 import os.path
+8 import re
+9 import warnings
+10 from enum import Enum
+11 from typing import (
+12     Any,
+13     Callable,
+14     Collection,
+15     Container,
+16     Dict,
+17     Hashable,
+18     Iterable,
+19     Iterator,
+20     Mapping,
+21     MutableMapping,
+22     MutableSet,
+23     Optional,
+24     Sequence,
+25     Tuple,
+26     TypeVar,
+27     Union,
+28     cast,
+29 )
+30 
+31 import numpy as np
+32 import pandas as pd
+33 
+34 from . import dtypes
+35 
+36 K = TypeVar("K")
+37 V = TypeVar("V")
+38 T = TypeVar("T")
+39 
+40 
+41 def alias_message(old_name: str, new_name: str) -> str:
+42     return f"{old_name} has been deprecated. Use {new_name} instead."
+43 
+44 
+45 def alias_warning(old_name: str, new_name: str, stacklevel: int = 3) -> None:
+46     warnings.warn(
+47         alias_message(old_name, new_name), FutureWarning, stacklevel=stacklevel
+48     )
+49 
+50 
+51 def alias(obj: Callable[..., T], old_name: str) -> Callable[..., T]:
+52     assert isinstance(old_name, str)
+53 
+54     @functools.wraps(obj)
+55     def wrapper(*args, **kwargs):
+56         alias_warning(old_name, obj.__name__)
+57         return obj(*args, **kwargs)
+58 
+59     wrapper.__doc__ = alias_message(old_name, obj.__name__)
+60     return wrapper
+61 
+62 
+63 def _maybe_cast_to_cftimeindex(index: pd.Index) -> pd.Index:
+64     from ..coding.cftimeindex import CFTimeIndex
+65 
+66     if len(index) > 0 and index.dtype == "O":
+67         try:
+68             return CFTimeIndex(index)
+69         except (ImportError, TypeError):
+70             return index
+71     else:
+72         return index
+73 
+74 
+75 def maybe_cast_to_coords_dtype(label, coords_dtype):
+76     if coords_dtype.kind == "f" and not isinstance(label, slice):
+77         label = np.asarray(label, dtype=coords_dtype)
+78     return label
+79 
+80 
+81 def maybe_coerce_to_str(index, original_coords):
+82     """maybe coerce a pandas Index back to a nunpy array of type str
+83 
+84     pd.Index uses object-dtype to store str - try to avoid this for coords
+85     """
+86 
+87     try:
+88         result_type = dtypes.result_type(*original_coords)
+89     except TypeError:
+90         pass
+91     else:
+92         if result_type.kind in "SU":
+93             index = np.asarray(index, dtype=result_type.type)
+94 
+95     return index
+96 
+97 
+98 def safe_cast_to_index(array: Any) -> pd.Index:
+99     """Given an array, safely cast it to a pandas.Index.
+100 
+101     If it is already a pandas.Index, return it unchanged.
+102 
+103     Unlike pandas.Index, if the array has dtype=object or dtype=timedelta64,
+104     this function will not attempt to do automatic type conversion but will
+105     always return an index with dtype=object.
+106     """
+107     if isinstance(array, pd.Index):
+108         index = array
+109     elif hasattr(array, "to_index"):
+110         index = array.to_index()
+111     else:
+112         kwargs = {}
+113         if hasattr(array, "dtype") and array.dtype.kind == "O":
+114             kwargs["dtype"] = object
+115         index = pd.Index(np.asarray(array), **kwargs)
+116     return _maybe_cast_to_cftimeindex(index)
+117 
+118 
+119 def multiindex_from_product_levels(
+120     levels: Sequence[pd.Index], names: Sequence[str] = None
+121 ) -> pd.MultiIndex:
+122     """Creating a MultiIndex from a product without refactorizing levels.
+123 
+124     Keeping levels the same gives back the original labels when we unstack.
+125 
+126     Parameters
+127     ----------
+128     levels : sequence of pd.Index
+129         Values for each MultiIndex level.
+130     names : sequence of str, optional
+131         Names for each level.
+132 
+133     Returns
+134     -------
+135     pandas.MultiIndex
+136     """
+137     if any(not isinstance(lev, pd.Index) for lev in levels):
+138         raise TypeError("levels must be a list of pd.Index objects")
+139 
+140     split_labels, levels = zip(*[lev.factorize() for lev in levels])
+141     labels_mesh = np.meshgrid(*split_labels, indexing="ij")
+142     labels = [x.ravel() for x in labels_mesh]
+143     return pd.MultiIndex(levels, labels, sortorder=0, names=names)
+144 
+145 
+146 def maybe_wrap_array(original, new_array):
+147     """Wrap a transformed array with __array_wrap__ if it can be done safely.
+148 
+149     This lets us treat arbitrary functions that take and return ndarray objects
+150     like ufuncs, as long as they return an array with the same shape.
+151     """
+152     # in case func lost array's metadata
+153     if isinstance(new_array, np.ndarray) and new_array.shape == original.shape:
+154         return original.__array_wrap__(new_array)
+155     else:
+156         return new_array
+157 
+158 
+159 def equivalent(first: T, second: T) -> bool:
+160     """Compare two objects for equivalence (identity or equality), using
+161     array_equiv if either object is an ndarray. If both objects are lists,
+162     equivalent is sequentially called on all the elements.
+163     """
+164     # TODO: refactor to avoid circular import
+165     from . import duck_array_ops
+166 
+167     if isinstance(first, np.ndarray) or isinstance(second, np.ndarray):
+168         return duck_array_ops.array_equiv(first, second)
+169     elif isinstance(first, list) or isinstance(second, list):
+170         return list_equiv(first, second)
+171     else:
+172         return (
+173             (first is second)
+174             or (first == second)
+175             or (pd.isnull(first) and pd.isnull(second))
+176         )
+177 
+178 
+179 def list_equiv(first, second):
+180     equiv = True
+181     if len(first) != len(second):
+182         return False
+183     else:
+184         for f, s in zip(first, second):
+185             equiv = equiv and equivalent(f, s)
+186     return equiv
+187 
+188 
+189 def peek_at(iterable: Iterable[T]) -> Tuple[T, Iterator[T]]:
+190     """Returns the first value from iterable, as well as a new iterator with
+191     the same content as the original iterable
+192     """
+193     gen = iter(iterable)
+194     peek = next(gen)
+195     return peek, itertools.chain([peek], gen)
+196 
+197 
+198 def update_safety_check(
+199     first_dict: Mapping[K, V],
+200     second_dict: Mapping[K, V],
+201     compat: Callable[[V, V], bool] = equivalent,
+202 ) -> None:
+203     """Check the safety of updating one dictionary with another.
+204 
+205     Raises ValueError if dictionaries have non-compatible values for any key,
+206     where compatibility is determined by identity (they are the same item) or
+207     the `compat` function.
+208 
+209     Parameters
+210     ----------
+211     first_dict, second_dict : dict-like
+212         All items in the second dictionary are checked against for conflicts
+213         against items in the first dictionary.
+214     compat : function, optional
+215         Binary operator to determine if two values are compatible. By default,
+216         checks for equivalence.
+217     """
+218     for k, v in second_dict.items():
+219         if k in first_dict and not compat(v, first_dict[k]):
+220             raise ValueError(
+221                 "unsafe to merge dictionaries without "
+222                 "overriding values; conflicting key %r" % k
+223             )
+224 
+225 
+226 def remove_incompatible_items(
+227     first_dict: MutableMapping[K, V],
+228     second_dict: Mapping[K, V],
+229     compat: Callable[[V, V], bool] = equivalent,
+230 ) -> None:
+231     """Remove incompatible items from the first dictionary in-place.
+232 
+233     Items are retained if their keys are found in both dictionaries and the
+234     values are compatible.
+235 
+236     Parameters
+237     ----------
+238     first_dict, second_dict : dict-like
+239         Mappings to merge.
+240     compat : function, optional
+241         Binary operator to determine if two values are compatible. By default,
+242         checks for equivalence.
+243     """
+244     for k in list(first_dict):
+245         if k not in second_dict or not compat(first_dict[k], second_dict[k]):
+246             del first_dict[k]
+247 
+248 
+249 def is_dict_like(value: Any) -> bool:
+250     return hasattr(value, "keys") and hasattr(value, "__getitem__")
+251 
+252 
+253 def is_full_slice(value: Any) -> bool:
+254     return isinstance(value, slice) and value == slice(None)
+255 
+256 
+257 def is_list_like(value: Any) -> bool:
+258     return isinstance(value, list) or isinstance(value, tuple)
+259 
+260 
+261 def is_duck_array(value: Any) -> bool:
+262     if isinstance(value, np.ndarray):
+263         return True
+264     return (
+265         hasattr(value, "ndim")
+266         and hasattr(value, "shape")
+267         and hasattr(value, "dtype")
+268         and hasattr(value, "__array_function__")
+269         and hasattr(value, "__array_ufunc__")
+270     )
+271 
+272 
+273 def either_dict_or_kwargs(
+274     pos_kwargs: Optional[Mapping[Hashable, T]],
+275     kw_kwargs: Mapping[str, T],
+276     func_name: str,
+277 ) -> Mapping[Hashable, T]:
+278     if pos_kwargs is not None:
+279         if not is_dict_like(pos_kwargs):
+280             raise ValueError(
+281                 "the first argument to .%s must be a dictionary" % func_name
+282             )
+283         if kw_kwargs:
+284             raise ValueError(
+285                 "cannot specify both keyword and positional "
+286                 "arguments to .%s" % func_name
+287             )
+288         return pos_kwargs
+289     else:
+290         # Need an explicit cast to appease mypy due to invariance; see
+291         # https://github.com/python/mypy/issues/6228
+292         return cast(Mapping[Hashable, T], kw_kwargs)
+293 
+294 
+295 def is_scalar(value: Any, include_0d: bool = True) -> bool:
+296     """Whether to treat a value as a scalar.
+297 
+298     Any non-iterable, string, or 0-D array
+299     """
+300     from .variable import NON_NUMPY_SUPPORTED_ARRAY_TYPES
+301 
+302     if include_0d:
+303         include_0d = getattr(value, "ndim", None) == 0
+304     return (
+305         include_0d
+306         or isinstance(value, (str, bytes))
+307         or not (
+308             isinstance(value, (Iterable,) + NON_NUMPY_SUPPORTED_ARRAY_TYPES)
+309             or hasattr(value, "__array_function__")
+310         )
+311     )
+312 
+313 
+314 def is_valid_numpy_dtype(dtype: Any) -> bool:
+315     try:
+316         np.dtype(dtype)
+317     except (TypeError, ValueError):
+318         return False
+319     else:
+320         return True
+321 
+322 
+323 def to_0d_object_array(value: Any) -> np.ndarray:
+324     """Given a value, wrap it in a 0-D numpy.ndarray with dtype=object."""
+325     result = np.empty((), dtype=object)
+326     result[()] = value
+327     return result
+328 
+329 
+330 def to_0d_array(value: Any) -> np.ndarray:
+331     """Given a value, wrap it in a 0-D numpy.ndarray."""
+332     if np.isscalar(value) or (isinstance(value, np.ndarray) and value.ndim == 0):
+333         return np.array(value)
+334     else:
+335         return to_0d_object_array(value)
+336 
+337 
+338 def dict_equiv(
+339     first: Mapping[K, V],
+340     second: Mapping[K, V],
+341     compat: Callable[[V, V], bool] = equivalent,
+342 ) -> bool:
+343     """Test equivalence of two dict-like objects. If any of the values are
+344     numpy arrays, compare them correctly.
+345 
+346     Parameters
+347     ----------
+348     first, second : dict-like
+349         Dictionaries to compare for equality
+350     compat : function, optional
+351         Binary operator to determine if two values are compatible. By default,
+352         checks for equivalence.
+353 
+354     Returns
+355     -------
+356     equals : bool
+357         True if the dictionaries are equal
+358     """
+359     for k in first:
+360         if k not in second or not compat(first[k], second[k]):
+361             return False
+362     for k in second:
+363         if k not in first:
+364             return False
+365     return True
+366 
+367 
+368 def compat_dict_intersection(
+369     first_dict: Mapping[K, V],
+370     second_dict: Mapping[K, V],
+371     compat: Callable[[V, V], bool] = equivalent,
+372 ) -> MutableMapping[K, V]:
+373     """Return the intersection of two dictionaries as a new dictionary.
+374 
+375     Items are retained if their keys are found in both dictionaries and the
+376     values are compatible.
+377 
+378     Parameters
+379     ----------
+380     first_dict, second_dict : dict-like
+381         Mappings to merge.
+382     compat : function, optional
+383         Binary operator to determine if two values are compatible. By default,
+384         checks for equivalence.
+385 
+386     Returns
+387     -------
+388     intersection : dict
+389         Intersection of the contents.
+390     """
+391     new_dict = dict(first_dict)
+392     remove_incompatible_items(new_dict, second_dict, compat)
+393     return new_dict
+394 
+395 
+396 def compat_dict_union(
+397     first_dict: Mapping[K, V],
+398     second_dict: Mapping[K, V],
+399     compat: Callable[[V, V], bool] = equivalent,
+400 ) -> MutableMapping[K, V]:
+401     """Return the union of two dictionaries as a new dictionary.
+402 
+403     An exception is raised if any keys are found in both dictionaries and the
+404     values are not compatible.
+405 
+406     Parameters
+407     ----------
+408     first_dict, second_dict : dict-like
+409         Mappings to merge.
+410     compat : function, optional
+411         Binary operator to determine if two values are compatible. By default,
+412         checks for equivalence.
+413 
+414     Returns
+415     -------
+416     union : dict
+417         union of the contents.
+418     """
+419     new_dict = dict(first_dict)
+420     update_safety_check(first_dict, second_dict, compat)
+421     new_dict.update(second_dict)
+422     return new_dict
+423 
+424 
+425 class Frozen(Mapping[K, V]):
+426     """Wrapper around an object implementing the mapping interface to make it
+427     immutable. If you really want to modify the mapping, the mutable version is
+428     saved under the `mapping` attribute.
+429     """
+430 
+431     __slots__ = ("mapping",)
+432 
+433     def __init__(self, mapping: Mapping[K, V]):
+434         self.mapping = mapping
+435 
+436     def __getitem__(self, key: K) -> V:
+437         return self.mapping[key]
+438 
+439     def __iter__(self) -> Iterator[K]:
+440         return iter(self.mapping)
+441 
+442     def __len__(self) -> int:
+443         return len(self.mapping)
+444 
+445     def __contains__(self, key: object) -> bool:
+446         return key in self.mapping
+447 
+448     def __repr__(self) -> str:
+449         return "{}({!r})".format(type(self).__name__, self.mapping)
+450 
+451 
+452 def FrozenDict(*args, **kwargs) -> Frozen:
+453     return Frozen(dict(*args, **kwargs))
+454 
+455 
+456 class HybridMappingProxy(Mapping[K, V]):
+457     """Implements the Mapping interface. Uses the wrapped mapping for item lookup
+458     and a separate wrapped keys collection for iteration.
+459 
+460     Can be used to construct a mapping object from another dict-like object without
+461     eagerly accessing its items or when a mapping object is expected but only
+462     iteration over keys is actually used.
+463 
+464     Note: HybridMappingProxy does not validate consistency of the provided `keys`
+465     and `mapping`. It is the caller's responsibility to ensure that they are
+466     suitable for the task at hand.
+467     """
+468 
+469     __slots__ = ("_keys", "mapping")
+470 
+471     def __init__(self, keys: Collection[K], mapping: Mapping[K, V]):
+472         self._keys = keys
+473         self.mapping = mapping
+474 
+475     def __getitem__(self, key: K) -> V:
+476         return self.mapping[key]
+477 
+478     def __iter__(self) -> Iterator[K]:
+479         return iter(self._keys)
+480 
+481     def __len__(self) -> int:
+482         return len(self._keys)
+483 
+484 
+485 class SortedKeysDict(MutableMapping[K, V]):
+486     """An wrapper for dictionary-like objects that always iterates over its
+487     items in sorted order by key but is otherwise equivalent to the underlying
+488     mapping.
+489     """
+490 
+491     __slots__ = ("mapping",)
+492 
+493     def __init__(self, mapping: MutableMapping[K, V] = None):
+494         self.mapping = {} if mapping is None else mapping
+495 
+496     def __getitem__(self, key: K) -> V:
+497         return self.mapping[key]
+498 
+499     def __setitem__(self, key: K, value: V) -> None:
+500         self.mapping[key] = value
+501 
+502     def __delitem__(self, key: K) -> None:
+503         del self.mapping[key]
+504 
+505     def __iter__(self) -> Iterator[K]:
+506         # see #4571 for the reason of the type ignore
+507         return iter(sorted(self.mapping))  # type: ignore
+508 
+509     def __len__(self) -> int:
+510         return len(self.mapping)
+511 
+512     def __contains__(self, key: object) -> bool:
+513         return key in self.mapping
+514 
+515     def __repr__(self) -> str:
+516         return "{}({!r})".format(type(self).__name__, self.mapping)
+517 
+518 
+519 class OrderedSet(MutableSet[T]):
+520     """A simple ordered set.
+521 
+522     The API matches the builtin set, but it preserves insertion order of elements, like
+523     a dict. Note that, unlike in an OrderedDict, equality tests are not order-sensitive.
+524     """
+525 
+526     _d: Dict[T, None]
+527 
+528     __slots__ = ("_d",)
+529 
+530     def __init__(self, values: Iterable[T] = None):
+531         self._d = {}
+532         if values is not None:
+533             self.update(values)
+534 
+535     # Required methods for MutableSet
+536 
+537     def __contains__(self, value: Hashable) -> bool:
+538         return value in self._d
+539 
+540     def __iter__(self) -> Iterator[T]:
+541         return iter(self._d)
+542 
+543     def __len__(self) -> int:
+544         return len(self._d)
+545 
+546     def add(self, value: T) -> None:
+547         self._d[value] = None
+548 
+549     def discard(self, value: T) -> None:
+550         del self._d[value]
+551 
+552     # Additional methods
+553 
+554     def update(self, values: Iterable[T]) -> None:
+555         for v in values:
+556             self._d[v] = None
+557 
+558     def __repr__(self) -> str:
+559         return "{}({!r})".format(type(self).__name__, list(self))
+560 
+561 
+562 class NdimSizeLenMixin:
+563     """Mixin class that extends a class that defines a ``shape`` property to
+564     one that also defines ``ndim``, ``size`` and ``__len__``.
+565     """
+566 
+567     __slots__ = ()
+568 
+569     @property
+570     def ndim(self: Any) -> int:
+571         return len(self.shape)
+572 
+573     @property
+574     def size(self: Any) -> int:
+575         # cast to int so that shape = () gives size = 1
+576         return int(np.prod(self.shape))
+577 
+578     def __len__(self: Any) -> int:
+579         try:
+580             return self.shape[0]
+581         except IndexError:
+582             raise TypeError("len() of unsized object")
+583 
+584 
+585 class NDArrayMixin(NdimSizeLenMixin):
+586     """Mixin class for making wrappers of N-dimensional arrays that conform to
+587     the ndarray interface required for the data argument to Variable objects.
+588 
+589     A subclass should set the `array` property and override one or more of
+590     `dtype`, `shape` and `__getitem__`.
+591     """
+592 
+593     __slots__ = ()
+594 
+595     @property
+596     def dtype(self: Any) -> np.dtype:
+597         return self.array.dtype
+598 
+599     @property
+600     def shape(self: Any) -> Tuple[int]:
+601         return self.array.shape
+602 
+603     def __getitem__(self: Any, key):
+604         return self.array[key]
+605 
+606     def __repr__(self: Any) -> str:
+607         return "{}(array={!r})".format(type(self).__name__, self.array)
+608 
+609 
+610 class ReprObject:
+611     """Object that prints as the given value, for use with sentinel values."""
+612 
+613     __slots__ = ("_value",)
+614 
+615     def __init__(self, value: str):
+616         self._value = value
+617 
+618     def __repr__(self) -> str:
+619         return self._value
+620 
+621     def __eq__(self, other) -> bool:
+622         if isinstance(other, ReprObject):
+623             return self._value == other._value
+624         return False
+625 
+626     def __hash__(self) -> int:
+627         return hash((type(self), self._value))
+628 
+629     def __dask_tokenize__(self):
+630         from dask.base import normalize_token
+631 
+632         return normalize_token((type(self), self._value))
+633 
+634 
+635 @contextlib.contextmanager
+636 def close_on_error(f):
+637     """Context manager to ensure that a file opened by xarray is closed if an
+638     exception is raised before the user sees the file object.
+639     """
+640     try:
+641         yield
+642     except Exception:
+643         f.close()
+644         raise
+645 
+646 
+647 def is_remote_uri(path: str) -> bool:
+648     return bool(re.search(r"^https?\://", path))
+649 
+650 
+651 def read_magic_number(filename_or_obj, count=8):
+652     # check byte header to determine file type
+653     if isinstance(filename_or_obj, bytes):
+654         magic_number = filename_or_obj[:count]
+655     elif isinstance(filename_or_obj, io.IOBase):
+656         if filename_or_obj.tell() != 0:
+657             raise ValueError(
+658                 "cannot guess the engine, "
+659                 "file-like object read/write pointer not at the start of the file, "
+660                 "please close and reopen, or use a context manager"
+661             )
+662         magic_number = filename_or_obj.read(count)
+663         filename_or_obj.seek(0)
+664     else:
+665         raise TypeError(f"cannot read the magic number form {type(filename_or_obj)}")
+666     return magic_number
+667 
+668 
+669 def is_grib_path(path: str) -> bool:
+670     _, ext = os.path.splitext(path)
+671     return ext in [".grib", ".grb", ".grib2", ".grb2"]
+672 
+673 
+674 def is_uniform_spaced(arr, **kwargs) -> bool:
+675     """Return True if values of an array are uniformly spaced and sorted.
+676 
+677     >>> is_uniform_spaced(range(5))
+678     True
+679     >>> is_uniform_spaced([-4, 0, 100])
+680     False
+681 
+682     kwargs are additional arguments to ``np.isclose``
+683     """
+684     arr = np.array(arr, dtype=float)
+685     diffs = np.diff(arr)
+686     return bool(np.isclose(diffs.min(), diffs.max(), **kwargs))
+687 
+688 
+689 def hashable(v: Any) -> bool:
+690     """Determine whether `v` can be hashed."""
+691     try:
+692         hash(v)
+693     except TypeError:
+694         return False
+695     return True
+696 
+697 
+698 def not_implemented(*args, **kwargs):
+699     return NotImplemented
+700 
+701 
+702 def decode_numpy_dict_values(attrs: Mapping[K, V]) -> Dict[K, V]:
+703     """Convert attribute values from numpy objects to native Python objects,
+704     for use in to_dict
+705     """
+706     attrs = dict(attrs)
+707     for k, v in attrs.items():
+708         if isinstance(v, np.ndarray):
+709             attrs[k] = v.tolist()
+710         elif isinstance(v, np.generic):
+711             attrs[k] = v.item()
+712     return attrs
+713 
+714 
+715 def ensure_us_time_resolution(val):
+716     """Convert val out of numpy time, for use in to_dict.
+717     Needed because of numpy bug GH#7619"""
+718     if np.issubdtype(val.dtype, np.datetime64):
+719         val = val.astype("datetime64[us]")
+720     elif np.issubdtype(val.dtype, np.timedelta64):
+721         val = val.astype("timedelta64[us]")
+722     return val
+723 
+724 
+725 class HiddenKeyDict(MutableMapping[K, V]):
+726     """Acts like a normal dictionary, but hides certain keys."""
+727 
+728     __slots__ = ("_data", "_hidden_keys")
+729 
+730     # ``__init__`` method required to create instance from class.
+731 
+732     def __init__(self, data: MutableMapping[K, V], hidden_keys: Iterable[K]):
+733         self._data = data
+734         self._hidden_keys = frozenset(hidden_keys)
+735 
+736     def _raise_if_hidden(self, key: K) -> None:
+737         if key in self._hidden_keys:
+738             raise KeyError("Key `%r` is hidden." % key)
+739 
+740     # The next five methods are requirements of the ABC.
+741     def __setitem__(self, key: K, value: V) -> None:
+742         self._raise_if_hidden(key)
+743         self._data[key] = value
+744 
+745     def __getitem__(self, key: K) -> V:
+746         self._raise_if_hidden(key)
+747         return self._data[key]
+748 
+749     def __delitem__(self, key: K) -> None:
+750         self._raise_if_hidden(key)
+751         del self._data[key]
+752 
+753     def __iter__(self) -> Iterator[K]:
+754         for k in self._data:
+755             if k not in self._hidden_keys:
+756                 yield k
+757 
+758     def __len__(self) -> int:
+759         num_hidden = len(self._hidden_keys & self._data.keys())
+760         return len(self._data) - num_hidden
+761 
+762 
+763 def infix_dims(
+764     dims_supplied: Collection, dims_all: Collection, missing_dims: str = "raise"
+765 ) -> Iterator:
+766     """
+767     Resolves a supplied list containing an ellipsis representing other items, to
+768     a generator with the 'realized' list of all items
+769     """
+770     if ... in dims_supplied:
+771         if len(set(dims_all)) != len(dims_all):
+772             raise ValueError("Cannot use ellipsis with repeated dims")
+773         if list(dims_supplied).count(...) > 1:
+774             raise ValueError("More than one ellipsis supplied")
+775         other_dims = [d for d in dims_all if d not in dims_supplied]
+776         existing_dims = drop_missing_dims(dims_supplied, dims_all, missing_dims)
+777         for d in existing_dims:
+778             if d is ...:
+779                 yield from other_dims
+780             else:
+781                 yield d
+782     else:
+783         existing_dims = drop_missing_dims(dims_supplied, dims_all, missing_dims)
+784         if set(existing_dims) ^ set(dims_all):
+785             raise ValueError(
+786                 f"{dims_supplied} must be a permuted list of {dims_all}, unless `...` is included"
+787             )
+788         yield from existing_dims
+789 
+790 
+791 def get_temp_dimname(dims: Container[Hashable], new_dim: Hashable) -> Hashable:
+792     """Get an new dimension name based on new_dim, that is not used in dims.
+793     If the same name exists, we add an underscore(s) in the head.
+794 
+795     Example1:
+796         dims: ['a', 'b', 'c']
+797         new_dim: ['_rolling']
+798         -> ['_rolling']
+799     Example2:
+800         dims: ['a', 'b', 'c', '_rolling']
+801         new_dim: ['_rolling']
+802         -> ['__rolling']
+803     """
+804     while new_dim in dims:
+805         new_dim = "_" + str(new_dim)
+806     return new_dim
+807 
+808 
+809 def drop_dims_from_indexers(
+810     indexers: Mapping[Hashable, Any],
+811     dims: Union[list, Mapping[Hashable, int]],
+812     missing_dims: str,
+813 ) -> Mapping[Hashable, Any]:
+814     """Depending on the setting of missing_dims, drop any dimensions from indexers that
+815     are not present in dims.
+816 
+817     Parameters
+818     ----------
+819     indexers : dict
+820     dims : sequence
+821     missing_dims : {"raise", "warn", "ignore"}
+822     """
+823 
+824     if missing_dims == "raise":
+825         invalid = indexers.keys() - set(dims)
+826         if invalid:
+827             raise ValueError(
+828                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+829             )
+830 
+831         return indexers
+832 
+833     elif missing_dims == "warn":
+834 
+835         # don't modify input
+836         indexers = dict(indexers)
+837 
+838         invalid = indexers.keys() - set(dims)
+839         if invalid:
+840             warnings.warn(
+841                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+842             )
+843         for key in invalid:
+844             indexers.pop(key)
+845 
+846         return indexers
+847 
+848     elif missing_dims == "ignore":
+849         return {key: val for key, val in indexers.items() if key in dims}
+850 
+851     else:
+852         raise ValueError(
+853             f"Unrecognised option {missing_dims} for missing_dims argument"
+854         )
+855 
+856 
+857 def drop_missing_dims(
+858     supplied_dims: Collection, dims: Collection, missing_dims: str
+859 ) -> Collection:
+860     """Depending on the setting of missing_dims, drop any dimensions from supplied_dims that
+861     are not present in dims.
+862 
+863     Parameters
+864     ----------
+865     supplied_dims : dict
+866     dims : sequence
+867     missing_dims : {"raise", "warn", "ignore"}
+868     """
+869 
+870     if missing_dims == "raise":
+871         supplied_dims_set = set(val for val in supplied_dims if val is not ...)
+872         invalid = supplied_dims_set - set(dims)
+873         if invalid:
+874             raise ValueError(
+875                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+876             )
+877 
+878         return supplied_dims
+879 
+880     elif missing_dims == "warn":
+881 
+882         invalid = set(supplied_dims) - set(dims)
+883         if invalid:
+884             warnings.warn(
+885                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+886             )
+887 
+888         return [val for val in supplied_dims if val in dims or val is ...]
+889 
+890     elif missing_dims == "ignore":
+891         return [val for val in supplied_dims if val in dims or val is ...]
+892 
+893     else:
+894         raise ValueError(
+895             f"Unrecognised option {missing_dims} for missing_dims argument"
+896         )
+897 
+898 
+899 class UncachedAccessor:
+900     """Acts like a property, but on both classes and class instances
+901 
+902     This class is necessary because some tools (e.g. pydoc and sphinx)
+903     inspect classes for which property returns itself and not the
+904     accessor.
+905     """
+906 
+907     def __init__(self, accessor):
+908         self._accessor = accessor
+909 
+910     def __get__(self, obj, cls):
+911         if obj is None:
+912             return self._accessor
+913 
+914         return self._accessor(obj)
+915 
+916 
+917 # Singleton type, as per https://github.com/python/typing/pull/240
+918 class Default(Enum):
+919     token = 0
+920 
+921 
+922 _default = Default.token
+
+</code><intended_behavior>Provide utility methods for correctly handling and encoding/decoding filenames with non-English characters in a general context.</intended_behavior>]
+2025-11-08 08:36:30.591 | INFO     | Search completed. Bug locations: [<file>xarray/backends/netCDF4_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import functools
+2 import operator
+3 import os
+4 import pathlib
+5 from contextlib import suppress
+6 
+7 import numpy as np
+8 
+9 from .. import coding
+10 from ..coding.variables import pop_to
+11 from ..core import indexing
+12 from ..core.utils import FrozenDict, close_on_error, is_remote_uri
+13 from ..core.variable import Variable
+14 from .common import (
+15     BackendArray,
+16     BackendEntrypoint,
+17     WritableCFDataStore,
+18     find_root_and_group,
+19     robust_getitem,
+20 )
+21 from .file_manager import CachingFileManager, DummyFileManager
+22 from .locks import HDF5_LOCK, NETCDFC_LOCK, combine_locks, ensure_lock, get_write_lock
+23 from .netcdf3 import encode_nc3_attr_value, encode_nc3_variable
+24 from .store import open_backend_dataset_store
+25 
+26 # This lookup table maps from dtype.byteorder to a readable endian
+27 # string used by netCDF4.
+28 _endian_lookup = {"=": "native", ">": "big", "<": "little", "|": "native"}
+29 
+30 
+31 NETCDF4_PYTHON_LOCK = combine_locks([NETCDFC_LOCK, HDF5_LOCK])
+32 
+33 
+34 class BaseNetCDF4Array(BackendArray):
+35     __slots__ = ("datastore", "dtype", "shape", "variable_name")
+36 
+37     def __init__(self, variable_name, datastore):
+38         self.datastore = datastore
+39         self.variable_name = variable_name
+40 
+41         array = self.get_array()
+42         self.shape = array.shape
+43 
+44         dtype = array.dtype
+45         if dtype is str:
+46             # use object dtype because that's the only way in numpy to
+47             # represent variable length strings; it also prevents automatic
+48             # string concatenation via conventions.decode_cf_variable
+49             dtype = np.dtype("O")
+50         self.dtype = dtype
+51 
+52     def __setitem__(self, key, value):
+53         with self.datastore.lock:
+54             data = self.get_array(needs_lock=False)
+55             data[key] = value
+56             if self.datastore.autoclose:
+57                 self.datastore.close(needs_lock=False)
+58 
+59     def get_array(self, needs_lock=True):
+60         raise NotImplementedError("Virtual Method")
+61 
+62 
+63 class NetCDF4ArrayWrapper(BaseNetCDF4Array):
+64     __slots__ = ()
+65 
+66     def get_array(self, needs_lock=True):
+67         ds = self.datastore._acquire(needs_lock)
+68         variable = ds.variables[self.variable_name]
+69         variable.set_auto_maskandscale(False)
+70         # only added in netCDF4-python v1.2.8
+71         with suppress(AttributeError):
+72             variable.set_auto_chartostring(False)
+73         return variable
+74 
+75     def __getitem__(self, key):
+76         return indexing.explicit_indexing_adapter(
+77             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+78         )
+79 
+80     def _getitem(self, key):
+81         if self.datastore.is_remote:  # pragma: no cover
+82             getitem = functools.partial(robust_getitem, catch=RuntimeError)
+83         else:
+84             getitem = operator.getitem
+85 
+86         try:
+87             with self.datastore.lock:
+88                 original_array = self.get_array(needs_lock=False)
+89                 array = getitem(original_array, key)
+90         except IndexError:
+91             # Catch IndexError in netCDF4 and return a more informative
+92             # error message.  This is most often called when an unsorted
+93             # indexer is used before the data is loaded from disk.
+94             msg = (
+95                 "The indexing operation you are attempting to perform "
+96                 "is not valid on netCDF4.Variable object. Try loading "
+97                 "your data into memory first by calling .load()."
+98             )
+99             raise IndexError(msg)
+100         return array
+101 
+102 
+103 def _encode_nc4_variable(var):
+104     for coder in [
+105         coding.strings.EncodedStringCoder(allows_unicode=True),
+106         coding.strings.CharacterArrayCoder(),
+107     ]:
+108         var = coder.encode(var)
+109     return var
+110 
+111 
+112 def _check_encoding_dtype_is_vlen_string(dtype):
+113     if dtype is not str:
+114         raise AssertionError(  # pragma: no cover
+115             "unexpected dtype encoding %r. This shouldn't happen: please "
+116             "file a bug report at github.com/pydata/xarray" % dtype
+117         )
+118 
+119 
+120 def _get_datatype(var, nc_format="NETCDF4", raise_on_invalid_encoding=False):
+121     if nc_format == "NETCDF4":
+122         datatype = _nc4_dtype(var)
+123     else:
+124         if "dtype" in var.encoding:
+125             encoded_dtype = var.encoding["dtype"]
+126             _check_encoding_dtype_is_vlen_string(encoded_dtype)
+127             if raise_on_invalid_encoding:
+128                 raise ValueError(
+129                     "encoding dtype=str for vlen strings is only supported "
+130                     "with format='NETCDF4'."
+131                 )
+132         datatype = var.dtype
+133     return datatype
+134 
+135 
+136 def _nc4_dtype(var):
+137     if "dtype" in var.encoding:
+138         dtype = var.encoding.pop("dtype")
+139         _check_encoding_dtype_is_vlen_string(dtype)
+140     elif coding.strings.is_unicode_dtype(var.dtype):
+141         dtype = str
+142     elif var.dtype.kind in ["i", "u", "f", "c", "S"]:
+143         dtype = var.dtype
+144     else:
+145         raise ValueError(f"unsupported dtype for netCDF4 variable: {var.dtype}")
+146     return dtype
+147 
+148 
+149 def _netcdf4_create_group(dataset, name):
+150     return dataset.createGroup(name)
+151 
+152 
+153 def _nc4_require_group(ds, group, mode, create_group=_netcdf4_create_group):
+154     if group in {None, "", "/"}:
+155         # use the root group
+156         return ds
+157     else:
+158         # make sure it's a string
+159         if not isinstance(group, str):
+160             raise ValueError("group must be a string or None")
+161         # support path-like syntax
+162         path = group.strip("/").split("/")
+163         for key in path:
+164             try:
+165                 ds = ds.groups[key]
+166             except KeyError as e:
+167                 if mode != "r":
+168                     ds = create_group(ds, key)
+169                 else:
+170                     # wrap error to provide slightly more helpful message
+171                     raise OSError("group not found: %s" % key, e)
+172         return ds
+173 
+174 
+175 def _ensure_fill_value_valid(data, attributes):
+176     # work around for netCDF4/scipy issue where _FillValue has the wrong type:
+177     # https://github.com/Unidata/netcdf4-python/issues/271
+178     if data.dtype.kind == "S" and "_FillValue" in attributes:
+179         attributes["_FillValue"] = np.string_(attributes["_FillValue"])
+180 
+181 
+182 def _force_native_endianness(var):
+183     # possible values for byteorder are:
+184     #     =    native
+185     #     <    little-endian
+186     #     >    big-endian
+187     #     |    not applicable
+188     # Below we check if the data type is not native or NA
+189     if var.dtype.byteorder not in ["=", "|"]:
+190         # if endianness is specified explicitly, convert to the native type
+191         data = var.data.astype(var.dtype.newbyteorder("="))
+192         var = Variable(var.dims, data, var.attrs, var.encoding)
+193         # if endian exists, remove it from the encoding.
+194         var.encoding.pop("endian", None)
+195     # check to see if encoding has a value for endian its 'native'
+196     if not var.encoding.get("endian", "native") == "native":
+197         raise NotImplementedError(
+198             "Attempt to write non-native endian type, "
+199             "this is not supported by the netCDF4 "
+200             "python library."
+201         )
+202     return var
+203 
+204 
+205 def _extract_nc4_variable_encoding(
+206     variable,
+207     raise_on_invalid=False,
+208     lsd_okay=True,
+209     h5py_okay=False,
+210     backend="netCDF4",
+211     unlimited_dims=None,
+212 ):
+213     if unlimited_dims is None:
+214         unlimited_dims = ()
+215 
+216     encoding = variable.encoding.copy()
+217 
+218     safe_to_drop = {"source", "original_shape"}
+219     valid_encodings = {
+220         "zlib",
+221         "complevel",
+222         "fletcher32",
+223         "contiguous",
+224         "chunksizes",
+225         "shuffle",
+226         "_FillValue",
+227         "dtype",
+228     }
+229     if lsd_okay:
+230         valid_encodings.add("least_significant_digit")
+231     if h5py_okay:
+232         valid_encodings.add("compression")
+233         valid_encodings.add("compression_opts")
+234 
+235     if not raise_on_invalid and encoding.get("chunksizes") is not None:
+236         # It's possible to get encoded chunksizes larger than a dimension size
+237         # if the original file had an unlimited dimension. This is problematic
+238         # if the new file no longer has an unlimited dimension.
+239         chunksizes = encoding["chunksizes"]
+240         chunks_too_big = any(
+241             c > d and dim not in unlimited_dims
+242             for c, d, dim in zip(chunksizes, variable.shape, variable.dims)
+243         )
+244         has_original_shape = "original_shape" in encoding
+245         changed_shape = (
+246             has_original_shape and encoding.get("original_shape") != variable.shape
+247         )
+248         if chunks_too_big or changed_shape:
+249             del encoding["chunksizes"]
+250 
+251     var_has_unlim_dim = any(dim in unlimited_dims for dim in variable.dims)
+252     if not raise_on_invalid and var_has_unlim_dim and "contiguous" in encoding.keys():
+253         del encoding["contiguous"]
+254 
+255     for k in safe_to_drop:
+256         if k in encoding:
+257             del encoding[k]
+258 
+259     if raise_on_invalid:
+260         invalid = [k for k in encoding if k not in valid_encodings]
+261         if invalid:
+262             raise ValueError(
+263                 "unexpected encoding parameters for %r backend: %r. Valid "
+264                 "encodings are: %r" % (backend, invalid, valid_encodings)
+265             )
+266     else:
+267         for k in list(encoding):
+268             if k not in valid_encodings:
+269                 del encoding[k]
+270 
+271     return encoding
+272 
+273 
+274 def _is_list_of_strings(value):
+275     if np.asarray(value).dtype.kind in ["U", "S"] and np.asarray(value).size > 1:
+276         return True
+277     else:
+278         return False
+279 
+280 
+281 class NetCDF4DataStore(WritableCFDataStore):
+282     """Store for reading and writing data via the Python-NetCDF4 library.
+283 
+284     This store supports NetCDF3, NetCDF4 and OpenDAP datasets.
+285     """
+286 
+287     __slots__ = (
+288         "autoclose",
+289         "format",
+290         "is_remote",
+291         "lock",
+292         "_filename",
+293         "_group",
+294         "_manager",
+295         "_mode",
+296     )
+297 
+298     def __init__(
+299         self, manager, group=None, mode=None, lock=NETCDF4_PYTHON_LOCK, autoclose=False
+300     ):
+301         import netCDF4
+302 
+303         if isinstance(manager, netCDF4.Dataset):
+304             if group is None:
+305                 root, group = find_root_and_group(manager)
+306             else:
+307                 if not type(manager) is netCDF4.Dataset:
+308                     raise ValueError(
+309                         "must supply a root netCDF4.Dataset if the group "
+310                         "argument is provided"
+311                     )
+312                 root = manager
+313             manager = DummyFileManager(root)
+314 
+315         self._manager = manager
+316         self._group = group
+317         self._mode = mode
+318         self.format = self.ds.data_model
+319         self._filename = self.ds.filepath()
+320         self.is_remote = is_remote_uri(self._filename)
+321         self.lock = ensure_lock(lock)
+322         self.autoclose = autoclose
+323 
+324     @classmethod
+325     def open(
+326         cls,
+327         filename,
+328         mode="r",
+329         format="NETCDF4",
+330         group=None,
+331         clobber=True,
+332         diskless=False,
+333         persist=False,
+334         lock=None,
+335         lock_maker=None,
+336         autoclose=False,
+337     ):
+338         import netCDF4
+339 
+340         if isinstance(filename, pathlib.Path):
+341             filename = os.fspath(filename)
+342 
+343         if not isinstance(filename, str):
+344             raise ValueError(
+345                 "can only read bytes or file-like objects "
+346                 "with engine='scipy' or 'h5netcdf'"
+347             )
+348 
+349         if format is None:
+350             format = "NETCDF4"
+351 
+352         if lock is None:
+353             if mode == "r":
+354                 if is_remote_uri(filename):
+355                     lock = NETCDFC_LOCK
+356                 else:
+357                     lock = NETCDF4_PYTHON_LOCK
+358             else:
+359                 if format is None or format.startswith("NETCDF4"):
+360                     base_lock = NETCDF4_PYTHON_LOCK
+361                 else:
+362                     base_lock = NETCDFC_LOCK
+363                 lock = combine_locks([base_lock, get_write_lock(filename)])
+364 
+365         kwargs = dict(
+366             clobber=clobber, diskless=diskless, persist=persist, format=format
+367         )
+368         manager = CachingFileManager(
+369             netCDF4.Dataset, filename, mode=mode, kwargs=kwargs
+370         )
+371         return cls(manager, group=group, mode=mode, lock=lock, autoclose=autoclose)
+372 
+373     def _acquire(self, needs_lock=True):
+374         with self._manager.acquire_context(needs_lock) as root:
+375             ds = _nc4_require_group(root, self._group, self._mode)
+376         return ds
+377 
+378     @property
+379     def ds(self):
+380         return self._acquire()
+381 
+382     def open_store_variable(self, name, var):
+383         dimensions = var.dimensions
+384         data = indexing.LazilyOuterIndexedArray(NetCDF4ArrayWrapper(name, self))
+385         attributes = {k: var.getncattr(k) for k in var.ncattrs()}
+386         _ensure_fill_value_valid(data, attributes)
+387         # netCDF4 specific encoding; save _FillValue for later
+388         encoding = {}
+389         filters = var.filters()
+390         if filters is not None:
+391             encoding.update(filters)
+392         chunking = var.chunking()
+393         if chunking is not None:
+394             if chunking == "contiguous":
+395                 encoding["contiguous"] = True
+396                 encoding["chunksizes"] = None
+397             else:
+398                 encoding["contiguous"] = False
+399                 encoding["chunksizes"] = tuple(chunking)
+400         # TODO: figure out how to round-trip "endian-ness" without raising
+401         # warnings from netCDF4
+402         # encoding['endian'] = var.endian()
+403         pop_to(attributes, encoding, "least_significant_digit")
+404         # save source so __repr__ can detect if it's local or not
+405         encoding["source"] = self._filename
+406         encoding["original_shape"] = var.shape
+407         encoding["dtype"] = var.dtype
+408 
+409         return Variable(dimensions, data, attributes, encoding)
+410 
+411     def get_variables(self):
+412         dsvars = FrozenDict(
+413             (k, self.open_store_variable(k, v)) for k, v in self.ds.variables.items()
+414         )
+415         return dsvars
+416 
+417     def get_attrs(self):
+418         attrs = FrozenDict((k, self.ds.getncattr(k)) for k in self.ds.ncattrs())
+419         return attrs
+420 
+421     def get_dimensions(self):
+422         dims = FrozenDict((k, len(v)) for k, v in self.ds.dimensions.items())
+423         return dims
+424 
+425     def get_encoding(self):
+426         encoding = {}
+427         encoding["unlimited_dims"] = {
+428             k for k, v in self.ds.dimensions.items() if v.isunlimited()
+429         }
+430         return encoding
+431 
+432     def set_dimension(self, name, length, is_unlimited=False):
+433         dim_length = length if not is_unlimited else None
+434         self.ds.createDimension(name, size=dim_length)
+435 
+436     def set_attribute(self, key, value):
+437         if self.format != "NETCDF4":
+438             value = encode_nc3_attr_value(value)
+439         if _is_list_of_strings(value):
+440             # encode as NC_STRING if attr is list of strings
+441             self.ds.setncattr_string(key, value)
+442         else:
+443             self.ds.setncattr(key, value)
+444 
+445     def encode_variable(self, variable):
+446         variable = _force_native_endianness(variable)
+447         if self.format == "NETCDF4":
+448             variable = _encode_nc4_variable(variable)
+449         else:
+450             variable = encode_nc3_variable(variable)
+451         return variable
+452 
+453     def prepare_variable(
+454         self, name, variable, check_encoding=False, unlimited_dims=None
+455     ):
+456         datatype = _get_datatype(
+457             variable, self.format, raise_on_invalid_encoding=check_encoding
+458         )
+459         attrs = variable.attrs.copy()
+460 
+461         fill_value = attrs.pop("_FillValue", None)
+462 
+463         if datatype is str and fill_value is not None:
+464             raise NotImplementedError(
+465                 "netCDF4 does not yet support setting a fill value for "
+466                 "variable-length strings "
+467                 "(https://github.com/Unidata/netcdf4-python/issues/730). "
+468                 "Either remove '_FillValue' from encoding on variable %r "
+469                 "or set {'dtype': 'S1'} in encoding to use the fixed width "
+470                 "NC_CHAR type." % name
+471             )
+472 
+473         encoding = _extract_nc4_variable_encoding(
+474             variable, raise_on_invalid=check_encoding, unlimited_dims=unlimited_dims
+475         )
+476 
+477         if name in self.ds.variables:
+478             nc4_var = self.ds.variables[name]
+479         else:
+480             nc4_var = self.ds.createVariable(
+481                 varname=name,
+482                 datatype=datatype,
+483                 dimensions=variable.dims,
+484                 zlib=encoding.get("zlib", False),
+485                 complevel=encoding.get("complevel", 4),
+486                 shuffle=encoding.get("shuffle", True),
+487                 fletcher32=encoding.get("fletcher32", False),
+488                 contiguous=encoding.get("contiguous", False),
+489                 chunksizes=encoding.get("chunksizes"),
+490                 endian="native",
+491                 least_significant_digit=encoding.get("least_significant_digit"),
+492                 fill_value=fill_value,
+493             )
+494 
+495         nc4_var.setncatts(attrs)
+496 
+497         target = NetCDF4ArrayWrapper(name, self)
+498 
+499         return target, variable.data
+500 
+501     def sync(self):
+502         self.ds.sync()
+503 
+504     def close(self, **kwargs):
+505         self._manager.close(**kwargs)
+506 
+507 
+508 def guess_can_open_netcdf4(store_spec):
+509     if isinstance(store_spec, str) and is_remote_uri(store_spec):
+510         return True
+511     try:
+512         _, ext = os.path.splitext(store_spec)
+513     except TypeError:
+514         return False
+515     return ext in {".nc", ".nc4", ".cdf"}
+516 
+517 
+518 def open_backend_dataset_netcdf4(
+519     filename_or_obj,
+520     mask_and_scale=True,
+521     decode_times=None,
+522     concat_characters=None,
+523     decode_coords=None,
+524     drop_variables=None,
+525     use_cftime=None,
+526     decode_timedelta=None,
+527     group=None,
+528     mode="r",
+529     format="NETCDF4",
+530     clobber=True,
+531     diskless=False,
+532     persist=False,
+533     lock=None,
+534     autoclose=False,
+535 ):
+536 
+537     store = NetCDF4DataStore.open(
+538         filename_or_obj,
+539         mode=mode,
+540         format=format,
+541         group=group,
+542         clobber=clobber,
+543         diskless=diskless,
+544         persist=persist,
+545         lock=lock,
+546         autoclose=autoclose,
+547     )
+548 
+549     with close_on_error(store):
+550         ds = open_backend_dataset_store(
+551             store,
+552             mask_and_scale=mask_and_scale,
+553             decode_times=decode_times,
+554             concat_characters=concat_characters,
+555             decode_coords=decode_coords,
+556             drop_variables=drop_variables,
+557             use_cftime=use_cftime,
+558             decode_timedelta=decode_timedelta,
+559         )
+560     return ds
+561 
+562 
+563 netcdf4_backend = BackendEntrypoint(
+564     open_dataset=open_backend_dataset_netcdf4, guess_can_open=guess_can_open_netcdf4
+565 )
+
+</code><intended_behavior>Correctly encode and decode filenames with non-English characters when reading or writing data from/to netCDF files.</intended_behavior>, <file>xarray/core/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Internal utilties; not for external use
+2 """
+3 import contextlib
+4 import functools
+5 import io
+6 import itertools
+7 import os.path
+8 import re
+9 import warnings
+10 from enum import Enum
+11 from typing import (
+12     Any,
+13     Callable,
+14     Collection,
+15     Container,
+16     Dict,
+17     Hashable,
+18     Iterable,
+19     Iterator,
+20     Mapping,
+21     MutableMapping,
+22     MutableSet,
+23     Optional,
+24     Sequence,
+25     Tuple,
+26     TypeVar,
+27     Union,
+28     cast,
+29 )
+30 
+31 import numpy as np
+32 import pandas as pd
+33 
+34 from . import dtypes
+35 
+36 K = TypeVar("K")
+37 V = TypeVar("V")
+38 T = TypeVar("T")
+39 
+40 
+41 def alias_message(old_name: str, new_name: str) -> str:
+42     return f"{old_name} has been deprecated. Use {new_name} instead."
+43 
+44 
+45 def alias_warning(old_name: str, new_name: str, stacklevel: int = 3) -> None:
+46     warnings.warn(
+47         alias_message(old_name, new_name), FutureWarning, stacklevel=stacklevel
+48     )
+49 
+50 
+51 def alias(obj: Callable[..., T], old_name: str) -> Callable[..., T]:
+52     assert isinstance(old_name, str)
+53 
+54     @functools.wraps(obj)
+55     def wrapper(*args, **kwargs):
+56         alias_warning(old_name, obj.__name__)
+57         return obj(*args, **kwargs)
+58 
+59     wrapper.__doc__ = alias_message(old_name, obj.__name__)
+60     return wrapper
+61 
+62 
+63 def _maybe_cast_to_cftimeindex(index: pd.Index) -> pd.Index:
+64     from ..coding.cftimeindex import CFTimeIndex
+65 
+66     if len(index) > 0 and index.dtype == "O":
+67         try:
+68             return CFTimeIndex(index)
+69         except (ImportError, TypeError):
+70             return index
+71     else:
+72         return index
+73 
+74 
+75 def maybe_cast_to_coords_dtype(label, coords_dtype):
+76     if coords_dtype.kind == "f" and not isinstance(label, slice):
+77         label = np.asarray(label, dtype=coords_dtype)
+78     return label
+79 
+80 
+81 def maybe_coerce_to_str(index, original_coords):
+82     """maybe coerce a pandas Index back to a nunpy array of type str
+83 
+84     pd.Index uses object-dtype to store str - try to avoid this for coords
+85     """
+86 
+87     try:
+88         result_type = dtypes.result_type(*original_coords)
+89     except TypeError:
+90         pass
+91     else:
+92         if result_type.kind in "SU":
+93             index = np.asarray(index, dtype=result_type.type)
+94 
+95     return index
+96 
+97 
+98 def safe_cast_to_index(array: Any) -> pd.Index:
+99     """Given an array, safely cast it to a pandas.Index.
+100 
+101     If it is already a pandas.Index, return it unchanged.
+102 
+103     Unlike pandas.Index, if the array has dtype=object or dtype=timedelta64,
+104     this function will not attempt to do automatic type conversion but will
+105     always return an index with dtype=object.
+106     """
+107     if isinstance(array, pd.Index):
+108         index = array
+109     elif hasattr(array, "to_index"):
+110         index = array.to_index()
+111     else:
+112         kwargs = {}
+113         if hasattr(array, "dtype") and array.dtype.kind == "O":
+114             kwargs["dtype"] = object
+115         index = pd.Index(np.asarray(array), **kwargs)
+116     return _maybe_cast_to_cftimeindex(index)
+117 
+118 
+119 def multiindex_from_product_levels(
+120     levels: Sequence[pd.Index], names: Sequence[str] = None
+121 ) -> pd.MultiIndex:
+122     """Creating a MultiIndex from a product without refactorizing levels.
+123 
+124     Keeping levels the same gives back the original labels when we unstack.
+125 
+126     Parameters
+127     ----------
+128     levels : sequence of pd.Index
+129         Values for each MultiIndex level.
+130     names : sequence of str, optional
+131         Names for each level.
+132 
+133     Returns
+134     -------
+135     pandas.MultiIndex
+136     """
+137     if any(not isinstance(lev, pd.Index) for lev in levels):
+138         raise TypeError("levels must be a list of pd.Index objects")
+139 
+140     split_labels, levels = zip(*[lev.factorize() for lev in levels])
+141     labels_mesh = np.meshgrid(*split_labels, indexing="ij")
+142     labels = [x.ravel() for x in labels_mesh]
+143     return pd.MultiIndex(levels, labels, sortorder=0, names=names)
+144 
+145 
+146 def maybe_wrap_array(original, new_array):
+147     """Wrap a transformed array with __array_wrap__ if it can be done safely.
+148 
+149     This lets us treat arbitrary functions that take and return ndarray objects
+150     like ufuncs, as long as they return an array with the same shape.
+151     """
+152     # in case func lost array's metadata
+153     if isinstance(new_array, np.ndarray) and new_array.shape == original.shape:
+154         return original.__array_wrap__(new_array)
+155     else:
+156         return new_array
+157 
+158 
+159 def equivalent(first: T, second: T) -> bool:
+160     """Compare two objects for equivalence (identity or equality), using
+161     array_equiv if either object is an ndarray. If both objects are lists,
+162     equivalent is sequentially called on all the elements.
+163     """
+164     # TODO: refactor to avoid circular import
+165     from . import duck_array_ops
+166 
+167     if isinstance(first, np.ndarray) or isinstance(second, np.ndarray):
+168         return duck_array_ops.array_equiv(first, second)
+169     elif isinstance(first, list) or isinstance(second, list):
+170         return list_equiv(first, second)
+171     else:
+172         return (
+173             (first is second)
+174             or (first == second)
+175             or (pd.isnull(first) and pd.isnull(second))
+176         )
+177 
+178 
+179 def list_equiv(first, second):
+180     equiv = True
+181     if len(first) != len(second):
+182         return False
+183     else:
+184         for f, s in zip(first, second):
+185             equiv = equiv and equivalent(f, s)
+186     return equiv
+187 
+188 
+189 def peek_at(iterable: Iterable[T]) -> Tuple[T, Iterator[T]]:
+190     """Returns the first value from iterable, as well as a new iterator with
+191     the same content as the original iterable
+192     """
+193     gen = iter(iterable)
+194     peek = next(gen)
+195     return peek, itertools.chain([peek], gen)
+196 
+197 
+198 def update_safety_check(
+199     first_dict: Mapping[K, V],
+200     second_dict: Mapping[K, V],
+201     compat: Callable[[V, V], bool] = equivalent,
+202 ) -> None:
+203     """Check the safety of updating one dictionary with another.
+204 
+205     Raises ValueError if dictionaries have non-compatible values for any key,
+206     where compatibility is determined by identity (they are the same item) or
+207     the `compat` function.
+208 
+209     Parameters
+210     ----------
+211     first_dict, second_dict : dict-like
+212         All items in the second dictionary are checked against for conflicts
+213         against items in the first dictionary.
+214     compat : function, optional
+215         Binary operator to determine if two values are compatible. By default,
+216         checks for equivalence.
+217     """
+218     for k, v in second_dict.items():
+219         if k in first_dict and not compat(v, first_dict[k]):
+220             raise ValueError(
+221                 "unsafe to merge dictionaries without "
+222                 "overriding values; conflicting key %r" % k
+223             )
+224 
+225 
+226 def remove_incompatible_items(
+227     first_dict: MutableMapping[K, V],
+228     second_dict: Mapping[K, V],
+229     compat: Callable[[V, V], bool] = equivalent,
+230 ) -> None:
+231     """Remove incompatible items from the first dictionary in-place.
+232 
+233     Items are retained if their keys are found in both dictionaries and the
+234     values are compatible.
+235 
+236     Parameters
+237     ----------
+238     first_dict, second_dict : dict-like
+239         Mappings to merge.
+240     compat : function, optional
+241         Binary operator to determine if two values are compatible. By default,
+242         checks for equivalence.
+243     """
+244     for k in list(first_dict):
+245         if k not in second_dict or not compat(first_dict[k], second_dict[k]):
+246             del first_dict[k]
+247 
+248 
+249 def is_dict_like(value: Any) -> bool:
+250     return hasattr(value, "keys") and hasattr(value, "__getitem__")
+251 
+252 
+253 def is_full_slice(value: Any) -> bool:
+254     return isinstance(value, slice) and value == slice(None)
+255 
+256 
+257 def is_list_like(value: Any) -> bool:
+258     return isinstance(value, list) or isinstance(value, tuple)
+259 
+260 
+261 def is_duck_array(value: Any) -> bool:
+262     if isinstance(value, np.ndarray):
+263         return True
+264     return (
+265         hasattr(value, "ndim")
+266         and hasattr(value, "shape")
+267         and hasattr(value, "dtype")
+268         and hasattr(value, "__array_function__")
+269         and hasattr(value, "__array_ufunc__")
+270     )
+271 
+272 
+273 def either_dict_or_kwargs(
+274     pos_kwargs: Optional[Mapping[Hashable, T]],
+275     kw_kwargs: Mapping[str, T],
+276     func_name: str,
+277 ) -> Mapping[Hashable, T]:
+278     if pos_kwargs is not None:
+279         if not is_dict_like(pos_kwargs):
+280             raise ValueError(
+281                 "the first argument to .%s must be a dictionary" % func_name
+282             )
+283         if kw_kwargs:
+284             raise ValueError(
+285                 "cannot specify both keyword and positional "
+286                 "arguments to .%s" % func_name
+287             )
+288         return pos_kwargs
+289     else:
+290         # Need an explicit cast to appease mypy due to invariance; see
+291         # https://github.com/python/mypy/issues/6228
+292         return cast(Mapping[Hashable, T], kw_kwargs)
+293 
+294 
+295 def is_scalar(value: Any, include_0d: bool = True) -> bool:
+296     """Whether to treat a value as a scalar.
+297 
+298     Any non-iterable, string, or 0-D array
+299     """
+300     from .variable import NON_NUMPY_SUPPORTED_ARRAY_TYPES
+301 
+302     if include_0d:
+303         include_0d = getattr(value, "ndim", None) == 0
+304     return (
+305         include_0d
+306         or isinstance(value, (str, bytes))
+307         or not (
+308             isinstance(value, (Iterable,) + NON_NUMPY_SUPPORTED_ARRAY_TYPES)
+309             or hasattr(value, "__array_function__")
+310         )
+311     )
+312 
+313 
+314 def is_valid_numpy_dtype(dtype: Any) -> bool:
+315     try:
+316         np.dtype(dtype)
+317     except (TypeError, ValueError):
+318         return False
+319     else:
+320         return True
+321 
+322 
+323 def to_0d_object_array(value: Any) -> np.ndarray:
+324     """Given a value, wrap it in a 0-D numpy.ndarray with dtype=object."""
+325     result = np.empty((), dtype=object)
+326     result[()] = value
+327     return result
+328 
+329 
+330 def to_0d_array(value: Any) -> np.ndarray:
+331     """Given a value, wrap it in a 0-D numpy.ndarray."""
+332     if np.isscalar(value) or (isinstance(value, np.ndarray) and value.ndim == 0):
+333         return np.array(value)
+334     else:
+335         return to_0d_object_array(value)
+336 
+337 
+338 def dict_equiv(
+339     first: Mapping[K, V],
+340     second: Mapping[K, V],
+341     compat: Callable[[V, V], bool] = equivalent,
+342 ) -> bool:
+343     """Test equivalence of two dict-like objects. If any of the values are
+344     numpy arrays, compare them correctly.
+345 
+346     Parameters
+347     ----------
+348     first, second : dict-like
+349         Dictionaries to compare for equality
+350     compat : function, optional
+351         Binary operator to determine if two values are compatible. By default,
+352         checks for equivalence.
+353 
+354     Returns
+355     -------
+356     equals : bool
+357         True if the dictionaries are equal
+358     """
+359     for k in first:
+360         if k not in second or not compat(first[k], second[k]):
+361             return False
+362     for k in second:
+363         if k not in first:
+364             return False
+365     return True
+366 
+367 
+368 def compat_dict_intersection(
+369     first_dict: Mapping[K, V],
+370     second_dict: Mapping[K, V],
+371     compat: Callable[[V, V], bool] = equivalent,
+372 ) -> MutableMapping[K, V]:
+373     """Return the intersection of two dictionaries as a new dictionary.
+374 
+375     Items are retained if their keys are found in both dictionaries and the
+376     values are compatible.
+377 
+378     Parameters
+379     ----------
+380     first_dict, second_dict : dict-like
+381         Mappings to merge.
+382     compat : function, optional
+383         Binary operator to determine if two values are compatible. By default,
+384         checks for equivalence.
+385 
+386     Returns
+387     -------
+388     intersection : dict
+389         Intersection of the contents.
+390     """
+391     new_dict = dict(first_dict)
+392     remove_incompatible_items(new_dict, second_dict, compat)
+393     return new_dict
+394 
+395 
+396 def compat_dict_union(
+397     first_dict: Mapping[K, V],
+398     second_dict: Mapping[K, V],
+399     compat: Callable[[V, V], bool] = equivalent,
+400 ) -> MutableMapping[K, V]:
+401     """Return the union of two dictionaries as a new dictionary.
+402 
+403     An exception is raised if any keys are found in both dictionaries and the
+404     values are not compatible.
+405 
+406     Parameters
+407     ----------
+408     first_dict, second_dict : dict-like
+409         Mappings to merge.
+410     compat : function, optional
+411         Binary operator to determine if two values are compatible. By default,
+412         checks for equivalence.
+413 
+414     Returns
+415     -------
+416     union : dict
+417         union of the contents.
+418     """
+419     new_dict = dict(first_dict)
+420     update_safety_check(first_dict, second_dict, compat)
+421     new_dict.update(second_dict)
+422     return new_dict
+423 
+424 
+425 class Frozen(Mapping[K, V]):
+426     """Wrapper around an object implementing the mapping interface to make it
+427     immutable. If you really want to modify the mapping, the mutable version is
+428     saved under the `mapping` attribute.
+429     """
+430 
+431     __slots__ = ("mapping",)
+432 
+433     def __init__(self, mapping: Mapping[K, V]):
+434         self.mapping = mapping
+435 
+436     def __getitem__(self, key: K) -> V:
+437         return self.mapping[key]
+438 
+439     def __iter__(self) -> Iterator[K]:
+440         return iter(self.mapping)
+441 
+442     def __len__(self) -> int:
+443         return len(self.mapping)
+444 
+445     def __contains__(self, key: object) -> bool:
+446         return key in self.mapping
+447 
+448     def __repr__(self) -> str:
+449         return "{}({!r})".format(type(self).__name__, self.mapping)
+450 
+451 
+452 def FrozenDict(*args, **kwargs) -> Frozen:
+453     return Frozen(dict(*args, **kwargs))
+454 
+455 
+456 class HybridMappingProxy(Mapping[K, V]):
+457     """Implements the Mapping interface. Uses the wrapped mapping for item lookup
+458     and a separate wrapped keys collection for iteration.
+459 
+460     Can be used to construct a mapping object from another dict-like object without
+461     eagerly accessing its items or when a mapping object is expected but only
+462     iteration over keys is actually used.
+463 
+464     Note: HybridMappingProxy does not validate consistency of the provided `keys`
+465     and `mapping`. It is the caller's responsibility to ensure that they are
+466     suitable for the task at hand.
+467     """
+468 
+469     __slots__ = ("_keys", "mapping")
+470 
+471     def __init__(self, keys: Collection[K], mapping: Mapping[K, V]):
+472         self._keys = keys
+473         self.mapping = mapping
+474 
+475     def __getitem__(self, key: K) -> V:
+476         return self.mapping[key]
+477 
+478     def __iter__(self) -> Iterator[K]:
+479         return iter(self._keys)
+480 
+481     def __len__(self) -> int:
+482         return len(self._keys)
+483 
+484 
+485 class SortedKeysDict(MutableMapping[K, V]):
+486     """An wrapper for dictionary-like objects that always iterates over its
+487     items in sorted order by key but is otherwise equivalent to the underlying
+488     mapping.
+489     """
+490 
+491     __slots__ = ("mapping",)
+492 
+493     def __init__(self, mapping: MutableMapping[K, V] = None):
+494         self.mapping = {} if mapping is None else mapping
+495 
+496     def __getitem__(self, key: K) -> V:
+497         return self.mapping[key]
+498 
+499     def __setitem__(self, key: K, value: V) -> None:
+500         self.mapping[key] = value
+501 
+502     def __delitem__(self, key: K) -> None:
+503         del self.mapping[key]
+504 
+505     def __iter__(self) -> Iterator[K]:
+506         # see #4571 for the reason of the type ignore
+507         return iter(sorted(self.mapping))  # type: ignore
+508 
+509     def __len__(self) -> int:
+510         return len(self.mapping)
+511 
+512     def __contains__(self, key: object) -> bool:
+513         return key in self.mapping
+514 
+515     def __repr__(self) -> str:
+516         return "{}({!r})".format(type(self).__name__, self.mapping)
+517 
+518 
+519 class OrderedSet(MutableSet[T]):
+520     """A simple ordered set.
+521 
+522     The API matches the builtin set, but it preserves insertion order of elements, like
+523     a dict. Note that, unlike in an OrderedDict, equality tests are not order-sensitive.
+524     """
+525 
+526     _d: Dict[T, None]
+527 
+528     __slots__ = ("_d",)
+529 
+530     def __init__(self, values: Iterable[T] = None):
+531         self._d = {}
+532         if values is not None:
+533             self.update(values)
+534 
+535     # Required methods for MutableSet
+536 
+537     def __contains__(self, value: Hashable) -> bool:
+538         return value in self._d
+539 
+540     def __iter__(self) -> Iterator[T]:
+541         return iter(self._d)
+542 
+543     def __len__(self) -> int:
+544         return len(self._d)
+545 
+546     def add(self, value: T) -> None:
+547         self._d[value] = None
+548 
+549     def discard(self, value: T) -> None:
+550         del self._d[value]
+551 
+552     # Additional methods
+553 
+554     def update(self, values: Iterable[T]) -> None:
+555         for v in values:
+556             self._d[v] = None
+557 
+558     def __repr__(self) -> str:
+559         return "{}({!r})".format(type(self).__name__, list(self))
+560 
+561 
+562 class NdimSizeLenMixin:
+563     """Mixin class that extends a class that defines a ``shape`` property to
+564     one that also defines ``ndim``, ``size`` and ``__len__``.
+565     """
+566 
+567     __slots__ = ()
+568 
+569     @property
+570     def ndim(self: Any) -> int:
+571         return len(self.shape)
+572 
+573     @property
+574     def size(self: Any) -> int:
+575         # cast to int so that shape = () gives size = 1
+576         return int(np.prod(self.shape))
+577 
+578     def __len__(self: Any) -> int:
+579         try:
+580             return self.shape[0]
+581         except IndexError:
+582             raise TypeError("len() of unsized object")
+583 
+584 
+585 class NDArrayMixin(NdimSizeLenMixin):
+586     """Mixin class for making wrappers of N-dimensional arrays that conform to
+587     the ndarray interface required for the data argument to Variable objects.
+588 
+589     A subclass should set the `array` property and override one or more of
+590     `dtype`, `shape` and `__getitem__`.
+591     """
+592 
+593     __slots__ = ()
+594 
+595     @property
+596     def dtype(self: Any) -> np.dtype:
+597         return self.array.dtype
+598 
+599     @property
+600     def shape(self: Any) -> Tuple[int]:
+601         return self.array.shape
+602 
+603     def __getitem__(self: Any, key):
+604         return self.array[key]
+605 
+606     def __repr__(self: Any) -> str:
+607         return "{}(array={!r})".format(type(self).__name__, self.array)
+608 
+609 
+610 class ReprObject:
+611     """Object that prints as the given value, for use with sentinel values."""
+612 
+613     __slots__ = ("_value",)
+614 
+615     def __init__(self, value: str):
+616         self._value = value
+617 
+618     def __repr__(self) -> str:
+619         return self._value
+620 
+621     def __eq__(self, other) -> bool:
+622         if isinstance(other, ReprObject):
+623             return self._value == other._value
+624         return False
+625 
+626     def __hash__(self) -> int:
+627         return hash((type(self), self._value))
+628 
+629     def __dask_tokenize__(self):
+630         from dask.base import normalize_token
+631 
+632         return normalize_token((type(self), self._value))
+633 
+634 
+635 @contextlib.contextmanager
+636 def close_on_error(f):
+637     """Context manager to ensure that a file opened by xarray is closed if an
+638     exception is raised before the user sees the file object.
+639     """
+640     try:
+641         yield
+642     except Exception:
+643         f.close()
+644         raise
+645 
+646 
+647 def is_remote_uri(path: str) -> bool:
+648     return bool(re.search(r"^https?\://", path))
+649 
+650 
+651 def read_magic_number(filename_or_obj, count=8):
+652     # check byte header to determine file type
+653     if isinstance(filename_or_obj, bytes):
+654         magic_number = filename_or_obj[:count]
+655     elif isinstance(filename_or_obj, io.IOBase):
+656         if filename_or_obj.tell() != 0:
+657             raise ValueError(
+658                 "cannot guess the engine, "
+659                 "file-like object read/write pointer not at the start of the file, "
+660                 "please close and reopen, or use a context manager"
+661             )
+662         magic_number = filename_or_obj.read(count)
+663         filename_or_obj.seek(0)
+664     else:
+665         raise TypeError(f"cannot read the magic number form {type(filename_or_obj)}")
+666     return magic_number
+667 
+668 
+669 def is_grib_path(path: str) -> bool:
+670     _, ext = os.path.splitext(path)
+671     return ext in [".grib", ".grb", ".grib2", ".grb2"]
+672 
+673 
+674 def is_uniform_spaced(arr, **kwargs) -> bool:
+675     """Return True if values of an array are uniformly spaced and sorted.
+676 
+677     >>> is_uniform_spaced(range(5))
+678     True
+679     >>> is_uniform_spaced([-4, 0, 100])
+680     False
+681 
+682     kwargs are additional arguments to ``np.isclose``
+683     """
+684     arr = np.array(arr, dtype=float)
+685     diffs = np.diff(arr)
+686     return bool(np.isclose(diffs.min(), diffs.max(), **kwargs))
+687 
+688 
+689 def hashable(v: Any) -> bool:
+690     """Determine whether `v` can be hashed."""
+691     try:
+692         hash(v)
+693     except TypeError:
+694         return False
+695     return True
+696 
+697 
+698 def not_implemented(*args, **kwargs):
+699     return NotImplemented
+700 
+701 
+702 def decode_numpy_dict_values(attrs: Mapping[K, V]) -> Dict[K, V]:
+703     """Convert attribute values from numpy objects to native Python objects,
+704     for use in to_dict
+705     """
+706     attrs = dict(attrs)
+707     for k, v in attrs.items():
+708         if isinstance(v, np.ndarray):
+709             attrs[k] = v.tolist()
+710         elif isinstance(v, np.generic):
+711             attrs[k] = v.item()
+712     return attrs
+713 
+714 
+715 def ensure_us_time_resolution(val):
+716     """Convert val out of numpy time, for use in to_dict.
+717     Needed because of numpy bug GH#7619"""
+718     if np.issubdtype(val.dtype, np.datetime64):
+719         val = val.astype("datetime64[us]")
+720     elif np.issubdtype(val.dtype, np.timedelta64):
+721         val = val.astype("timedelta64[us]")
+722     return val
+723 
+724 
+725 class HiddenKeyDict(MutableMapping[K, V]):
+726     """Acts like a normal dictionary, but hides certain keys."""
+727 
+728     __slots__ = ("_data", "_hidden_keys")
+729 
+730     # ``__init__`` method required to create instance from class.
+731 
+732     def __init__(self, data: MutableMapping[K, V], hidden_keys: Iterable[K]):
+733         self._data = data
+734         self._hidden_keys = frozenset(hidden_keys)
+735 
+736     def _raise_if_hidden(self, key: K) -> None:
+737         if key in self._hidden_keys:
+738             raise KeyError("Key `%r` is hidden." % key)
+739 
+740     # The next five methods are requirements of the ABC.
+741     def __setitem__(self, key: K, value: V) -> None:
+742         self._raise_if_hidden(key)
+743         self._data[key] = value
+744 
+745     def __getitem__(self, key: K) -> V:
+746         self._raise_if_hidden(key)
+747         return self._data[key]
+748 
+749     def __delitem__(self, key: K) -> None:
+750         self._raise_if_hidden(key)
+751         del self._data[key]
+752 
+753     def __iter__(self) -> Iterator[K]:
+754         for k in self._data:
+755             if k not in self._hidden_keys:
+756                 yield k
+757 
+758     def __len__(self) -> int:
+759         num_hidden = len(self._hidden_keys & self._data.keys())
+760         return len(self._data) - num_hidden
+761 
+762 
+763 def infix_dims(
+764     dims_supplied: Collection, dims_all: Collection, missing_dims: str = "raise"
+765 ) -> Iterator:
+766     """
+767     Resolves a supplied list containing an ellipsis representing other items, to
+768     a generator with the 'realized' list of all items
+769     """
+770     if ... in dims_supplied:
+771         if len(set(dims_all)) != len(dims_all):
+772             raise ValueError("Cannot use ellipsis with repeated dims")
+773         if list(dims_supplied).count(...) > 1:
+774             raise ValueError("More than one ellipsis supplied")
+775         other_dims = [d for d in dims_all if d not in dims_supplied]
+776         existing_dims = drop_missing_dims(dims_supplied, dims_all, missing_dims)
+777         for d in existing_dims:
+778             if d is ...:
+779                 yield from other_dims
+780             else:
+781                 yield d
+782     else:
+783         existing_dims = drop_missing_dims(dims_supplied, dims_all, missing_dims)
+784         if set(existing_dims) ^ set(dims_all):
+785             raise ValueError(
+786                 f"{dims_supplied} must be a permuted list of {dims_all}, unless `...` is included"
+787             )
+788         yield from existing_dims
+789 
+790 
+791 def get_temp_dimname(dims: Container[Hashable], new_dim: Hashable) -> Hashable:
+792     """Get an new dimension name based on new_dim, that is not used in dims.
+793     If the same name exists, we add an underscore(s) in the head.
+794 
+795     Example1:
+796         dims: ['a', 'b', 'c']
+797         new_dim: ['_rolling']
+798         -> ['_rolling']
+799     Example2:
+800         dims: ['a', 'b', 'c', '_rolling']
+801         new_dim: ['_rolling']
+802         -> ['__rolling']
+803     """
+804     while new_dim in dims:
+805         new_dim = "_" + str(new_dim)
+806     return new_dim
+807 
+808 
+809 def drop_dims_from_indexers(
+810     indexers: Mapping[Hashable, Any],
+811     dims: Union[list, Mapping[Hashable, int]],
+812     missing_dims: str,
+813 ) -> Mapping[Hashable, Any]:
+814     """Depending on the setting of missing_dims, drop any dimensions from indexers that
+815     are not present in dims.
+816 
+817     Parameters
+818     ----------
+819     indexers : dict
+820     dims : sequence
+821     missing_dims : {"raise", "warn", "ignore"}
+822     """
+823 
+824     if missing_dims == "raise":
+825         invalid = indexers.keys() - set(dims)
+826         if invalid:
+827             raise ValueError(
+828                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+829             )
+830 
+831         return indexers
+832 
+833     elif missing_dims == "warn":
+834 
+835         # don't modify input
+836         indexers = dict(indexers)
+837 
+838         invalid = indexers.keys() - set(dims)
+839         if invalid:
+840             warnings.warn(
+841                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+842             )
+843         for key in invalid:
+844             indexers.pop(key)
+845 
+846         return indexers
+847 
+848     elif missing_dims == "ignore":
+849         return {key: val for key, val in indexers.items() if key in dims}
+850 
+851     else:
+852         raise ValueError(
+853             f"Unrecognised option {missing_dims} for missing_dims argument"
+854         )
+855 
+856 
+857 def drop_missing_dims(
+858     supplied_dims: Collection, dims: Collection, missing_dims: str
+859 ) -> Collection:
+860     """Depending on the setting of missing_dims, drop any dimensions from supplied_dims that
+861     are not present in dims.
+862 
+863     Parameters
+864     ----------
+865     supplied_dims : dict
+866     dims : sequence
+867     missing_dims : {"raise", "warn", "ignore"}
+868     """
+869 
+870     if missing_dims == "raise":
+871         supplied_dims_set = set(val for val in supplied_dims if val is not ...)
+872         invalid = supplied_dims_set - set(dims)
+873         if invalid:
+874             raise ValueError(
+875                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+876             )
+877 
+878         return supplied_dims
+879 
+880     elif missing_dims == "warn":
+881 
+882         invalid = set(supplied_dims) - set(dims)
+883         if invalid:
+884             warnings.warn(
+885                 f"Dimensions {invalid} do not exist. Expected one or more of {dims}"
+886             )
+887 
+888         return [val for val in supplied_dims if val in dims or val is ...]
+889 
+890     elif missing_dims == "ignore":
+891         return [val for val in supplied_dims if val in dims or val is ...]
+892 
+893     else:
+894         raise ValueError(
+895             f"Unrecognised option {missing_dims} for missing_dims argument"
+896         )
+897 
+898 
+899 class UncachedAccessor:
+900     """Acts like a property, but on both classes and class instances
+901 
+902     This class is necessary because some tools (e.g. pydoc and sphinx)
+903     inspect classes for which property returns itself and not the
+904     accessor.
+905     """
+906 
+907     def __init__(self, accessor):
+908         self._accessor = accessor
+909 
+910     def __get__(self, obj, cls):
+911         if obj is None:
+912             return self._accessor
+913 
+914         return self._accessor(obj)
+915 
+916 
+917 # Singleton type, as per https://github.com/python/typing/pull/240
+918 class Default(Enum):
+919     token = 0
+920 
+921 
+922 _default = Default.token
+
+</code><intended_behavior>Provide utility methods for correctly handling and encoding/decoding filenames with non-English characters in a general context.</intended_behavior>]
+2025-11-08 08:36:30.591 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-08 08:36:30.591 | INFO     | Search-only: skipping patch selection
+2025-11-08 08:36:30.673 | INFO     | Task pydata__xarray-4819 completed successfully.
+2025-11-08 08:36:30.674 | INFO     | No patch generated. You can try running ACR again.

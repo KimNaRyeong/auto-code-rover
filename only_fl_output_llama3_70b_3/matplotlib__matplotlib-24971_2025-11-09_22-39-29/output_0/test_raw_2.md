@@ -1,0 +1,48 @@
+I apologize for the previous mistake. Here is a revised version of the `reproducer.py` file that should reproduce the issue:
+```python
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+arr = np.arange(100).reshape((10, 10))
+
+matplotlib.rcParams['figure.constrained_layout.use'] = True
+
+fig, ax_dict = plt.subplot_mosaic('AB;AC', figsize=(6, 9), width_ratios=[3, 2],
+                                  layout='compressed')
+
+for key in ["B", "C"]:
+    ax_dict[key].imshow(arr)
+
+fig.savefig("test1.png", bbox_inches="tight")
+fig.savefig("test2.png", bbox_inches="tight")
+
+img1 = plt.imread("test1.png")
+img2 = plt.imread("test2.png")
+
+try:
+    assert img1.shape[0] > img2.shape[0], "Compressed layout is not applied on the second save"
+except AssertionError as e:
+    print_stacktrace(e)
+    os.remove("test1.png")
+    os.remove("test2.png")
+    exit(1)
+
+os.remove("test1.png")
+os.remove("test2.png")
+exit(0)
+```
+This script should reproduce the issue and raise an `AssertionError` if the compressed layout is not applied on the second save. The `print_stacktrace` function is used to print a detailed stack trace of the error, including line numbers. If the issue is fixed, the script will exit with code 0.

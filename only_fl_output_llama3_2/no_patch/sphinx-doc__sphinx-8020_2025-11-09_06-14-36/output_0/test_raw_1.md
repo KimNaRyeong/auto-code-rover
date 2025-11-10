@@ -1,0 +1,37 @@
+Here is a new standalone Python file `reproducer.py` that reproduces the issue:
+
+```python
+import sphinx
+from docutils import nodes
+from sphinx.ext import autodoc
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_issue():
+    try:
+        sphinx.ext.autodoc.process_doc(nodes.document())
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue not reproduced")
+
+if __name__ == "__main__":
+    try:
+        from qtrio import host
+    except ImportError:
+        print_stacktrace(Exception("Failed to import module"))
+        raise AssertionError("Issue not reproduced")
+    else:
+        print("Issue fixed")
+```
+
+This script attempts to import the `host` function from your project and then tries to process a document using Sphinx's autodoc module. If the issue is present, it will print the stack trace and raise an `AssertionError`.

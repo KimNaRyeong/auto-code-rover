@@ -1,0 +1,51 @@
+Here is the corrected `reproducer.py` file that reproduces the issue:
+```
+import os
+os.environ['DJANGO_SETTINGS_MODULE'] = 'settings'
+
+from django.db import models
+from django.db.models import Q, F
+from django.test import TestCase
+
+class Topping(models.Model):
+    name = models.CharField(max_length=50)
+
+class Pizza(models.Model):
+    toppings = models.ManyToManyField(Topping)
+
+class Restaurant(models.Model):
+    pizzas = models.ManyToManyField(Pizza)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    from django.conf import settings
+    settings.configure(
+        INSTALLED_APPS=['django.contrib.contenttypes'],
+        DATABASES={'default': {'ENGINE': 'django.db.backends.sqlite3'}}  # Use sqlite for testing
+    )
+    Restaurant.objects.annotate(
+        pizzas_with_toppings_startswith_n=FilteredRelation(
+            'pizzas__toppings',
+            condition=Q(pizzas__toppings__name__startswith='n'),
+        ),
+    )
+except ValueError as e:
+    print_stacktrace(e)
+    raise AssertionError("Issue is present")
+else:
+    print("Issue is fixed")
+```
+This script sets up a minimal Django environment, defines the necessary models, and tries to execute the problematic code. If a `ValueError` is raised, it prints the stack trace using the provided function and raises an `AssertionError`. If no exception is raised, it prints "Issue is fixed" and exits with code 0.
+
+You can run this script by executing `python3 reproducer.py` in the root directory of your project.

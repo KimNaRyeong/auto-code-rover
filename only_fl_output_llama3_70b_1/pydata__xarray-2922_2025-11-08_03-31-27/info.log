@@ -1,0 +1,777 @@
+2025-11-08 03:31:28.222 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-08 03:31:31.432 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-08 03:31:31.437 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 03:32:25.028 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 03:32:42.146 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("data_structure.py", 100, 5)': old result is ['data_structure.py', '100', '5'], new result  is ['data_structure.py', 100, 5]
+2025-11-08 03:32:42.146 | DEBUG    | Extracted a valid json.
+2025-11-08 03:32:42.146 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"ds\")",
+        "search_method_in_class(\"average\", \"ds\")",
+        "search_code(\"weighted averages\")",
+        "search_code_in_file(\"geo data\", \"data_loader.py\")",
+        "get_code_around_line(\"data_structure.py\", 100, 5)"
+    ],
+    "bug_locations": []
+}
+2025-11-08 03:32:42.151 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("data_structure.py", 100, 5)': old result is ['data_structure.py', '100', '5'], new result  is ['data_structure.py', 100, 5]
+2025-11-08 03:32:42.153 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-08 03:32:42.153 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-08 03:33:25.380 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 03:33:45.298 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 03:33:53.404 | DEBUG    | Extracted a valid json.
+2025-11-08 03:33:53.404 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"data structure\")", "search_class_in_file(\"Data\", \"data.py\")"],
+    "bug_locations":[]
+}
+2025-11-08 03:33:53.420 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-08 03:33:53.421 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-08 03:34:30.258 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-08 03:34:49.936 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-08 03:35:05.624 | DEBUG    | Extracted a valid json.
+2025-11-08 03:35:05.624 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "xarray/backends/rasterio_.py", "class": "RasterioBackend", "method": "average", "intended_behavior": "The `average` method should compute the weighted average of a data structure, taking into account the axes order and potentially allowing for weights per dimension."}]
+}
+2025-11-08 03:35:05.628 | DEBUG    | Bug location extracted successfully: [<file>xarray/backends/rasterio_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os
+2 import warnings
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.dataarray import DataArray
+8 from ..core.utils import is_scalar
+9 from .common import BackendArray
+10 from .file_manager import CachingFileManager
+11 from .locks import SerializableLock
+12 
+13 # TODO: should this be GDAL_LOCK instead?
+14 RASTERIO_LOCK = SerializableLock()
+15 
+16 _ERROR_MSG = (
+17     "The kind of indexing operation you are trying to do is not "
+18     "valid on rasterio files. Try to load your data with ds.load()"
+19     "first."
+20 )
+21 
+22 
+23 class RasterioArrayWrapper(BackendArray):
+24     """A wrapper around rasterio dataset objects"""
+25 
+26     def __init__(self, manager, lock, vrt_params=None):
+27         from rasterio.vrt import WarpedVRT
+28 
+29         self.manager = manager
+30         self.lock = lock
+31 
+32         # cannot save riods as an attribute: this would break pickleability
+33         riods = manager.acquire()
+34         if vrt_params is not None:
+35             riods = WarpedVRT(riods, **vrt_params)
+36         self.vrt_params = vrt_params
+37         self._shape = (riods.count, riods.height, riods.width)
+38 
+39         dtypes = riods.dtypes
+40         if not np.all(np.asarray(dtypes) == dtypes[0]):
+41             raise ValueError("All bands should have the same dtype")
+42         self._dtype = np.dtype(dtypes[0])
+43 
+44     @property
+45     def dtype(self):
+46         return self._dtype
+47 
+48     @property
+49     def shape(self):
+50         return self._shape
+51 
+52     def _get_indexer(self, key):
+53         """ Get indexer for rasterio array.
+54 
+55         Parameter
+56         ---------
+57         key: tuple of int
+58 
+59         Returns
+60         -------
+61         band_key: an indexer for the 1st dimension
+62         window: two tuples. Each consists of (start, stop).
+63         squeeze_axis: axes to be squeezed
+64         np_ind: indexer for loaded numpy array
+65 
+66         See also
+67         --------
+68         indexing.decompose_indexer
+69         """
+70         assert len(key) == 3, "rasterio datasets should always be 3D"
+71 
+72         # bands cannot be windowed but they can be listed
+73         band_key = key[0]
+74         np_inds = []
+75         # bands (axis=0) cannot be windowed but they can be listed
+76         if isinstance(band_key, slice):
+77             start, stop, step = band_key.indices(self.shape[0])
+78             band_key = np.arange(start, stop, step)
+79         # be sure we give out a list
+80         band_key = (np.asarray(band_key) + 1).tolist()
+81         if isinstance(band_key, list):  # if band_key is not a scalar
+82             np_inds.append(slice(None))
+83 
+84         # but other dims can only be windowed
+85         window = []
+86         squeeze_axis = []
+87         for i, (k, n) in enumerate(zip(key[1:], self.shape[1:])):
+88             if isinstance(k, slice):
+89                 # step is always positive. see indexing.decompose_indexer
+90                 start, stop, step = k.indices(n)
+91                 np_inds.append(slice(None, None, step))
+92             elif is_scalar(k):
+93                 # windowed operations will always return an array
+94                 # we will have to squeeze it later
+95                 squeeze_axis.append(-(2 - i))
+96                 start = k
+97                 stop = k + 1
+98             else:
+99                 start, stop = np.min(k), np.max(k) + 1
+100                 np_inds.append(k - start)
+101             window.append((start, stop))
+102 
+103         if isinstance(key[1], np.ndarray) and isinstance(key[2], np.ndarray):
+104             # do outer-style indexing
+105             np_inds[-2:] = np.ix_(*np_inds[-2:])
+106 
+107         return band_key, tuple(window), tuple(squeeze_axis), tuple(np_inds)
+108 
+109     def _getitem(self, key):
+110         from rasterio.vrt import WarpedVRT
+111 
+112         band_key, window, squeeze_axis, np_inds = self._get_indexer(key)
+113 
+114         if not band_key or any(start == stop for (start, stop) in window):
+115             # no need to do IO
+116             shape = (len(band_key),) + tuple(stop - start for (start, stop) in window)
+117             out = np.zeros(shape, dtype=self.dtype)
+118         else:
+119             with self.lock:
+120                 riods = self.manager.acquire(needs_lock=False)
+121                 if self.vrt_params is not None:
+122                     riods = WarpedVRT(riods, **self.vrt_params)
+123                 out = riods.read(band_key, window=window)
+124 
+125         if squeeze_axis:
+126             out = np.squeeze(out, axis=squeeze_axis)
+127         return out[np_inds]
+128 
+129     def __getitem__(self, key):
+130         return indexing.explicit_indexing_adapter(
+131             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+132         )
+133 
+134 
+135 def _parse_envi(meta):
+136     """Parse ENVI metadata into Python data structures.
+137 
+138     See the link for information on the ENVI header file format:
+139     http://www.harrisgeospatial.com/docs/enviheaderfiles.html
+140 
+141     Parameters
+142     ----------
+143     meta : dict
+144         Dictionary of keys and str values to parse, as returned by the rasterio
+145         tags(ns='ENVI') call.
+146 
+147     Returns
+148     -------
+149     parsed_meta : dict
+150         Dictionary containing the original keys and the parsed values
+151 
+152     """
+153 
+154     def parsevec(s):
+155         return np.fromstring(s.strip("{}"), dtype="float", sep=",")
+156 
+157     def default(s):
+158         return s.strip("{}")
+159 
+160     parse = {"wavelength": parsevec, "fwhm": parsevec}
+161     parsed_meta = {k: parse.get(k, default)(v) for k, v in meta.items()}
+162     return parsed_meta
+163 
+164 
+165 def open_rasterio(filename, parse_coordinates=None, chunks=None, cache=None, lock=None):
+166     """Open a file with rasterio (experimental).
+167 
+168     This should work with any file that rasterio can open (most often:
+169     geoTIFF). The x and y coordinates are generated automatically from the
+170     file's geoinformation, shifted to the center of each pixel (see
+171     `"PixelIsArea" Raster Space
+172     <http://web.archive.org/web/20160326194152/http://remotesensing.org/geotiff/spec/geotiff2.5.html#2.5.2>`_
+173     for more information).
+174 
+175     You can generate 2D coordinates from the file's attributes with::
+176 
+177         from affine import Affine
+178         da = xr.open_rasterio('path_to_file.tif')
+179         transform = Affine.from_gdal(*da.attrs['transform'])
+180         nx, ny = da.sizes['x'], da.sizes['y']
+181         x, y = np.meshgrid(np.arange(nx)+0.5, np.arange(ny)+0.5) * transform
+182 
+183 
+184     Parameters
+185     ----------
+186     filename : str, rasterio.DatasetReader, or rasterio.WarpedVRT
+187         Path to the file to open. Or already open rasterio dataset.
+188     parse_coordinates : bool, optional
+189         Whether to parse the x and y coordinates out of the file's
+190         ``transform`` attribute or not. The default is to automatically
+191         parse the coordinates only if they are rectilinear (1D).
+192         It can be useful to set ``parse_coordinates=False``
+193         if your files are very large or if you don't need the coordinates.
+194     chunks : int, tuple or dict, optional
+195         Chunk sizes along each dimension, e.g., ``5``, ``(5, 5)`` or
+196         ``{'x': 5, 'y': 5}``. If chunks is provided, it used to load the new
+197         DataArray into a dask array.
+198     cache : bool, optional
+199         If True, cache data loaded from the underlying datastore in memory as
+200         NumPy arrays when accessed to avoid reading from the underlying data-
+201         store multiple times. Defaults to True unless you specify the `chunks`
+202         argument to use dask, in which case it defaults to False.
+203     lock : False, True or threading.Lock, optional
+204         If chunks is provided, this argument is passed on to
+205         :py:func:`dask.array.from_array`. By default, a global lock is
+206         used to avoid issues with concurrent access to the same file when using
+207         dask's multithreaded backend.
+208 
+209     Returns
+210     -------
+211     data : DataArray
+212         The newly created DataArray.
+213     """
+214     import rasterio
+215     from rasterio.vrt import WarpedVRT
+216 
+217     vrt_params = None
+218     if isinstance(filename, rasterio.io.DatasetReader):
+219         filename = filename.name
+220     elif isinstance(filename, rasterio.vrt.WarpedVRT):
+221         vrt = filename
+222         filename = vrt.src_dataset.name
+223         vrt_params = dict(
+224             crs=vrt.crs.to_string(),
+225             resampling=vrt.resampling,
+226             src_nodata=vrt.src_nodata,
+227             dst_nodata=vrt.dst_nodata,
+228             tolerance=vrt.tolerance,
+229             transform=vrt.transform,
+230             width=vrt.width,
+231             height=vrt.height,
+232             warp_extras=vrt.warp_extras,
+233         )
+234 
+235     if lock is None:
+236         lock = RASTERIO_LOCK
+237 
+238     manager = CachingFileManager(rasterio.open, filename, lock=lock, mode="r")
+239     riods = manager.acquire()
+240     if vrt_params is not None:
+241         riods = WarpedVRT(riods, **vrt_params)
+242 
+243     if cache is None:
+244         cache = chunks is None
+245 
+246     coords = {}
+247 
+248     # Get bands
+249     if riods.count < 1:
+250         raise ValueError("Unknown dims")
+251     coords["band"] = np.asarray(riods.indexes)
+252 
+253     # Get coordinates
+254     if riods.transform.is_rectilinear:
+255         # 1d coordinates
+256         parse = True if parse_coordinates is None else parse_coordinates
+257         if parse:
+258             nx, ny = riods.width, riods.height
+259             # xarray coordinates are pixel centered
+260             x, _ = riods.transform * (np.arange(nx) + 0.5, np.zeros(nx) + 0.5)
+261             _, y = riods.transform * (np.zeros(ny) + 0.5, np.arange(ny) + 0.5)
+262             coords["y"] = y
+263             coords["x"] = x
+264     else:
+265         # 2d coordinates
+266         parse = False if (parse_coordinates is None) else parse_coordinates
+267         if parse:
+268             warnings.warn(
+269                 "The file coordinates' transformation isn't "
+270                 "rectilinear: xarray won't parse the coordinates "
+271                 "in this case. Set `parse_coordinates=False` to "
+272                 "suppress this warning.",
+273                 RuntimeWarning,
+274                 stacklevel=3,
+275             )
+276 
+277     # Attributes
+278     attrs = {}
+279     # Affine transformation matrix (always available)
+280     # This describes coefficients mapping pixel coordinates to CRS
+281     # For serialization store as tuple of 6 floats, the last row being
+282     # always (0, 0, 1) per definition (see
+283     # https://github.com/sgillies/affine)
+284     attrs["transform"] = tuple(riods.transform)[:6]
+285     if hasattr(riods, "crs") and riods.crs:
+286         # CRS is a dict-like object specific to rasterio
+287         # If CRS is not None, we convert it back to a PROJ4 string using
+288         # rasterio itself
+289         try:
+290             attrs["crs"] = riods.crs.to_proj4()
+291         except AttributeError:
+292             attrs["crs"] = riods.crs.to_string()
+293     if hasattr(riods, "res"):
+294         # (width, height) tuple of pixels in units of CRS
+295         attrs["res"] = riods.res
+296     if hasattr(riods, "is_tiled"):
+297         # Is the TIF tiled? (bool)
+298         # We cast it to an int for netCDF compatibility
+299         attrs["is_tiled"] = np.uint8(riods.is_tiled)
+300     if hasattr(riods, "nodatavals"):
+301         # The nodata values for the raster bands
+302         attrs["nodatavals"] = tuple(
+303             np.nan if nodataval is None else nodataval for nodataval in riods.nodatavals
+304         )
+305     if hasattr(riods, "scales"):
+306         # The scale values for the raster bands
+307         attrs["scales"] = riods.scales
+308     if hasattr(riods, "offsets"):
+309         # The offset values for the raster bands
+310         attrs["offsets"] = riods.offsets
+311     if hasattr(riods, "descriptions") and any(riods.descriptions):
+312         # Descriptions for each dataset band
+313         attrs["descriptions"] = riods.descriptions
+314     if hasattr(riods, "units") and any(riods.units):
+315         # A list of units string for each dataset band
+316         attrs["units"] = riods.units
+317 
+318     # Parse extra metadata from tags, if supported
+319     parsers = {"ENVI": _parse_envi, "GTiff": lambda m: m}
+320 
+321     driver = riods.driver
+322     if driver in parsers:
+323         if driver == "GTiff":
+324             meta = parsers[driver](riods.tags())
+325         else:
+326             meta = parsers[driver](riods.tags(ns=driver))
+327 
+328         for k, v in meta.items():
+329             # Add values as coordinates if they match the band count,
+330             # as attributes otherwise
+331             if isinstance(v, (list, np.ndarray)) and len(v) == riods.count:
+332                 coords[k] = ("band", np.asarray(v))
+333             else:
+334                 attrs[k] = v
+335 
+336     data = indexing.LazilyOuterIndexedArray(
+337         RasterioArrayWrapper(manager, lock, vrt_params)
+338     )
+339 
+340     # this lets you write arrays loaded with rasterio
+341     data = indexing.CopyOnWriteArray(data)
+342     if cache and chunks is None:
+343         data = indexing.MemoryCachedArray(data)
+344 
+345     result = DataArray(data=data, dims=("band", "y", "x"), coords=coords, attrs=attrs)
+346 
+347     if chunks is not None:
+348         from dask.base import tokenize
+349 
+350         # augment the token with the file modification time
+351         try:
+352             mtime = os.path.getmtime(filename)
+353         except OSError:
+354             # the filename is probably an s3 bucket rather than a regular file
+355             mtime = None
+356         token = tokenize(filename, mtime, chunks)
+357         name_prefix = "open_rasterio-%s" % token
+358         result = result.chunk(chunks, name_prefix=name_prefix, token=token)
+359 
+360     # Make the file closeable
+361     result._file_obj = manager
+362 
+363     return result
+
+</code><intended_behavior>The `average` method should compute the weighted average of a data structure, taking into account the axes order and potentially allowing for weights per dimension.</intended_behavior>]
+2025-11-08 03:35:05.628 | INFO     | Search completed. Bug locations: [<file>xarray/backends/rasterio_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os
+2 import warnings
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.dataarray import DataArray
+8 from ..core.utils import is_scalar
+9 from .common import BackendArray
+10 from .file_manager import CachingFileManager
+11 from .locks import SerializableLock
+12 
+13 # TODO: should this be GDAL_LOCK instead?
+14 RASTERIO_LOCK = SerializableLock()
+15 
+16 _ERROR_MSG = (
+17     "The kind of indexing operation you are trying to do is not "
+18     "valid on rasterio files. Try to load your data with ds.load()"
+19     "first."
+20 )
+21 
+22 
+23 class RasterioArrayWrapper(BackendArray):
+24     """A wrapper around rasterio dataset objects"""
+25 
+26     def __init__(self, manager, lock, vrt_params=None):
+27         from rasterio.vrt import WarpedVRT
+28 
+29         self.manager = manager
+30         self.lock = lock
+31 
+32         # cannot save riods as an attribute: this would break pickleability
+33         riods = manager.acquire()
+34         if vrt_params is not None:
+35             riods = WarpedVRT(riods, **vrt_params)
+36         self.vrt_params = vrt_params
+37         self._shape = (riods.count, riods.height, riods.width)
+38 
+39         dtypes = riods.dtypes
+40         if not np.all(np.asarray(dtypes) == dtypes[0]):
+41             raise ValueError("All bands should have the same dtype")
+42         self._dtype = np.dtype(dtypes[0])
+43 
+44     @property
+45     def dtype(self):
+46         return self._dtype
+47 
+48     @property
+49     def shape(self):
+50         return self._shape
+51 
+52     def _get_indexer(self, key):
+53         """ Get indexer for rasterio array.
+54 
+55         Parameter
+56         ---------
+57         key: tuple of int
+58 
+59         Returns
+60         -------
+61         band_key: an indexer for the 1st dimension
+62         window: two tuples. Each consists of (start, stop).
+63         squeeze_axis: axes to be squeezed
+64         np_ind: indexer for loaded numpy array
+65 
+66         See also
+67         --------
+68         indexing.decompose_indexer
+69         """
+70         assert len(key) == 3, "rasterio datasets should always be 3D"
+71 
+72         # bands cannot be windowed but they can be listed
+73         band_key = key[0]
+74         np_inds = []
+75         # bands (axis=0) cannot be windowed but they can be listed
+76         if isinstance(band_key, slice):
+77             start, stop, step = band_key.indices(self.shape[0])
+78             band_key = np.arange(start, stop, step)
+79         # be sure we give out a list
+80         band_key = (np.asarray(band_key) + 1).tolist()
+81         if isinstance(band_key, list):  # if band_key is not a scalar
+82             np_inds.append(slice(None))
+83 
+84         # but other dims can only be windowed
+85         window = []
+86         squeeze_axis = []
+87         for i, (k, n) in enumerate(zip(key[1:], self.shape[1:])):
+88             if isinstance(k, slice):
+89                 # step is always positive. see indexing.decompose_indexer
+90                 start, stop, step = k.indices(n)
+91                 np_inds.append(slice(None, None, step))
+92             elif is_scalar(k):
+93                 # windowed operations will always return an array
+94                 # we will have to squeeze it later
+95                 squeeze_axis.append(-(2 - i))
+96                 start = k
+97                 stop = k + 1
+98             else:
+99                 start, stop = np.min(k), np.max(k) + 1
+100                 np_inds.append(k - start)
+101             window.append((start, stop))
+102 
+103         if isinstance(key[1], np.ndarray) and isinstance(key[2], np.ndarray):
+104             # do outer-style indexing
+105             np_inds[-2:] = np.ix_(*np_inds[-2:])
+106 
+107         return band_key, tuple(window), tuple(squeeze_axis), tuple(np_inds)
+108 
+109     def _getitem(self, key):
+110         from rasterio.vrt import WarpedVRT
+111 
+112         band_key, window, squeeze_axis, np_inds = self._get_indexer(key)
+113 
+114         if not band_key or any(start == stop for (start, stop) in window):
+115             # no need to do IO
+116             shape = (len(band_key),) + tuple(stop - start for (start, stop) in window)
+117             out = np.zeros(shape, dtype=self.dtype)
+118         else:
+119             with self.lock:
+120                 riods = self.manager.acquire(needs_lock=False)
+121                 if self.vrt_params is not None:
+122                     riods = WarpedVRT(riods, **self.vrt_params)
+123                 out = riods.read(band_key, window=window)
+124 
+125         if squeeze_axis:
+126             out = np.squeeze(out, axis=squeeze_axis)
+127         return out[np_inds]
+128 
+129     def __getitem__(self, key):
+130         return indexing.explicit_indexing_adapter(
+131             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+132         )
+133 
+134 
+135 def _parse_envi(meta):
+136     """Parse ENVI metadata into Python data structures.
+137 
+138     See the link for information on the ENVI header file format:
+139     http://www.harrisgeospatial.com/docs/enviheaderfiles.html
+140 
+141     Parameters
+142     ----------
+143     meta : dict
+144         Dictionary of keys and str values to parse, as returned by the rasterio
+145         tags(ns='ENVI') call.
+146 
+147     Returns
+148     -------
+149     parsed_meta : dict
+150         Dictionary containing the original keys and the parsed values
+151 
+152     """
+153 
+154     def parsevec(s):
+155         return np.fromstring(s.strip("{}"), dtype="float", sep=",")
+156 
+157     def default(s):
+158         return s.strip("{}")
+159 
+160     parse = {"wavelength": parsevec, "fwhm": parsevec}
+161     parsed_meta = {k: parse.get(k, default)(v) for k, v in meta.items()}
+162     return parsed_meta
+163 
+164 
+165 def open_rasterio(filename, parse_coordinates=None, chunks=None, cache=None, lock=None):
+166     """Open a file with rasterio (experimental).
+167 
+168     This should work with any file that rasterio can open (most often:
+169     geoTIFF). The x and y coordinates are generated automatically from the
+170     file's geoinformation, shifted to the center of each pixel (see
+171     `"PixelIsArea" Raster Space
+172     <http://web.archive.org/web/20160326194152/http://remotesensing.org/geotiff/spec/geotiff2.5.html#2.5.2>`_
+173     for more information).
+174 
+175     You can generate 2D coordinates from the file's attributes with::
+176 
+177         from affine import Affine
+178         da = xr.open_rasterio('path_to_file.tif')
+179         transform = Affine.from_gdal(*da.attrs['transform'])
+180         nx, ny = da.sizes['x'], da.sizes['y']
+181         x, y = np.meshgrid(np.arange(nx)+0.5, np.arange(ny)+0.5) * transform
+182 
+183 
+184     Parameters
+185     ----------
+186     filename : str, rasterio.DatasetReader, or rasterio.WarpedVRT
+187         Path to the file to open. Or already open rasterio dataset.
+188     parse_coordinates : bool, optional
+189         Whether to parse the x and y coordinates out of the file's
+190         ``transform`` attribute or not. The default is to automatically
+191         parse the coordinates only if they are rectilinear (1D).
+192         It can be useful to set ``parse_coordinates=False``
+193         if your files are very large or if you don't need the coordinates.
+194     chunks : int, tuple or dict, optional
+195         Chunk sizes along each dimension, e.g., ``5``, ``(5, 5)`` or
+196         ``{'x': 5, 'y': 5}``. If chunks is provided, it used to load the new
+197         DataArray into a dask array.
+198     cache : bool, optional
+199         If True, cache data loaded from the underlying datastore in memory as
+200         NumPy arrays when accessed to avoid reading from the underlying data-
+201         store multiple times. Defaults to True unless you specify the `chunks`
+202         argument to use dask, in which case it defaults to False.
+203     lock : False, True or threading.Lock, optional
+204         If chunks is provided, this argument is passed on to
+205         :py:func:`dask.array.from_array`. By default, a global lock is
+206         used to avoid issues with concurrent access to the same file when using
+207         dask's multithreaded backend.
+208 
+209     Returns
+210     -------
+211     data : DataArray
+212         The newly created DataArray.
+213     """
+214     import rasterio
+215     from rasterio.vrt import WarpedVRT
+216 
+217     vrt_params = None
+218     if isinstance(filename, rasterio.io.DatasetReader):
+219         filename = filename.name
+220     elif isinstance(filename, rasterio.vrt.WarpedVRT):
+221         vrt = filename
+222         filename = vrt.src_dataset.name
+223         vrt_params = dict(
+224             crs=vrt.crs.to_string(),
+225             resampling=vrt.resampling,
+226             src_nodata=vrt.src_nodata,
+227             dst_nodata=vrt.dst_nodata,
+228             tolerance=vrt.tolerance,
+229             transform=vrt.transform,
+230             width=vrt.width,
+231             height=vrt.height,
+232             warp_extras=vrt.warp_extras,
+233         )
+234 
+235     if lock is None:
+236         lock = RASTERIO_LOCK
+237 
+238     manager = CachingFileManager(rasterio.open, filename, lock=lock, mode="r")
+239     riods = manager.acquire()
+240     if vrt_params is not None:
+241         riods = WarpedVRT(riods, **vrt_params)
+242 
+243     if cache is None:
+244         cache = chunks is None
+245 
+246     coords = {}
+247 
+248     # Get bands
+249     if riods.count < 1:
+250         raise ValueError("Unknown dims")
+251     coords["band"] = np.asarray(riods.indexes)
+252 
+253     # Get coordinates
+254     if riods.transform.is_rectilinear:
+255         # 1d coordinates
+256         parse = True if parse_coordinates is None else parse_coordinates
+257         if parse:
+258             nx, ny = riods.width, riods.height
+259             # xarray coordinates are pixel centered
+260             x, _ = riods.transform * (np.arange(nx) + 0.5, np.zeros(nx) + 0.5)
+261             _, y = riods.transform * (np.zeros(ny) + 0.5, np.arange(ny) + 0.5)
+262             coords["y"] = y
+263             coords["x"] = x
+264     else:
+265         # 2d coordinates
+266         parse = False if (parse_coordinates is None) else parse_coordinates
+267         if parse:
+268             warnings.warn(
+269                 "The file coordinates' transformation isn't "
+270                 "rectilinear: xarray won't parse the coordinates "
+271                 "in this case. Set `parse_coordinates=False` to "
+272                 "suppress this warning.",
+273                 RuntimeWarning,
+274                 stacklevel=3,
+275             )
+276 
+277     # Attributes
+278     attrs = {}
+279     # Affine transformation matrix (always available)
+280     # This describes coefficients mapping pixel coordinates to CRS
+281     # For serialization store as tuple of 6 floats, the last row being
+282     # always (0, 0, 1) per definition (see
+283     # https://github.com/sgillies/affine)
+284     attrs["transform"] = tuple(riods.transform)[:6]
+285     if hasattr(riods, "crs") and riods.crs:
+286         # CRS is a dict-like object specific to rasterio
+287         # If CRS is not None, we convert it back to a PROJ4 string using
+288         # rasterio itself
+289         try:
+290             attrs["crs"] = riods.crs.to_proj4()
+291         except AttributeError:
+292             attrs["crs"] = riods.crs.to_string()
+293     if hasattr(riods, "res"):
+294         # (width, height) tuple of pixels in units of CRS
+295         attrs["res"] = riods.res
+296     if hasattr(riods, "is_tiled"):
+297         # Is the TIF tiled? (bool)
+298         # We cast it to an int for netCDF compatibility
+299         attrs["is_tiled"] = np.uint8(riods.is_tiled)
+300     if hasattr(riods, "nodatavals"):
+301         # The nodata values for the raster bands
+302         attrs["nodatavals"] = tuple(
+303             np.nan if nodataval is None else nodataval for nodataval in riods.nodatavals
+304         )
+305     if hasattr(riods, "scales"):
+306         # The scale values for the raster bands
+307         attrs["scales"] = riods.scales
+308     if hasattr(riods, "offsets"):
+309         # The offset values for the raster bands
+310         attrs["offsets"] = riods.offsets
+311     if hasattr(riods, "descriptions") and any(riods.descriptions):
+312         # Descriptions for each dataset band
+313         attrs["descriptions"] = riods.descriptions
+314     if hasattr(riods, "units") and any(riods.units):
+315         # A list of units string for each dataset band
+316         attrs["units"] = riods.units
+317 
+318     # Parse extra metadata from tags, if supported
+319     parsers = {"ENVI": _parse_envi, "GTiff": lambda m: m}
+320 
+321     driver = riods.driver
+322     if driver in parsers:
+323         if driver == "GTiff":
+324             meta = parsers[driver](riods.tags())
+325         else:
+326             meta = parsers[driver](riods.tags(ns=driver))
+327 
+328         for k, v in meta.items():
+329             # Add values as coordinates if they match the band count,
+330             # as attributes otherwise
+331             if isinstance(v, (list, np.ndarray)) and len(v) == riods.count:
+332                 coords[k] = ("band", np.asarray(v))
+333             else:
+334                 attrs[k] = v
+335 
+336     data = indexing.LazilyOuterIndexedArray(
+337         RasterioArrayWrapper(manager, lock, vrt_params)
+338     )
+339 
+340     # this lets you write arrays loaded with rasterio
+341     data = indexing.CopyOnWriteArray(data)
+342     if cache and chunks is None:
+343         data = indexing.MemoryCachedArray(data)
+344 
+345     result = DataArray(data=data, dims=("band", "y", "x"), coords=coords, attrs=attrs)
+346 
+347     if chunks is not None:
+348         from dask.base import tokenize
+349 
+350         # augment the token with the file modification time
+351         try:
+352             mtime = os.path.getmtime(filename)
+353         except OSError:
+354             # the filename is probably an s3 bucket rather than a regular file
+355             mtime = None
+356         token = tokenize(filename, mtime, chunks)
+357         name_prefix = "open_rasterio-%s" % token
+358         result = result.chunk(chunks, name_prefix=name_prefix, token=token)
+359 
+360     # Make the file closeable
+361     result._file_obj = manager
+362 
+363     return result
+
+</code><intended_behavior>The `average` method should compute the weighted average of a data structure, taking into account the axes order and potentially allowing for weights per dimension.</intended_behavior>]
+2025-11-08 03:35:05.628 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-08 03:35:05.628 | INFO     | Search-only: skipping patch selection
+2025-11-08 03:35:05.707 | INFO     | Task pydata__xarray-2922 completed successfully.
+2025-11-08 03:35:05.708 | INFO     | No patch generated. You can try running ACR again.

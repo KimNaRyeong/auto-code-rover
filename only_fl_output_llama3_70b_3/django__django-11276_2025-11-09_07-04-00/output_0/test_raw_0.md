@@ -1,0 +1,54 @@
+Here is the `reproducer.py` file to reproduce the issue:
+```
+import timeit
+from django.utils.html import escape as django_escape
+import html
+
+def test_django_escape():
+    copyright = "Copyright 2023"
+    result = django_escape(copyright)
+    assert result == "Copyright 2023", f"Expected 'Copyright 2023', got {result}"
+
+def test_html_escape():
+    copyright = "Copyright 2023"
+    result = html.escape(copyright)
+    assert result == "Copyright 2023", f"Expected 'Copyright 2023', got {result}"
+
+def test_performance_django_escape():
+    setup_code = "from django.utils.html import escape"
+    stmt = "escape('Copyright 2023')"
+    number = 50000
+    time_taken = timeit.timeit(stmt, setup=setup_code, number=number)
+    assert time_taken < 4.03, f"Expected time taken to be less than 4.03 usec, got {time_taken} usec"
+
+def test_performance_html_escape():
+    setup_code = "import html"
+    stmt = "html.escape('Copyright 2023')"
+    number = 100000
+    time_taken = timeit.timeit(stmt, setup=setup_code, number=number)
+    assert time_taken < 2.45, f"Expected time taken to be less than 2.45 usec, got {time_taken} usec"
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    test_django_escape()
+    test_html_escape()
+    test_performance_django_escape()
+    test_performance_html_escape()
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+
+exit(0)
+```
+This script tests the functionality and performance of both `django.utils.html.escape()` and `html.escape()`. If any of the assertions fail, it will raise an `AssertionError` with a stack trace. If all tests pass, the script exits with code 0.

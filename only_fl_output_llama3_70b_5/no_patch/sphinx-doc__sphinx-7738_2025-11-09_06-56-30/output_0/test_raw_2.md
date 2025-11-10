@@ -1,0 +1,73 @@
+I apologize for the mistake. Here is a new standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+import shutil
+from sphinx.application import Sphinx
+from sphinx.ext.autodoc import setup as autodoc_setup
+from sphinx.ext.napoleon import setup as napoleon_setup
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    # Create a temporary directory for the Sphinx project
+    temp_dir = "temp_sphinx_project"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # Create the necessary files in the temporary directory
+    os.makedirs(os.path.join(temp_dir, "docs"), exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "docs", "_build"), exist_ok=True)
+    os.makedirs(os.path.join(temp_dir, "docs", "_static"), exist_ok=True)
+
+    with open(os.path.join(temp_dir, "a.py"), "w") as f:
+        f.write("""
+class A:
+    def __init__(self):
+        """
+        Attributes
+        ----------
+        hello_: int
+            hi
+        """
+        pass
+""")
+
+    with open(os.path.join(temp_dir, "docs", "conf.py"), "w") as f:
+        f.write("""
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon']
+""")
+
+    with open(os.path.join(temp_dir, "docs", "index.rst"), "w") as f:
+        f.write(".. autoclass:: a.A\n")
+
+    # Run Sphinx to generate the HTML
+    app = Sphinx(os.path.join(temp_dir, "docs"), os.path.join(temp_dir, "docs"), os.path.join(temp_dir, "docs", "_build"), os.path.join(temp_dir, "docs"))
+    autodoc_setup(app)
+    napoleon_setup(app)
+    app.build()
+
+    # Check if the issue is present in the generated HTML
+    with open(os.path.join(temp_dir, "docs", "_build", "html", "index.html"), "r") as f:
+        html_content = f.read()
+        if "hello\\_" not in html_content:
+            raise AssertionError("Overescaped trailing underscore on attribute with napoleon is fixed")
+
+if __name__ == "__main__":
+    try:
+        reproduce_issue()
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+    else:
+        exit(0)
+```
+This script creates a temporary Sphinx project, generates the HTML documentation using `sphinx-quickstart`, and checks if the issue is present in the generated HTML. If the issue is fixed, it raises an `AssertionError` with a stack trace of the issue.

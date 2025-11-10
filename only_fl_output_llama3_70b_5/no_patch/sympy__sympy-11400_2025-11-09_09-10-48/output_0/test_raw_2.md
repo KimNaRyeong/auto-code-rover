@@ -1,0 +1,32 @@
+Here is the `reproducer.py` file to reproduce the issue:
+```
+import sympy as sp
+from sympy import Piecewise, Ne, sin, symbols
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+x, theta = symbols('x theta')
+
+try:
+    from sympy.utilities.codegen import ccode
+    result = ccode(sp.sinc(x))
+    assert "'// Not supported in C:\\n// sinc\\nsinc(x)'" not in str(result), "ccode(sinc(x)) should return a valid C code"
+    assert 'sinc' in str(result), "ccode(sinc(x)) should contain 'sinc'"
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+
+print("Issue fixed!")
+exit(0)
+```
+This script tries to call `ccode` with the `sinc` function from SymPy and checks if the result contains a valid C code and the string `'sinc'`. If not, it raises an `AssertionError`, prints the stack trace, and exits with code 1. If the issue is fixed, it prints "Issue fixed!" and exits with code 0.

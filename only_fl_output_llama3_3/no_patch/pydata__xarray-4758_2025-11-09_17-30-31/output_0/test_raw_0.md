@@ -1,0 +1,23 @@
+Here is the reproducer script:
+
+```python
+import xarray as xr
+from unittest import TestCase
+
+class TestCFTimeOffsets(TestCase):
+    def test_cftime_offsets(self):
+        try:
+            xr.cftime_range("2000-01-01", periods=3, freq='10L')
+        except Exception as e:
+            print_stacktrace(e)
+            self.fail()
+
+if __name__ == "__main__":
+    suite = unittest.TestLoader().loadTestsFromTestCase(TestCFTimeOffsets)
+    runner = unittest.TextTestRunner()
+    result = runner.run(suite)
+    if not result.wasSuccessful():
+        sys.exit(1)
+```
+
+This script defines a test case `TestCFTimeOffsets` that attempts to create a `cftime_range` with the frequency `'10L'`, which represents 10 milliseconds. If an exception is raised, it prints the stack trace and fails the test.
