@@ -1,0 +1,40 @@
+The issue seems to be related to the `collections` module not having a `MutableMapping` attribute. This is likely due to the Python version being used, as `MutableMapping` was removed in Python 3.10.
+
+Here's an updated reproducer script that should work:
+
+```python
+import requests
+from urllib.parse import urlparse, unquote
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    urls = [
+        "http://bit.ly/1x5vKWM",
+        "http://bit.ly/1yPgqvg",
+        "http://style.shoedazzle.com/dmg/3AE3B8?dzcode=FBT&dzcontent=FBT_SDZ_CPM_Q414&pid=112768085&aid=285880402&cid=0&publisher=%ppublisher=!;&placement=%pplacement=!;"
+    ]
+
+    for url in urls:
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+        except Exception as e:
+            print_stacktrace(e)
+            raise AssertionError("Issue reproduced")
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script will attempt to fetch the given URLs using `requests.get()`. If any of these attempts fail, it will print the stack trace and raise an `AssertionError` with a message indicating that the issue was reproduced.

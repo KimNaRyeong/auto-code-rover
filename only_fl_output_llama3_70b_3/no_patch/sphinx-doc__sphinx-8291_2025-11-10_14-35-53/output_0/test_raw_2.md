@@ -1,0 +1,72 @@
+Here is a new standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+from sphinx.application import Sphinx
+from sphinx.ext.autodoc import AutodocDirective
+from docutils.parsers.rst import Directive
+import attr
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+@attr.s(auto_attribs=True)
+class MyClass:
+    """My class docstring
+
+    Attributes:
+        my_attribute (str): My attribute description
+    """
+    my_attribute: str
+
+def setup(app):
+    app.add_directive('autoclass', Autoclass)
+    app.add_autodocumenter(MyAutodocDocumenter)
+
+class Autoclass(AutodocDirective):
+    required_arguments = 1
+    optional_arguments = 0
+
+class MyAutodocDocumenter:
+    def __init__(self, directive, name, obj):
+        self.directive = directive
+        self.name = name
+        self.obj = obj
+
+    def generate(self, more_content=None, real_modname=None, check_module=True, all_undoc=False):
+        doc = '\n'.join([
+            '.. autoclass:: MyClass',
+            '   :members:',
+            '   :undoc-members:',
+        ])
+        app = Sphinx(srcdir=os.path.dirname(__file__), confdir=os.path.dirname(__file__))
+        app.builder.init()
+        try:
+            app.builder.write(doc, 'index')
+            html = app.builder.get_target_uri('index')
+            with open(html, 'r') as f:
+                content = f.read()
+                if 'my_attribute : str' not in content and 'My attribute description' in content:
+                    raise AssertionError("Type hint is not extracted")
+        finally:
+            app.builder.cleanup()
+
+if __name__ == '__main__':
+    try:
+        setup(None)
+        MyAutodocDocumenter(None, 'MyClass', MyClass()).generate()
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+```
+This script defines a class `MyClass` with an attribute `my_attribute` that has a type hint using the `attrs` library. It then uses the `autodoc` extension to generate documentation for this class, including the attribute. The generated HTML is then checked to see if it includes both the type hint and the description for the attribute. If not, an `AssertionError` is raised.
+
+Please make sure you have Sphinx, attrs, and docutils installed in your environment to run this script.

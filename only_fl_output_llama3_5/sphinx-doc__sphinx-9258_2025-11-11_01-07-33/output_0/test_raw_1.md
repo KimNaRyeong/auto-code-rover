@@ -1,0 +1,27 @@
+I apologize for the previous mistake. Here is a new reproducer script that should correctly reproduce the issue:
+
+```python
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_union_type():
+    try:
+        type(None) | int
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Expected union type specification to be supported")
+
+if __name__ == "__main__":
+    test_union_type()
+```
+
+This script attempts to use the `|` operator on two types, which should raise a `TypeError`. If the issue is present, it will print a stack trace and exit with code 1.

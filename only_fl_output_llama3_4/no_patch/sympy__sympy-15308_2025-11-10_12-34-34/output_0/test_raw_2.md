@@ -1,0 +1,34 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        A = sp.MatrixSymbol("A", 2, 2)
+        result = str(sp.latex(A**2))
+        assert "A^2" in result
+        print(result)
+    except AssertionError as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script should raise an `AssertionError` when the issue is present and print a stack trace of the issue. The script should also exit with code 0 when the issue is fixed.
+
+Please note that this reproducer script assumes that the issue is related to the LaTeX printing for Matrix Expression, specifically the failure to recognize "Trace" or the incorrect rendering of the inner expression as "A^2".

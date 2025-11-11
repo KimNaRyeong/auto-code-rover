@@ -1,0 +1,30 @@
+Here is the `reproducer.py` file that reproduces the issue:
+```
+import django
+from django.db import models
+from django.contrib.postgres.indexes import Index
+
+django.setup()
+
+class Author(models.Model):
+    name = models.CharField(max_length=100)
+
+index = Index(fields=['-name'], name='idx')
+print(index.create_sql(model=Author, db_tablespace=''))
+
+try:
+    index = Index(fields=['name'], name='idx', opclasses=['text_pattern_ops'])
+    create_sql = index.create_sql(model=Author, db_tablespace='')
+    expected_sql = 'CREATE INDEX "idx" ON "reproducer_author" ("name" text_pattern_ops)'
+    assert create_sql == expected_sql, f"Expected {expected_sql} but got {create_sql}"
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+
+exit(0)
+```
+This script defines a simple Django model `Author` with a single field `name`. It then creates two indexes: one with a descending order and another with an opclass. The script prints the generated SQL for each index.
+
+The second index creation is expected to raise an `AssertionError` due to the issue described, which will trigger the `print_stacktrace` function to print the stack trace of the error.
+
+If the issue is fixed, the script will exit with code 0.

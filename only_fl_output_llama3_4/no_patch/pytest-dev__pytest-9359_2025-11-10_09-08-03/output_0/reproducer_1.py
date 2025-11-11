@@ -1,0 +1,14 @@
+def t(foo):
+    return foo
+
+@t
+def outer():
+    return 2
+
+def test_right_statement():
+    assert 1 == (3 + 2) * (6 + 9)
+
+try:
+    test_right_statement()
+except AssertionError as e:
+    print_stacktrace(e)

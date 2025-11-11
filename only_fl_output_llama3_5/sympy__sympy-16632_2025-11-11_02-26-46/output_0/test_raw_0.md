@@ -1,0 +1,23 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application
+
+def main():
+    transformations = (standard_transformations + (implicit_multiplication_application,))
+    expr1 = parse_expr('2**n * 3**n')
+    expr2 = parse_expr('2**n3**n', transformations=transformations)
+
+    try:
+        result = expr1 - expr2
+        assert result == 0, "Expected 0 but got {}".format(result)
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+This script will raise an `AssertionError` when the issue is present and print a stack trace. If you run this script, it should reproduce the issue.

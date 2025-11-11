@@ -1,0 +1,1312 @@
+2025-11-10 12:55:04.496 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-10 12:55:06.786 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-10 12:55:06.790 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 12:55:20.658 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 12:55:26.423 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("sphinx/domains/python.py", 259, 5)': old result is ['sphinx/domains/python.py', '259', '5'], new result  is ['sphinx/domains/python.py', 259, 5]
+2025-11-10 12:55:26.424 | DEBUG    | Extracted a valid json.
+2025-11-10 12:55:26.424 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"PythonDomain\")",
+        "search_method_in_class(\"_parse_annotation\", \"PythonDomain\")",
+        "search_code(\"Union[\")",
+        "search_code(\"Optional[\")",
+        "search_code(\"Literal[\")",
+        "search_class_in_file(\"PythonDomain\", \"sphinx/domains/python.py\")",
+        "get_code_around_line(\"sphinx/domains/python.py\", 259, 5)"
+    ],
+    "bug_locations": []
+}
+2025-11-10 12:55:26.469 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("sphinx/domains/python.py", 259, 5)': old result is ['sphinx/domains/python.py', '259', '5'], new result  is ['sphinx/domains/python.py', 259, 5]
+2025-11-10 12:55:26.523 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-10 12:55:26.523 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-10 12:55:49.179 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-10 12:55:54.792 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-10 12:56:01.288 | DEBUG    | Extracted a valid json.
+2025-11-10 12:56:01.288 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "storage.py", "class": "Storage", "method": "save", "intended_behavior": "The `save` method should store files with their original names, preserving non-ASCII characters."}, {"file": "utils.py", "class": "", "method": "sanitize_filename", "intended_behavior": "The `sanitize_filename` function should handle filenames with non-ASCII characters correctly, without ignoring or modifying them. It could use a more permissive encoding scheme, such as UTF-8, to preserve the original filename."}]
+}
+2025-11-10 12:56:01.293 | DEBUG    | Bug location extracted successfully: [<file>sphinx/util/docutils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Utility functions for docutils."""
+2 
+3 from __future__ import annotations
+4 
+5 import os
+6 import re
+7 import warnings
+8 from contextlib import contextmanager
+9 from copy import copy
+10 from os import path
+11 from typing import IO, TYPE_CHECKING, Any, Callable, Generator, cast
+12 
+13 import docutils
+14 from docutils import nodes
+15 from docutils.io import FileOutput
+16 from docutils.nodes import Element, Node, system_message
+17 from docutils.parsers.rst import Directive, directives, roles
+18 from docutils.parsers.rst.states import Inliner
+19 from docutils.statemachine import State, StateMachine, StringList
+20 from docutils.utils import Reporter, unescape
+21 from docutils.writers._html_base import HTMLTranslator
+22 
+23 from sphinx.errors import SphinxError
+24 from sphinx.locale import _, __
+25 from sphinx.util import logging
+26 from sphinx.util.typing import RoleFunction
+27 
+28 logger = logging.getLogger(__name__)
+29 report_re = re.compile('^(.+?:(?:\\d+)?): \\((DEBUG|INFO|WARNING|ERROR|SEVERE)/(\\d+)?\\) ')
+30 
+31 if TYPE_CHECKING:
+32     from types import ModuleType
+33 
+34     from docutils.frontend import Values
+35 
+36     from sphinx.builders import Builder
+37     from sphinx.config import Config
+38     from sphinx.environment import BuildEnvironment
+39 
+40 # deprecated name -> (object to return, canonical path or empty string)
+41 _DEPRECATED_OBJECTS = {
+42     '__version_info__': (docutils.__version_info__, 'docutils.__version_info__'),
+43 }
+44 
+45 
+46 def __getattr__(name):
+47     if name not in _DEPRECATED_OBJECTS:
+48         raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+49 
+50     from sphinx.deprecation import _deprecation_warning
+51 
+52     deprecated_object, canonical_name = _DEPRECATED_OBJECTS[name]
+53     _deprecation_warning(__name__, name, canonical_name, remove=(7, 0))
+54     return deprecated_object
+55 
+56 
+57 additional_nodes: set[type[Element]] = set()
+58 
+59 
+60 @contextmanager
+61 def docutils_namespace() -> Generator[None, None, None]:
+62     """Create namespace for reST parsers."""
+63     try:
+64         _directives = copy(directives._directives)  # type: ignore
+65         _roles = copy(roles._roles)  # type: ignore
+66 
+67         yield
+68     finally:
+69         directives._directives = _directives  # type: ignore
+70         roles._roles = _roles  # type: ignore
+71 
+72         for node in list(additional_nodes):
+73             unregister_node(node)
+74             additional_nodes.discard(node)
+75 
+76 
+77 def is_directive_registered(name: str) -> bool:
+78     """Check the *name* directive is already registered."""
+79     return name in directives._directives  # type: ignore
+80 
+81 
+82 def register_directive(name: str, directive: type[Directive]) -> None:
+83     """Register a directive to docutils.
+84 
+85     This modifies global state of docutils.  So it is better to use this
+86     inside ``docutils_namespace()`` to prevent side-effects.
+87     """
+88     directives.register_directive(name, directive)
+89 
+90 
+91 def is_role_registered(name: str) -> bool:
+92     """Check the *name* role is already registered."""
+93     return name in roles._roles  # type: ignore
+94 
+95 
+96 def register_role(name: str, role: RoleFunction) -> None:
+97     """Register a role to docutils.
+98 
+99     This modifies global state of docutils.  So it is better to use this
+100     inside ``docutils_namespace()`` to prevent side-effects.
+101     """
+102     roles.register_local_role(name, role)
+103 
+104 
+105 def unregister_role(name: str) -> None:
+106     """Unregister a role from docutils."""
+107     roles._roles.pop(name, None)  # type: ignore
+108 
+109 
+110 def is_node_registered(node: type[Element]) -> bool:
+111     """Check the *node* is already registered."""
+112     return hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__)
+113 
+114 
+115 def register_node(node: type[Element]) -> None:
+116     """Register a node to docutils.
+117 
+118     This modifies global state of some visitors.  So it is better to use this
+119     inside ``docutils_namespace()`` to prevent side-effects.
+120     """
+121     if not hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__):
+122         nodes._add_node_class_names([node.__name__])  # type: ignore
+123         additional_nodes.add(node)
+124 
+125 
+126 def unregister_node(node: type[Element]) -> None:
+127     """Unregister a node from docutils.
+128 
+129     This is inverse of ``nodes._add_nodes_class_names()``.
+130     """
+131     if hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__):
+132         delattr(nodes.GenericNodeVisitor, "visit_" + node.__name__)
+133         delattr(nodes.GenericNodeVisitor, "depart_" + node.__name__)
+134         delattr(nodes.SparseNodeVisitor, 'visit_' + node.__name__)
+135         delattr(nodes.SparseNodeVisitor, 'depart_' + node.__name__)
+136 
+137 
+138 @contextmanager
+139 def patched_get_language() -> Generator[None, None, None]:
+140     """Patch docutils.languages.get_language() temporarily.
+141 
+142     This ignores the second argument ``reporter`` to suppress warnings.
+143     refs: https://github.com/sphinx-doc/sphinx/issues/3788
+144     """
+145     from docutils.languages import get_language
+146 
+147     def patched_get_language(language_code: str, reporter: Reporter = None) -> Any:
+148         return get_language(language_code)
+149 
+150     try:
+151         docutils.languages.get_language = patched_get_language
+152         yield
+153     finally:
+154         # restore original implementations
+155         docutils.languages.get_language = get_language
+156 
+157 
+158 @contextmanager
+159 def patched_rst_get_language() -> Generator[None, None, None]:
+160     """Patch docutils.parsers.rst.languages.get_language().
+161     Starting from docutils 0.17, get_language() in ``rst.languages``
+162     also has a reporter, which needs to be disabled temporarily.
+163 
+164     This should also work for old versions of docutils,
+165     because reporter is none by default.
+166 
+167     refs: https://github.com/sphinx-doc/sphinx/issues/10179
+168     """
+169     from docutils.parsers.rst.languages import get_language
+170 
+171     def patched_get_language(language_code: str, reporter: Reporter = None) -> Any:
+172         return get_language(language_code)
+173 
+174     try:
+175         docutils.parsers.rst.languages.get_language = patched_get_language
+176         yield
+177     finally:
+178         # restore original implementations
+179         docutils.parsers.rst.languages.get_language = get_language
+180 
+181 
+182 @contextmanager
+183 def using_user_docutils_conf(confdir: str | None) -> Generator[None, None, None]:
+184     """Let docutils know the location of ``docutils.conf`` for Sphinx."""
+185     try:
+186         docutilsconfig = os.environ.get('DOCUTILSCONFIG', None)
+187         if confdir:
+188             os.environ['DOCUTILSCONFIG'] = path.join(path.abspath(confdir), 'docutils.conf')
+189 
+190         yield
+191     finally:
+192         if docutilsconfig is None:
+193             os.environ.pop('DOCUTILSCONFIG', None)
+194         else:
+195             os.environ['DOCUTILSCONFIG'] = docutilsconfig
+196 
+197 
+198 @contextmanager
+199 def du19_footnotes() -> Generator[None, None, None]:
+200     def visit_footnote(self, node):
+201         label_style = self.settings.footnote_references
+202         if not isinstance(node.previous_sibling(), type(node)):
+203             self.body.append(f'<aside class="footnote-list {label_style}">\n')
+204         self.body.append(self.starttag(node, 'aside',
+205                                        classes=[node.tagname, label_style],
+206                                        role="note"))
+207 
+208     def depart_footnote(self, node):
+209         self.body.append('</aside>\n')
+210         if not isinstance(node.next_node(descend=False, siblings=True),
+211                           type(node)):
+212             self.body.append('</aside>\n')
+213 
+214     old_visit_footnote = HTMLTranslator.visit_footnote
+215     old_depart_footnote = HTMLTranslator.depart_footnote
+216 
+217     # Only apply on Docutils 0.18 or 0.18.1, as 0.17 and earlier used a <dl> based
+218     # approach, and 0.19 and later use the fixed approach by default.
+219     if docutils.__version_info__[:2] == (0, 18):
+220         HTMLTranslator.visit_footnote = visit_footnote  # type: ignore[method-assign]
+221         HTMLTranslator.depart_footnote = depart_footnote  # type: ignore[method-assign]
+222 
+223     try:
+224         yield
+225     finally:
+226         if docutils.__version_info__[:2] == (0, 18):
+227             HTMLTranslator.visit_footnote = old_visit_footnote  # type: ignore[method-assign]
+228             HTMLTranslator.depart_footnote = old_depart_footnote  # type: ignore[method-assign]
+229 
+230 
+231 @contextmanager
+232 def patch_docutils(confdir: str | None = None) -> Generator[None, None, None]:
+233     """Patch to docutils temporarily."""
+234     with patched_get_language(), \
+235          patched_rst_get_language(), \
+236          using_user_docutils_conf(confdir), \
+237          du19_footnotes():
+238         yield
+239 
+240 
+241 class CustomReSTDispatcher:
+242     """Custom reST's mark-up dispatcher.
+243 
+244     This replaces docutils's directives and roles dispatch mechanism for reST parser
+245     by original one temporarily.
+246     """
+247 
+248     def __init__(self) -> None:
+249         self.directive_func: Callable = lambda *args: (None, [])
+250         self.roles_func: Callable = lambda *args: (None, [])
+251 
+252     def __enter__(self) -> None:
+253         self.enable()
+254 
+255     def __exit__(
+256         self, exc_type: type[Exception], exc_value: Exception, traceback: Any,
+257     ) -> None:
+258         self.disable()
+259 
+260     def enable(self) -> None:
+261         self.directive_func = directives.directive
+262         self.role_func = roles.role
+263 
+264         directives.directive = self.directive
+265         roles.role = self.role
+266 
+267     def disable(self) -> None:
+268         directives.directive = self.directive_func
+269         roles.role = self.role_func
+270 
+271     def directive(self,
+272                   directive_name: str, language_module: ModuleType, document: nodes.document,
+273                   ) -> tuple[type[Directive] | None, list[system_message]]:
+274         return self.directive_func(directive_name, language_module, document)
+275 
+276     def role(
+277         self, role_name: str, language_module: ModuleType, lineno: int, reporter: Reporter,
+278     ) -> tuple[RoleFunction, list[system_message]]:
+279         return self.role_func(role_name, language_module, lineno, reporter)
+280 
+281 
+282 class ElementLookupError(Exception):
+283     pass
+284 
+285 
+286 class sphinx_domains(CustomReSTDispatcher):
+287     """Monkey-patch directive and role dispatch, so that domain-specific
+288     markup takes precedence.
+289     """
+290     def __init__(self, env: BuildEnvironment) -> None:
+291         self.env = env
+292         super().__init__()
+293 
+294     def lookup_domain_element(self, type: str, name: str) -> Any:
+295         """Lookup a markup element (directive or role), given its name which can
+296         be a full name (with domain).
+297         """
+298         name = name.lower()
+299         # explicit domain given?
+300         if ':' in name:
+301             domain_name, name = name.split(':', 1)
+302             if domain_name in self.env.domains:
+303                 domain = self.env.get_domain(domain_name)
+304                 element = getattr(domain, type)(name)
+305                 if element is not None:
+306                     return element, []
+307             else:
+308                 logger.warning(_('unknown directive or role name: %s:%s'), domain_name, name)
+309         # else look in the default domain
+310         else:
+311             def_domain = self.env.temp_data.get('default_domain')
+312             if def_domain is not None:
+313                 element = getattr(def_domain, type)(name)
+314                 if element is not None:
+315                     return element, []
+316 
+317         # always look in the std domain
+318         element = getattr(self.env.get_domain('std'), type)(name)
+319         if element is not None:
+320             return element, []
+321 
+322         raise ElementLookupError
+323 
+324     def directive(self,
+325                   directive_name: str, language_module: ModuleType, document: nodes.document,
+326                   ) -> tuple[type[Directive] | None, list[system_message]]:
+327         try:
+328             return self.lookup_domain_element('directive', directive_name)
+329         except ElementLookupError:
+330             return super().directive(directive_name, language_module, document)
+331 
+332     def role(
+333         self, role_name: str, language_module: ModuleType, lineno: int, reporter: Reporter,
+334     ) -> tuple[RoleFunction, list[system_message]]:
+335         try:
+336             return self.lookup_domain_element('role', role_name)
+337         except ElementLookupError:
+338             return super().role(role_name, language_module, lineno, reporter)
+339 
+340 
+341 class WarningStream:
+342     def write(self, text: str) -> None:
+343         matched = report_re.search(text)
+344         if not matched:
+345             logger.warning(text.rstrip("\r\n"))
+346         else:
+347             location, type, level = matched.groups()
+348             message = report_re.sub('', text).rstrip()
+349             logger.log(type, message, location=location)
+350 
+351 
+352 class LoggingReporter(Reporter):
+353     @classmethod
+354     def from_reporter(cls, reporter: Reporter) -> LoggingReporter:
+355         """Create an instance of LoggingReporter from other reporter object."""
+356         return cls(reporter.source, reporter.report_level, reporter.halt_level,
+357                    reporter.debug_flag, reporter.error_handler)
+358 
+359     def __init__(self, source: str, report_level: int = Reporter.WARNING_LEVEL,
+360                  halt_level: int = Reporter.SEVERE_LEVEL, debug: bool = False,
+361                  error_handler: str = 'backslashreplace') -> None:
+362         stream = cast(IO, WarningStream())
+363         super().__init__(source, report_level, halt_level,
+364                          stream, debug, error_handler=error_handler)
+365 
+366 
+367 class NullReporter(Reporter):
+368     """A dummy reporter; write nothing."""
+369 
+370     def __init__(self) -> None:
+371         super().__init__('', 999, 4)
+372 
+373 
+374 def is_html5_writer_available() -> bool:
+375     from sphinx.deprecation import RemovedInSphinx70Warning
+376 
+377     warnings.warn('is_html5_writer_available() is deprecated.',
+378                   RemovedInSphinx70Warning)
+379     return True
+380 
+381 
+382 @contextmanager
+383 def switch_source_input(state: State, content: StringList) -> Generator[None, None, None]:
+384     """Switch current source input of state temporarily."""
+385     try:
+386         # remember the original ``get_source_and_line()`` method
+387         get_source_and_line = state.memo.reporter.get_source_and_line  # type: ignore
+388 
+389         # replace it by new one
+390         state_machine = StateMachine([], None)
+391         state_machine.input_lines = content
+392         state.memo.reporter.get_source_and_line = state_machine.get_source_and_line  # type: ignore  # noqa: E501
+393 
+394         yield
+395     finally:
+396         # restore the method
+397         state.memo.reporter.get_source_and_line = get_source_and_line  # type: ignore
+398 
+399 
+400 class SphinxFileOutput(FileOutput):
+401     """Better FileOutput class for Sphinx."""
+402 
+403     def __init__(self, **kwargs: Any) -> None:
+404         self.overwrite_if_changed = kwargs.pop('overwrite_if_changed', False)
+405         kwargs.setdefault('encoding', 'utf-8')
+406         super().__init__(**kwargs)
+407 
+408     def write(self, data: str) -> str:
+409         if (self.destination_path and self.autoclose and 'b' not in self.mode and
+410                 self.overwrite_if_changed and os.path.exists(self.destination_path)):
+411             with open(self.destination_path, encoding=self.encoding) as f:
+412                 # skip writing: content not changed
+413                 if f.read() == data:
+414                     return data
+415 
+416         return super().write(data)
+417 
+418 
+419 class SphinxDirective(Directive):
+420     """A base class for Sphinx directives.
+421 
+422     This class provides helper methods for Sphinx directives.
+423 
+424     .. note:: The subclasses of this class might not work with docutils.
+425               This class is strongly coupled with Sphinx.
+426     """
+427 
+428     @property
+429     def env(self) -> BuildEnvironment:
+430         """Reference to the :class:`.BuildEnvironment` object."""
+431         return self.state.document.settings.env
+432 
+433     @property
+434     def config(self) -> Config:
+435         """Reference to the :class:`.Config` object."""
+436         return self.env.config
+437 
+438     def get_source_info(self) -> tuple[str, int]:
+439         """Get source and line number."""
+440         return self.state_machine.get_source_and_line(self.lineno)
+441 
+442     def set_source_info(self, node: Node) -> None:
+443         """Set source and line number to the node."""
+444         node.source, node.line = self.get_source_info()
+445 
+446     def get_location(self) -> str:
+447         """Get current location info for logging."""
+448         return ':'.join(str(s) for s in self.get_source_info())
+449 
+450 
+451 class SphinxRole:
+452     """A base class for Sphinx roles.
+453 
+454     This class provides helper methods for Sphinx roles.
+455 
+456     .. note:: The subclasses of this class might not work with docutils.
+457               This class is strongly coupled with Sphinx.
+458     """
+459     name: str           #: The role name actually used in the document.
+460     rawtext: str        #: A string containing the entire interpreted text input.
+461     text: str           #: The interpreted text content.
+462     lineno: int         #: The line number where the interpreted text begins.
+463     inliner: Inliner    #: The ``docutils.parsers.rst.states.Inliner`` object.
+464     options: dict       #: A dictionary of directive options for customization
+465                         #: (from the "role" directive).
+466     content: list[str]  #: A list of strings, the directive content for customization
+467                         #: (from the "role" directive).
+468 
+469     def __call__(self, name: str, rawtext: str, text: str, lineno: int,
+470                  inliner: Inliner, options: dict = {}, content: list[str] = [],
+471                  ) -> tuple[list[Node], list[system_message]]:
+472         self.rawtext = rawtext
+473         self.text = unescape(text)
+474         self.lineno = lineno
+475         self.inliner = inliner
+476         self.options = options
+477         self.content = content
+478 
+479         # guess role type
+480         if name:
+481             self.name = name.lower()
+482         else:
+483             self.name = self.env.temp_data.get('default_role', '')
+484             if not self.name:
+485                 self.name = self.env.config.default_role
+486             if not self.name:
+487                 raise SphinxError('cannot determine default role!')
+488 
+489         return self.run()
+490 
+491     def run(self) -> tuple[list[Node], list[system_message]]:
+492         raise NotImplementedError
+493 
+494     @property
+495     def env(self) -> BuildEnvironment:
+496         """Reference to the :class:`.BuildEnvironment` object."""
+497         return self.inliner.document.settings.env
+498 
+499     @property
+500     def config(self) -> Config:
+501         """Reference to the :class:`.Config` object."""
+502         return self.env.config
+503 
+504     def get_source_info(self, lineno: int = None) -> tuple[str, int]:
+505         if lineno is None:
+506             lineno = self.lineno
+507         return self.inliner.reporter.get_source_and_line(lineno)  # type: ignore
+508 
+509     def set_source_info(self, node: Node, lineno: int = None) -> None:
+510         node.source, node.line = self.get_source_info(lineno)
+511 
+512     def get_location(self) -> str:
+513         """Get current location info for logging."""
+514         return ':'.join(str(s) for s in self.get_source_info())
+515 
+516 
+517 class ReferenceRole(SphinxRole):
+518     """A base class for reference roles.
+519 
+520     The reference roles can accept ``link title <target>`` style as a text for
+521     the role.  The parsed result; link title and target will be stored to
+522     ``self.title`` and ``self.target``.
+523     """
+524     has_explicit_title: bool    #: A boolean indicates the role has explicit title or not.
+525     disabled: bool              #: A boolean indicates the reference is disabled.
+526     title: str                  #: The link title for the interpreted text.
+527     target: str                 #: The link target for the interpreted text.
+528 
+529     # \x00 means the "<" was backslash-escaped
+530     explicit_title_re = re.compile(r'^(.+?)\s*(?<!\x00)<(.*?)>$', re.DOTALL)
+531 
+532     def __call__(self, name: str, rawtext: str, text: str, lineno: int,
+533                  inliner: Inliner, options: dict = {}, content: list[str] = [],
+534                  ) -> tuple[list[Node], list[system_message]]:
+535         # if the first character is a bang, don't cross-reference at all
+536         self.disabled = text.startswith('!')
+537 
+538         matched = self.explicit_title_re.match(text)
+539         if matched:
+540             self.has_explicit_title = True
+541             self.title = unescape(matched.group(1))
+542             self.target = unescape(matched.group(2))
+543         else:
+544             self.has_explicit_title = False
+545             self.title = unescape(text)
+546             self.target = unescape(text)
+547 
+548         return super().__call__(name, rawtext, text, lineno, inliner, options, content)
+549 
+550 
+551 class SphinxTranslator(nodes.NodeVisitor):
+552     """A base class for Sphinx translators.
+553 
+554     This class adds a support for visitor/departure method for super node class
+555     if visitor/departure method for node class is not found.
+556 
+557     It also provides helper methods for Sphinx translators.
+558 
+559     .. note:: The subclasses of this class might not work with docutils.
+560               This class is strongly coupled with Sphinx.
+561     """
+562 
+563     def __init__(self, document: nodes.document, builder: Builder) -> None:
+564         super().__init__(document)
+565         self.builder = builder
+566         self.config = builder.config
+567         self.settings = document.settings
+568 
+569     def dispatch_visit(self, node: Node) -> None:
+570         """
+571         Dispatch node to appropriate visitor method.
+572         The priority of visitor method is:
+573 
+574         1. ``self.visit_{node_class}()``
+575         2. ``self.visit_{super_node_class}()``
+576         3. ``self.unknown_visit()``
+577         """
+578         for node_class in node.__class__.__mro__:
+579             method = getattr(self, 'visit_%s' % (node_class.__name__), None)
+580             if method:
+581                 method(node)
+582                 break
+583         else:
+584             super().dispatch_visit(node)
+585 
+586     def dispatch_departure(self, node: Node) -> None:
+587         """
+588         Dispatch node to appropriate departure method.
+589         The priority of departure method is:
+590 
+591         1. ``self.depart_{node_class}()``
+592         2. ``self.depart_{super_node_class}()``
+593         3. ``self.unknown_departure()``
+594         """
+595         for node_class in node.__class__.__mro__:
+596             method = getattr(self, 'depart_%s' % (node_class.__name__), None)
+597             if method:
+598                 method(node)
+599                 break
+600         else:
+601             super().dispatch_departure(node)
+602 
+603     def unknown_visit(self, node: Node) -> None:
+604         logger.warning(__('unknown node type: %r'), node, location=node)
+605 
+606 
+607 # cache a vanilla instance of nodes.document
+608 # Used in new_document() function
+609 __document_cache__: tuple[Values, Reporter]
+610 
+611 
+612 def new_document(source_path: str, settings: Any = None) -> nodes.document:
+613     """Return a new empty document object.  This is an alternative of docutils'.
+614 
+615     This is a simple wrapper for ``docutils.utils.new_document()``.  It
+616     caches the result of docutils' and use it on second call for instantiation.
+617     This makes an instantiation of document nodes much faster.
+618     """
+619     global __document_cache__
+620     try:
+621         cached_settings, reporter = __document_cache__
+622     except NameError:
+623         doc = docutils.utils.new_document(source_path)
+624         __document_cache__ = cached_settings, reporter = doc.settings, doc.reporter
+625 
+626     if settings is None:
+627         # Make a copy of the cached settings to accelerate instantiation
+628         settings = copy(cached_settings)
+629 
+630     # Create a new instance of nodes.document using cached reporter
+631     from sphinx import addnodes
+632     document = addnodes.document(settings, reporter, source=source_path)
+633     document.note_source(source_path, -1)
+634     return document
+
+</code><intended_behavior>The `sanitize_filename` function should handle filenames with non-ASCII characters correctly, without ignoring or modifying them. It could use a more permissive encoding scheme, such as UTF-8, to preserve the original filename.</intended_behavior>]
+2025-11-10 12:56:01.293 | INFO     | Search completed. Bug locations: [<file>sphinx/util/docutils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Utility functions for docutils."""
+2 
+3 from __future__ import annotations
+4 
+5 import os
+6 import re
+7 import warnings
+8 from contextlib import contextmanager
+9 from copy import copy
+10 from os import path
+11 from typing import IO, TYPE_CHECKING, Any, Callable, Generator, cast
+12 
+13 import docutils
+14 from docutils import nodes
+15 from docutils.io import FileOutput
+16 from docutils.nodes import Element, Node, system_message
+17 from docutils.parsers.rst import Directive, directives, roles
+18 from docutils.parsers.rst.states import Inliner
+19 from docutils.statemachine import State, StateMachine, StringList
+20 from docutils.utils import Reporter, unescape
+21 from docutils.writers._html_base import HTMLTranslator
+22 
+23 from sphinx.errors import SphinxError
+24 from sphinx.locale import _, __
+25 from sphinx.util import logging
+26 from sphinx.util.typing import RoleFunction
+27 
+28 logger = logging.getLogger(__name__)
+29 report_re = re.compile('^(.+?:(?:\\d+)?): \\((DEBUG|INFO|WARNING|ERROR|SEVERE)/(\\d+)?\\) ')
+30 
+31 if TYPE_CHECKING:
+32     from types import ModuleType
+33 
+34     from docutils.frontend import Values
+35 
+36     from sphinx.builders import Builder
+37     from sphinx.config import Config
+38     from sphinx.environment import BuildEnvironment
+39 
+40 # deprecated name -> (object to return, canonical path or empty string)
+41 _DEPRECATED_OBJECTS = {
+42     '__version_info__': (docutils.__version_info__, 'docutils.__version_info__'),
+43 }
+44 
+45 
+46 def __getattr__(name):
+47     if name not in _DEPRECATED_OBJECTS:
+48         raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+49 
+50     from sphinx.deprecation import _deprecation_warning
+51 
+52     deprecated_object, canonical_name = _DEPRECATED_OBJECTS[name]
+53     _deprecation_warning(__name__, name, canonical_name, remove=(7, 0))
+54     return deprecated_object
+55 
+56 
+57 additional_nodes: set[type[Element]] = set()
+58 
+59 
+60 @contextmanager
+61 def docutils_namespace() -> Generator[None, None, None]:
+62     """Create namespace for reST parsers."""
+63     try:
+64         _directives = copy(directives._directives)  # type: ignore
+65         _roles = copy(roles._roles)  # type: ignore
+66 
+67         yield
+68     finally:
+69         directives._directives = _directives  # type: ignore
+70         roles._roles = _roles  # type: ignore
+71 
+72         for node in list(additional_nodes):
+73             unregister_node(node)
+74             additional_nodes.discard(node)
+75 
+76 
+77 def is_directive_registered(name: str) -> bool:
+78     """Check the *name* directive is already registered."""
+79     return name in directives._directives  # type: ignore
+80 
+81 
+82 def register_directive(name: str, directive: type[Directive]) -> None:
+83     """Register a directive to docutils.
+84 
+85     This modifies global state of docutils.  So it is better to use this
+86     inside ``docutils_namespace()`` to prevent side-effects.
+87     """
+88     directives.register_directive(name, directive)
+89 
+90 
+91 def is_role_registered(name: str) -> bool:
+92     """Check the *name* role is already registered."""
+93     return name in roles._roles  # type: ignore
+94 
+95 
+96 def register_role(name: str, role: RoleFunction) -> None:
+97     """Register a role to docutils.
+98 
+99     This modifies global state of docutils.  So it is better to use this
+100     inside ``docutils_namespace()`` to prevent side-effects.
+101     """
+102     roles.register_local_role(name, role)
+103 
+104 
+105 def unregister_role(name: str) -> None:
+106     """Unregister a role from docutils."""
+107     roles._roles.pop(name, None)  # type: ignore
+108 
+109 
+110 def is_node_registered(node: type[Element]) -> bool:
+111     """Check the *node* is already registered."""
+112     return hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__)
+113 
+114 
+115 def register_node(node: type[Element]) -> None:
+116     """Register a node to docutils.
+117 
+118     This modifies global state of some visitors.  So it is better to use this
+119     inside ``docutils_namespace()`` to prevent side-effects.
+120     """
+121     if not hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__):
+122         nodes._add_node_class_names([node.__name__])  # type: ignore
+123         additional_nodes.add(node)
+124 
+125 
+126 def unregister_node(node: type[Element]) -> None:
+127     """Unregister a node from docutils.
+128 
+129     This is inverse of ``nodes._add_nodes_class_names()``.
+130     """
+131     if hasattr(nodes.GenericNodeVisitor, 'visit_' + node.__name__):
+132         delattr(nodes.GenericNodeVisitor, "visit_" + node.__name__)
+133         delattr(nodes.GenericNodeVisitor, "depart_" + node.__name__)
+134         delattr(nodes.SparseNodeVisitor, 'visit_' + node.__name__)
+135         delattr(nodes.SparseNodeVisitor, 'depart_' + node.__name__)
+136 
+137 
+138 @contextmanager
+139 def patched_get_language() -> Generator[None, None, None]:
+140     """Patch docutils.languages.get_language() temporarily.
+141 
+142     This ignores the second argument ``reporter`` to suppress warnings.
+143     refs: https://github.com/sphinx-doc/sphinx/issues/3788
+144     """
+145     from docutils.languages import get_language
+146 
+147     def patched_get_language(language_code: str, reporter: Reporter = None) -> Any:
+148         return get_language(language_code)
+149 
+150     try:
+151         docutils.languages.get_language = patched_get_language
+152         yield
+153     finally:
+154         # restore original implementations
+155         docutils.languages.get_language = get_language
+156 
+157 
+158 @contextmanager
+159 def patched_rst_get_language() -> Generator[None, None, None]:
+160     """Patch docutils.parsers.rst.languages.get_language().
+161     Starting from docutils 0.17, get_language() in ``rst.languages``
+162     also has a reporter, which needs to be disabled temporarily.
+163 
+164     This should also work for old versions of docutils,
+165     because reporter is none by default.
+166 
+167     refs: https://github.com/sphinx-doc/sphinx/issues/10179
+168     """
+169     from docutils.parsers.rst.languages import get_language
+170 
+171     def patched_get_language(language_code: str, reporter: Reporter = None) -> Any:
+172         return get_language(language_code)
+173 
+174     try:
+175         docutils.parsers.rst.languages.get_language = patched_get_language
+176         yield
+177     finally:
+178         # restore original implementations
+179         docutils.parsers.rst.languages.get_language = get_language
+180 
+181 
+182 @contextmanager
+183 def using_user_docutils_conf(confdir: str | None) -> Generator[None, None, None]:
+184     """Let docutils know the location of ``docutils.conf`` for Sphinx."""
+185     try:
+186         docutilsconfig = os.environ.get('DOCUTILSCONFIG', None)
+187         if confdir:
+188             os.environ['DOCUTILSCONFIG'] = path.join(path.abspath(confdir), 'docutils.conf')
+189 
+190         yield
+191     finally:
+192         if docutilsconfig is None:
+193             os.environ.pop('DOCUTILSCONFIG', None)
+194         else:
+195             os.environ['DOCUTILSCONFIG'] = docutilsconfig
+196 
+197 
+198 @contextmanager
+199 def du19_footnotes() -> Generator[None, None, None]:
+200     def visit_footnote(self, node):
+201         label_style = self.settings.footnote_references
+202         if not isinstance(node.previous_sibling(), type(node)):
+203             self.body.append(f'<aside class="footnote-list {label_style}">\n')
+204         self.body.append(self.starttag(node, 'aside',
+205                                        classes=[node.tagname, label_style],
+206                                        role="note"))
+207 
+208     def depart_footnote(self, node):
+209         self.body.append('</aside>\n')
+210         if not isinstance(node.next_node(descend=False, siblings=True),
+211                           type(node)):
+212             self.body.append('</aside>\n')
+213 
+214     old_visit_footnote = HTMLTranslator.visit_footnote
+215     old_depart_footnote = HTMLTranslator.depart_footnote
+216 
+217     # Only apply on Docutils 0.18 or 0.18.1, as 0.17 and earlier used a <dl> based
+218     # approach, and 0.19 and later use the fixed approach by default.
+219     if docutils.__version_info__[:2] == (0, 18):
+220         HTMLTranslator.visit_footnote = visit_footnote  # type: ignore[method-assign]
+221         HTMLTranslator.depart_footnote = depart_footnote  # type: ignore[method-assign]
+222 
+223     try:
+224         yield
+225     finally:
+226         if docutils.__version_info__[:2] == (0, 18):
+227             HTMLTranslator.visit_footnote = old_visit_footnote  # type: ignore[method-assign]
+228             HTMLTranslator.depart_footnote = old_depart_footnote  # type: ignore[method-assign]
+229 
+230 
+231 @contextmanager
+232 def patch_docutils(confdir: str | None = None) -> Generator[None, None, None]:
+233     """Patch to docutils temporarily."""
+234     with patched_get_language(), \
+235          patched_rst_get_language(), \
+236          using_user_docutils_conf(confdir), \
+237          du19_footnotes():
+238         yield
+239 
+240 
+241 class CustomReSTDispatcher:
+242     """Custom reST's mark-up dispatcher.
+243 
+244     This replaces docutils's directives and roles dispatch mechanism for reST parser
+245     by original one temporarily.
+246     """
+247 
+248     def __init__(self) -> None:
+249         self.directive_func: Callable = lambda *args: (None, [])
+250         self.roles_func: Callable = lambda *args: (None, [])
+251 
+252     def __enter__(self) -> None:
+253         self.enable()
+254 
+255     def __exit__(
+256         self, exc_type: type[Exception], exc_value: Exception, traceback: Any,
+257     ) -> None:
+258         self.disable()
+259 
+260     def enable(self) -> None:
+261         self.directive_func = directives.directive
+262         self.role_func = roles.role
+263 
+264         directives.directive = self.directive
+265         roles.role = self.role
+266 
+267     def disable(self) -> None:
+268         directives.directive = self.directive_func
+269         roles.role = self.role_func
+270 
+271     def directive(self,
+272                   directive_name: str, language_module: ModuleType, document: nodes.document,
+273                   ) -> tuple[type[Directive] | None, list[system_message]]:
+274         return self.directive_func(directive_name, language_module, document)
+275 
+276     def role(
+277         self, role_name: str, language_module: ModuleType, lineno: int, reporter: Reporter,
+278     ) -> tuple[RoleFunction, list[system_message]]:
+279         return self.role_func(role_name, language_module, lineno, reporter)
+280 
+281 
+282 class ElementLookupError(Exception):
+283     pass
+284 
+285 
+286 class sphinx_domains(CustomReSTDispatcher):
+287     """Monkey-patch directive and role dispatch, so that domain-specific
+288     markup takes precedence.
+289     """
+290     def __init__(self, env: BuildEnvironment) -> None:
+291         self.env = env
+292         super().__init__()
+293 
+294     def lookup_domain_element(self, type: str, name: str) -> Any:
+295         """Lookup a markup element (directive or role), given its name which can
+296         be a full name (with domain).
+297         """
+298         name = name.lower()
+299         # explicit domain given?
+300         if ':' in name:
+301             domain_name, name = name.split(':', 1)
+302             if domain_name in self.env.domains:
+303                 domain = self.env.get_domain(domain_name)
+304                 element = getattr(domain, type)(name)
+305                 if element is not None:
+306                     return element, []
+307             else:
+308                 logger.warning(_('unknown directive or role name: %s:%s'), domain_name, name)
+309         # else look in the default domain
+310         else:
+311             def_domain = self.env.temp_data.get('default_domain')
+312             if def_domain is not None:
+313                 element = getattr(def_domain, type)(name)
+314                 if element is not None:
+315                     return element, []
+316 
+317         # always look in the std domain
+318         element = getattr(self.env.get_domain('std'), type)(name)
+319         if element is not None:
+320             return element, []
+321 
+322         raise ElementLookupError
+323 
+324     def directive(self,
+325                   directive_name: str, language_module: ModuleType, document: nodes.document,
+326                   ) -> tuple[type[Directive] | None, list[system_message]]:
+327         try:
+328             return self.lookup_domain_element('directive', directive_name)
+329         except ElementLookupError:
+330             return super().directive(directive_name, language_module, document)
+331 
+332     def role(
+333         self, role_name: str, language_module: ModuleType, lineno: int, reporter: Reporter,
+334     ) -> tuple[RoleFunction, list[system_message]]:
+335         try:
+336             return self.lookup_domain_element('role', role_name)
+337         except ElementLookupError:
+338             return super().role(role_name, language_module, lineno, reporter)
+339 
+340 
+341 class WarningStream:
+342     def write(self, text: str) -> None:
+343         matched = report_re.search(text)
+344         if not matched:
+345             logger.warning(text.rstrip("\r\n"))
+346         else:
+347             location, type, level = matched.groups()
+348             message = report_re.sub('', text).rstrip()
+349             logger.log(type, message, location=location)
+350 
+351 
+352 class LoggingReporter(Reporter):
+353     @classmethod
+354     def from_reporter(cls, reporter: Reporter) -> LoggingReporter:
+355         """Create an instance of LoggingReporter from other reporter object."""
+356         return cls(reporter.source, reporter.report_level, reporter.halt_level,
+357                    reporter.debug_flag, reporter.error_handler)
+358 
+359     def __init__(self, source: str, report_level: int = Reporter.WARNING_LEVEL,
+360                  halt_level: int = Reporter.SEVERE_LEVEL, debug: bool = False,
+361                  error_handler: str = 'backslashreplace') -> None:
+362         stream = cast(IO, WarningStream())
+363         super().__init__(source, report_level, halt_level,
+364                          stream, debug, error_handler=error_handler)
+365 
+366 
+367 class NullReporter(Reporter):
+368     """A dummy reporter; write nothing."""
+369 
+370     def __init__(self) -> None:
+371         super().__init__('', 999, 4)
+372 
+373 
+374 def is_html5_writer_available() -> bool:
+375     from sphinx.deprecation import RemovedInSphinx70Warning
+376 
+377     warnings.warn('is_html5_writer_available() is deprecated.',
+378                   RemovedInSphinx70Warning)
+379     return True
+380 
+381 
+382 @contextmanager
+383 def switch_source_input(state: State, content: StringList) -> Generator[None, None, None]:
+384     """Switch current source input of state temporarily."""
+385     try:
+386         # remember the original ``get_source_and_line()`` method
+387         get_source_and_line = state.memo.reporter.get_source_and_line  # type: ignore
+388 
+389         # replace it by new one
+390         state_machine = StateMachine([], None)
+391         state_machine.input_lines = content
+392         state.memo.reporter.get_source_and_line = state_machine.get_source_and_line  # type: ignore  # noqa: E501
+393 
+394         yield
+395     finally:
+396         # restore the method
+397         state.memo.reporter.get_source_and_line = get_source_and_line  # type: ignore
+398 
+399 
+400 class SphinxFileOutput(FileOutput):
+401     """Better FileOutput class for Sphinx."""
+402 
+403     def __init__(self, **kwargs: Any) -> None:
+404         self.overwrite_if_changed = kwargs.pop('overwrite_if_changed', False)
+405         kwargs.setdefault('encoding', 'utf-8')
+406         super().__init__(**kwargs)
+407 
+408     def write(self, data: str) -> str:
+409         if (self.destination_path and self.autoclose and 'b' not in self.mode and
+410                 self.overwrite_if_changed and os.path.exists(self.destination_path)):
+411             with open(self.destination_path, encoding=self.encoding) as f:
+412                 # skip writing: content not changed
+413                 if f.read() == data:
+414                     return data
+415 
+416         return super().write(data)
+417 
+418 
+419 class SphinxDirective(Directive):
+420     """A base class for Sphinx directives.
+421 
+422     This class provides helper methods for Sphinx directives.
+423 
+424     .. note:: The subclasses of this class might not work with docutils.
+425               This class is strongly coupled with Sphinx.
+426     """
+427 
+428     @property
+429     def env(self) -> BuildEnvironment:
+430         """Reference to the :class:`.BuildEnvironment` object."""
+431         return self.state.document.settings.env
+432 
+433     @property
+434     def config(self) -> Config:
+435         """Reference to the :class:`.Config` object."""
+436         return self.env.config
+437 
+438     def get_source_info(self) -> tuple[str, int]:
+439         """Get source and line number."""
+440         return self.state_machine.get_source_and_line(self.lineno)
+441 
+442     def set_source_info(self, node: Node) -> None:
+443         """Set source and line number to the node."""
+444         node.source, node.line = self.get_source_info()
+445 
+446     def get_location(self) -> str:
+447         """Get current location info for logging."""
+448         return ':'.join(str(s) for s in self.get_source_info())
+449 
+450 
+451 class SphinxRole:
+452     """A base class for Sphinx roles.
+453 
+454     This class provides helper methods for Sphinx roles.
+455 
+456     .. note:: The subclasses of this class might not work with docutils.
+457               This class is strongly coupled with Sphinx.
+458     """
+459     name: str           #: The role name actually used in the document.
+460     rawtext: str        #: A string containing the entire interpreted text input.
+461     text: str           #: The interpreted text content.
+462     lineno: int         #: The line number where the interpreted text begins.
+463     inliner: Inliner    #: The ``docutils.parsers.rst.states.Inliner`` object.
+464     options: dict       #: A dictionary of directive options for customization
+465                         #: (from the "role" directive).
+466     content: list[str]  #: A list of strings, the directive content for customization
+467                         #: (from the "role" directive).
+468 
+469     def __call__(self, name: str, rawtext: str, text: str, lineno: int,
+470                  inliner: Inliner, options: dict = {}, content: list[str] = [],
+471                  ) -> tuple[list[Node], list[system_message]]:
+472         self.rawtext = rawtext
+473         self.text = unescape(text)
+474         self.lineno = lineno
+475         self.inliner = inliner
+476         self.options = options
+477         self.content = content
+478 
+479         # guess role type
+480         if name:
+481             self.name = name.lower()
+482         else:
+483             self.name = self.env.temp_data.get('default_role', '')
+484             if not self.name:
+485                 self.name = self.env.config.default_role
+486             if not self.name:
+487                 raise SphinxError('cannot determine default role!')
+488 
+489         return self.run()
+490 
+491     def run(self) -> tuple[list[Node], list[system_message]]:
+492         raise NotImplementedError
+493 
+494     @property
+495     def env(self) -> BuildEnvironment:
+496         """Reference to the :class:`.BuildEnvironment` object."""
+497         return self.inliner.document.settings.env
+498 
+499     @property
+500     def config(self) -> Config:
+501         """Reference to the :class:`.Config` object."""
+502         return self.env.config
+503 
+504     def get_source_info(self, lineno: int = None) -> tuple[str, int]:
+505         if lineno is None:
+506             lineno = self.lineno
+507         return self.inliner.reporter.get_source_and_line(lineno)  # type: ignore
+508 
+509     def set_source_info(self, node: Node, lineno: int = None) -> None:
+510         node.source, node.line = self.get_source_info(lineno)
+511 
+512     def get_location(self) -> str:
+513         """Get current location info for logging."""
+514         return ':'.join(str(s) for s in self.get_source_info())
+515 
+516 
+517 class ReferenceRole(SphinxRole):
+518     """A base class for reference roles.
+519 
+520     The reference roles can accept ``link title <target>`` style as a text for
+521     the role.  The parsed result; link title and target will be stored to
+522     ``self.title`` and ``self.target``.
+523     """
+524     has_explicit_title: bool    #: A boolean indicates the role has explicit title or not.
+525     disabled: bool              #: A boolean indicates the reference is disabled.
+526     title: str                  #: The link title for the interpreted text.
+527     target: str                 #: The link target for the interpreted text.
+528 
+529     # \x00 means the "<" was backslash-escaped
+530     explicit_title_re = re.compile(r'^(.+?)\s*(?<!\x00)<(.*?)>$', re.DOTALL)
+531 
+532     def __call__(self, name: str, rawtext: str, text: str, lineno: int,
+533                  inliner: Inliner, options: dict = {}, content: list[str] = [],
+534                  ) -> tuple[list[Node], list[system_message]]:
+535         # if the first character is a bang, don't cross-reference at all
+536         self.disabled = text.startswith('!')
+537 
+538         matched = self.explicit_title_re.match(text)
+539         if matched:
+540             self.has_explicit_title = True
+541             self.title = unescape(matched.group(1))
+542             self.target = unescape(matched.group(2))
+543         else:
+544             self.has_explicit_title = False
+545             self.title = unescape(text)
+546             self.target = unescape(text)
+547 
+548         return super().__call__(name, rawtext, text, lineno, inliner, options, content)
+549 
+550 
+551 class SphinxTranslator(nodes.NodeVisitor):
+552     """A base class for Sphinx translators.
+553 
+554     This class adds a support for visitor/departure method for super node class
+555     if visitor/departure method for node class is not found.
+556 
+557     It also provides helper methods for Sphinx translators.
+558 
+559     .. note:: The subclasses of this class might not work with docutils.
+560               This class is strongly coupled with Sphinx.
+561     """
+562 
+563     def __init__(self, document: nodes.document, builder: Builder) -> None:
+564         super().__init__(document)
+565         self.builder = builder
+566         self.config = builder.config
+567         self.settings = document.settings
+568 
+569     def dispatch_visit(self, node: Node) -> None:
+570         """
+571         Dispatch node to appropriate visitor method.
+572         The priority of visitor method is:
+573 
+574         1. ``self.visit_{node_class}()``
+575         2. ``self.visit_{super_node_class}()``
+576         3. ``self.unknown_visit()``
+577         """
+578         for node_class in node.__class__.__mro__:
+579             method = getattr(self, 'visit_%s' % (node_class.__name__), None)
+580             if method:
+581                 method(node)
+582                 break
+583         else:
+584             super().dispatch_visit(node)
+585 
+586     def dispatch_departure(self, node: Node) -> None:
+587         """
+588         Dispatch node to appropriate departure method.
+589         The priority of departure method is:
+590 
+591         1. ``self.depart_{node_class}()``
+592         2. ``self.depart_{super_node_class}()``
+593         3. ``self.unknown_departure()``
+594         """
+595         for node_class in node.__class__.__mro__:
+596             method = getattr(self, 'depart_%s' % (node_class.__name__), None)
+597             if method:
+598                 method(node)
+599                 break
+600         else:
+601             super().dispatch_departure(node)
+602 
+603     def unknown_visit(self, node: Node) -> None:
+604         logger.warning(__('unknown node type: %r'), node, location=node)
+605 
+606 
+607 # cache a vanilla instance of nodes.document
+608 # Used in new_document() function
+609 __document_cache__: tuple[Values, Reporter]
+610 
+611 
+612 def new_document(source_path: str, settings: Any = None) -> nodes.document:
+613     """Return a new empty document object.  This is an alternative of docutils'.
+614 
+615     This is a simple wrapper for ``docutils.utils.new_document()``.  It
+616     caches the result of docutils' and use it on second call for instantiation.
+617     This makes an instantiation of document nodes much faster.
+618     """
+619     global __document_cache__
+620     try:
+621         cached_settings, reporter = __document_cache__
+622     except NameError:
+623         doc = docutils.utils.new_document(source_path)
+624         __document_cache__ = cached_settings, reporter = doc.settings, doc.reporter
+625 
+626     if settings is None:
+627         # Make a copy of the cached settings to accelerate instantiation
+628         settings = copy(cached_settings)
+629 
+630     # Create a new instance of nodes.document using cached reporter
+631     from sphinx import addnodes
+632     document = addnodes.document(settings, reporter, source=source_path)
+633     document.note_source(source_path, -1)
+634     return document
+
+</code><intended_behavior>The `sanitize_filename` function should handle filenames with non-ASCII characters correctly, without ignoring or modifying them. It could use a more permissive encoding scheme, such as UTF-8, to preserve the original filename.</intended_behavior>]
+2025-11-10 12:56:01.293 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-10 12:56:01.293 | INFO     | Search-only: skipping patch selection
+2025-11-10 12:56:01.431 | INFO     | Task sphinx-doc__sphinx-11109 completed successfully.
+2025-11-10 12:56:01.432 | INFO     | No patch generated. You can try running ACR again.

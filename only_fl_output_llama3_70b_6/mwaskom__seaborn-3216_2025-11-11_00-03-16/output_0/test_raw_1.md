@@ -1,0 +1,51 @@
+I apologize for the mistake. Here is a revised version of the `reproducer.py` file that should correctly reproduce the issue:
+```
+import seaborn as sns
+import seaborn.objects as so
+import matplotlib.pyplot as plt
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_issue():
+    fig = plt.figure(constrained_layout=True)
+    subfigs = fig.subfigures(1,2)
+    tips = sns.load_dataset("tips")
+    p = (
+        so.Plot(tips, "total_bill")
+        .add(so.Bars(), so.Hist())
+    )
+    p.on(subfigs[0]).plot()
+
+    ax = subfigs[1].subplots()
+    ax.scatter([1],[1])
+
+    fig.suptitle("Test title")
+
+    plt.show()
+
+    # Check if the title is present
+    titles = [t.get_text() for t in fig._suptitle]
+    assert len(titles) == 1, "Title is missing"
+    assert titles[0] == "Test title", "Title is incorrect"
+
+try:
+    test_issue()
+except AssertionError as e:
+    print_stacktrace(e)
+    exit(1)
+
+exit(0)
+```
+This script should correctly reproduce the issue and raise an `AssertionError` when the title is missing. If the issue is fixed, it will exit with code 0.
+
+Please make sure that you have installed the required packages (seaborn, matplotlib) before running this script.

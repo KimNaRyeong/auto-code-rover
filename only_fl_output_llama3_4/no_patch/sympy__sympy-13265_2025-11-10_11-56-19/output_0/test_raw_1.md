@@ -1,0 +1,35 @@
+Here is the standalone `reproducer.py` script:
+
+```python
+import sympy as sp
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    try:
+        exp = sp.exp(sp.Matrix([[0, -1, 0], [1, 0, 0], [0, 0, 0]]))
+        simplified = sp.simplify(exp)
+        print("Simplified:")
+        print(simplified)
+        
+        if not simplified.equals(sp.cos(1) * sp.Matrix([[1, 0, 0], [0, -1, 0], [0, 0, 1]])):
+            raise AssertionError("Simplification failed to recognize sin expressed as exponentials")
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+This script will try to simplify the given expression using sympy's `simplify` function. If the simplification fails to recognize `sin(1)` expressed as exponentials, it will raise an `AssertionError`. The reproducer script also includes a custom `print_stacktrace` function to print the stack trace of the error.
