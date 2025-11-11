@@ -1,0 +1,41 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+
+def diophantine(equation, syms, permute):
+    return sp.solve(equation, syms, permutation=permute)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    tb = traceback.extract_tb(e.__traceback__)
+    error_file = StringIO()
+    print("Traceback (most recent call last):", file=error_file)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=error_file)
+        print(f"    {line_number}: {code_context}", file=error_file)
+    error_file.seek(0)
+    print(error_file.getvalue(), file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    equation = sp.sympify('n**4 + m**4 - 2**4 - 3**4')
+    syms = ('m', 'n')
+
+    try:
+        result1 = diophantine(equation, syms, permute=True)
+        result2 = diophantine(equation, tuple(reversed(syms)), permute=True)
+
+        assert set(result1) == set({(3, 2)}), "Expected {(3, 2)} but got {}".format(result1)
+        assert set(result2) == set({(-3, -2), (-3, 2), (-2, -3), (-2, 3), (2, -3), (2, 3), (3, -2), (3, 2)}), "Expected {(3, 2)} but got {}".format(result2)
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script defines the `diophantine` function to reproduce the issue, and then uses it in a test case. The test case checks if the results of the Diophantine equation are equal when the variables are swapped. If they are not equal, an `AssertionError` is raised, which is caught by the script and prints the stack trace before exiting with code 1.

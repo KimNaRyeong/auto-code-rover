@@ -1,0 +1,40 @@
+Here is the reproducer script:
+
+```python
+import sympy as sp
+from io import StringIO
+from contextlib import redirect_stdout
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def reproduce_issue():
+    try:
+        output = StringIO()
+        with redirect_stdout(output):
+            sp.init_printing()
+            print(sp.SeqFormula(1, (1,0,sp.oo)))
+        output_str = output.getvalue().strip()
+        if output_str.startswith('\\left[') and ']' in output_str:
+            raise AssertionError("Issue present")
+    except Exception as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+def main():
+    reproduce_issue()
+
+if __name__ == "__main__":
+    main()
+```
+
+This script will attempt to reproduce the issue by printing a `SeqFormula` using sympy. If the output contains backslash-escaped square brackets, it will raise an `AssertionError`. The stack trace of the error is then printed and the script exits with code 1.

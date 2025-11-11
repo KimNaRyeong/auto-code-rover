@@ -1,0 +1,47 @@
+I apologize for the mistake earlier. Here is a new reproducer script that should reproduce the issue:
+
+```python
+import seaborn as sns
+import seaborn.objects as so
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    fig = plt.figure(constrained_layout=True)
+    subfigs = fig.subfigures(1,2)
+    tips = sns.load_dataset("tips")
+    p = (
+        so.Plot(tips, "total_bill")
+        .add(so.Bars(), so.Hist())
+    )
+    p.on(subfigs[0]).plot()
+
+    ax = subfigs[1].subplots()
+    ax.scatter([1],[1])
+
+    fig.suptitle("Test title")
+
+    if not plt.show():
+        raise AssertionError("Figure title is missing.")
+
+except Exception as e:
+    print_stacktrace(e)
+    exit(1)
+
+print("Issue fixed, exiting with code 0.")
+exit(0)
+```
+
+This script should reproduce the issue by plotting a figure with subfigures and then checking if the figure title is still present after calling `plt.show()`. If it's not present, it will raise an `AssertionError` and print a stack trace.

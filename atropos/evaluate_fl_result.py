@@ -356,7 +356,7 @@ def vote_and_ranks_final_answers(r):
         tie_broken_methods = []
 
         for i in range(1, r+1):
-            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
+            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json'
             with open(filtered_fl_result_file, 'r') as f:
                 fl_result = json.load(f)
             answer_list = fl_result[task]
@@ -373,12 +373,12 @@ def vote_and_ranks_final_answers(r):
     voting_score_dict = defaultdict(lambda: defaultdict(float))
     ranking_dict = dict()
 
-    task_list_file = './sampled_tasks.txt'
+    task_list_file = './sampled_tasks2.txt'
     with open(task_list_file, 'r') as f:
         task_list = f.read().splitlines()
 
     for i in range(1, r+1):
-        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
+        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json'
         with open(filtered_fl_result_file, 'r') as f:
             fl_result = json.load(f)
         for task in task_list:
@@ -428,9 +428,9 @@ def vote_and_ranks_final_answers(r):
 # --- example usage ---
 if __name__ == "__main__":
     # save_bug_locations()
-    for i in range(10, 11):
-        filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_{i}")
-        with open(f'./fl_results/filtered_fl_result_llama3_{i}.json', 'w') as f:
+    for i in range(1, 6):
+        filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_1000size_{i}")
+        with open(f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json', 'w') as f:
             json.dump(filtered_fl_dict, f, indent=4)
     # # print(filtered_fl_dict1)
     # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
@@ -498,8 +498,8 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers(10)
-    with open('./R10_combined_fl_results_llama3.json', 'w') as f:
+    combined_dict = vote_and_ranks_final_answers(5)
+    with open('./R5_combined_fl_results_llama3_1000size.json', 'w') as f:
         json.dump(combined_dict, f, indent=4)
     
 

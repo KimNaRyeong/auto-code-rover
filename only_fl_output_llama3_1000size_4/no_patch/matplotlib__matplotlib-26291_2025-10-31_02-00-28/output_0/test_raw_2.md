@@ -1,0 +1,32 @@
+Here is the reproducer script:
+
+```python
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+def main():
+    try:
+        fig, (ax, ax2) = plt.subplots(1, 2, figsize=[5.5, 2.8])
+        axins = inset_axes(ax, width=1.3, height=0.9)
+        plt.show()
+    except Exception as e:
+        print_stacktrace(e)
+        raise AssertionError("Issue reproduced")
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()
+```
+
+This script will attempt to create the inset axes using `mpl_toolkits.axes_grid1.inset_locator.inset_axes` and then display the plot. If an error occurs, it will catch the exception, print a stack trace, and raise an `AssertionError`.

@@ -1,0 +1,52 @@
+Here is a standalone Python file `reproducer.py` to reproduce the issue:
+
+```python
+import sphinx
+from docutils.nodes import paragraph, text
+from docutils.parsers.rst import Directive
+from sphinx.builders.latex import LaTeXBuilder
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def setup_latex():
+    sphinx.set_translator('latex')
+    latex_builder = LaTeXBuilder()
+    latex_builder.config_file_name = 'test.tex'
+
+def test_issue():
+    try:
+        setup_latex()
+        rst_content = r"""
+.. role:: python(code)
+   :language: python
+   :class: highlight
+
+Inline :python:`def foo(1 + 2 + None + "abc"): pass` code block
+
+.. code-block:: python
+
+   def foo(1 + 2 + None + "abc"): pass
+"""
+        from docutils.core import publish_string
+        output = publish_string(rst_content, writer_name='latex')
+        if b'\\begin{codeblock}' in output:
+            raise AssertionError("Expected whitespace at start and end of inline code")
+    except Exception as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    test_issue()
+```
+
+This script sets up a LaTeX builder, generates the RST content with the problematic inline code block, and then publishes the string using the `publish_string` function. If the output contains the expected whitespace at start and end of the inline code, it raises an `AssertionError`. The script also prints the stack trace if any exception occurs during execution.
