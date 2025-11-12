@@ -1,0 +1,1222 @@
+2025-11-12 00:48:38.260 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-12 00:48:40.570 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-12 00:48:40.575 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 00:48:49.237 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 00:48:52.859 | DEBUG    | Extracted a valid json.
+2025-11-12 00:48:52.859 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_class(\"SessionStore\")", "search_method_in_class(\"get_expiry_age\", \"SessionStore\")", "search_method_in_class(\"get_expiry_date\", \"SessionStore\")", "search_code(\"settings.SESSION_COOKIE_AGE\")"],
+    "bug_locations": []
+}
+2025-11-12 00:48:52.888 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-12 00:48:52.888 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-12 00:49:10.682 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 00:49:17.809 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 00:49:24.315 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:49:24.315 | DEBUG    | Trying to convert API calls/bug locations into json. Try 2 of 5.
+2025-11-12 00:49:30.477 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:49:30.477 | DEBUG    | Trying to convert API calls/bug locations into json. Try 3 of 5.
+2025-11-12 00:49:36.650 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:49:36.650 | DEBUG    | Trying to convert API calls/bug locations into json. Try 4 of 5.
+2025-11-12 00:49:42.790 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:49:42.790 | DEBUG    | Trying to convert API calls/bug locations into json. Try 5 of 5.
+2025-11-12 00:49:48.940 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:49:48.940 | DEBUG    | Agent proxy return the following json: None
+2025-11-12 00:49:48.941 | DEBUG    | Could not extract API calls from agent search response, asking search agent to re-generate response.
+2025-11-12 00:49:48.942 | DEBUG    | <Agent search> Downstream could not consume our last response. Will retry.
+2025-11-12 00:49:48.942 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 00:49:57.682 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 00:50:04.218 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:50:04.218 | DEBUG    | Trying to convert API calls/bug locations into json. Try 2 of 5.
+2025-11-12 00:50:10.358 | DEBUG    | Invalid json. Will retry.
+2025-11-12 00:50:10.358 | DEBUG    | Trying to convert API calls/bug locations into json. Try 3 of 5.
+2025-11-12 00:50:16.474 | DEBUG    | Extracted a valid json.
+2025-11-12 00:50:16.474 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "django/contrib/sessions/backends/base.py", "class": "SessionStore", "method": "", "intended_behavior": "This method should return the expiry age of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session."}, {"file": "django/contrib/sessions/backends/base.py", "class": "SessionStore", "method": "", "intended_behavior": "This method should return the expiry date of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session."}]
+}
+2025-11-12 00:50:16.482 | DEBUG    | Bug location extracted successfully: [<file>django/contrib/sessions/backends/db.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+12 class SessionStore(SessionBase):
+13     """
+14     Implement database session store.
+15     """
+16     def __init__(self, session_key=None):
+17         super().__init__(session_key)
+18 
+19     @classmethod
+20     def get_model_class(cls):
+21         # Avoids a circular import and allows importing SessionStore when
+22         # django.contrib.sessions is not in INSTALLED_APPS.
+23         from django.contrib.sessions.models import Session
+24         return Session
+25 
+26     @cached_property
+27     def model(self):
+28         return self.get_model_class()
+29 
+30     def _get_session_from_db(self):
+31         try:
+32             return self.model.objects.get(
+33                 session_key=self.session_key,
+34                 expire_date__gt=timezone.now()
+35             )
+36         except (self.model.DoesNotExist, SuspiciousOperation) as e:
+37             if isinstance(e, SuspiciousOperation):
+38                 logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+39                 logger.warning(str(e))
+40             self._session_key = None
+41 
+42     def load(self):
+43         s = self._get_session_from_db()
+44         return self.decode(s.session_data) if s else {}
+45 
+46     def exists(self, session_key):
+47         return self.model.objects.filter(session_key=session_key).exists()
+48 
+49     def create(self):
+50         while True:
+51             self._session_key = self._get_new_session_key()
+52             try:
+53                 # Save immediately to ensure we have a unique entry in the
+54                 # database.
+55                 self.save(must_create=True)
+56             except CreateError:
+57                 # Key wasn't unique. Try again.
+58                 continue
+59             self.modified = True
+60             return
+61 
+62     def create_model_instance(self, data):
+63         """
+64         Return a new instance of the session model object, which represents the
+65         current session state. Intended to be used for saving the session data
+66         to the database.
+67         """
+68         return self.model(
+69             session_key=self._get_or_create_session_key(),
+70             session_data=self.encode(data),
+71             expire_date=self.get_expiry_date(),
+72         )
+73 
+74     def save(self, must_create=False):
+75         """
+76         Save the current session data to the database. If 'must_create' is
+77         True, raise a database error if the saving operation doesn't create a
+78         new entry (as opposed to possibly updating an existing entry).
+79         """
+80         if self.session_key is None:
+81             return self.create()
+82         data = self._get_session(no_load=must_create)
+83         obj = self.create_model_instance(data)
+84         using = router.db_for_write(self.model, instance=obj)
+85         try:
+86             with transaction.atomic(using=using):
+87                 obj.save(force_insert=must_create, force_update=not must_create, using=using)
+88         except IntegrityError:
+89             if must_create:
+90                 raise CreateError
+91             raise
+92         except DatabaseError:
+93             if not must_create:
+94                 raise UpdateError
+95             raise
+96 
+97     def delete(self, session_key=None):
+98         if session_key is None:
+99             if self.session_key is None:
+100                 return
+101             session_key = self.session_key
+102         try:
+103             self.model.objects.get(session_key=session_key).delete()
+104         except self.model.DoesNotExist:
+105             pass
+106 
+107     @classmethod
+108     def clear_expired(cls):
+109         cls.get_model_class().objects.filter(expire_date__lt=timezone.now()).delete()
+
+</code><intended_behavior>This method should return the expiry age of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/file.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+16 class SessionStore(SessionBase):
+17     """
+18     Implement a file based session store.
+19     """
+20     def __init__(self, session_key=None):
+21         self.storage_path = self._get_storage_path()
+22         self.file_prefix = settings.SESSION_COOKIE_NAME
+23         super().__init__(session_key)
+24 
+25     @classmethod
+26     def _get_storage_path(cls):
+27         try:
+28             return cls._storage_path
+29         except AttributeError:
+30             storage_path = getattr(settings, 'SESSION_FILE_PATH', None) or tempfile.gettempdir()
+31             # Make sure the storage path is valid.
+32             if not os.path.isdir(storage_path):
+33                 raise ImproperlyConfigured(
+34                     "The session storage path %r doesn't exist. Please set your"
+35                     " SESSION_FILE_PATH setting to an existing directory in which"
+36                     " Django can store session data." % storage_path)
+37 
+38             cls._storage_path = storage_path
+39             return storage_path
+40 
+41     def _key_to_file(self, session_key=None):
+42         """
+43         Get the file associated with this session key.
+44         """
+45         if session_key is None:
+46             session_key = self._get_or_create_session_key()
+47 
+48         # Make sure we're not vulnerable to directory traversal. Session keys
+49         # should always be md5s, so they should never contain directory
+50         # components.
+51         if not set(session_key).issubset(VALID_KEY_CHARS):
+52             raise InvalidSessionKey(
+53                 "Invalid characters in session key")
+54 
+55         return os.path.join(self.storage_path, self.file_prefix + session_key)
+56 
+57     def _last_modification(self):
+58         """
+59         Return the modification time of the file storing the session's content.
+60         """
+61         modification = os.stat(self._key_to_file()).st_mtime
+62         if settings.USE_TZ:
+63             modification = datetime.datetime.utcfromtimestamp(modification)
+64             return modification.replace(tzinfo=timezone.utc)
+65         return datetime.datetime.fromtimestamp(modification)
+66 
+67     def _expiry_date(self, session_data):
+68         """
+69         Return the expiry time of the file storing the session's content.
+70         """
+71         return session_data.get('_session_expiry') or (
+72             self._last_modification() + datetime.timedelta(seconds=settings.SESSION_COOKIE_AGE)
+73         )
+74 
+75     def load(self):
+76         session_data = {}
+77         try:
+78             with open(self._key_to_file(), encoding='ascii') as session_file:
+79                 file_data = session_file.read()
+80             # Don't fail if there is no data in the session file.
+81             # We may have opened the empty placeholder file.
+82             if file_data:
+83                 try:
+84                     session_data = self.decode(file_data)
+85                 except (EOFError, SuspiciousOperation) as e:
+86                     if isinstance(e, SuspiciousOperation):
+87                         logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+88                         logger.warning(str(e))
+89                     self.create()
+90 
+91                 # Remove expired sessions.
+92                 expiry_age = self.get_expiry_age(expiry=self._expiry_date(session_data))
+93                 if expiry_age <= 0:
+94                     session_data = {}
+95                     self.delete()
+96                     self.create()
+97         except (OSError, SuspiciousOperation):
+98             self._session_key = None
+99         return session_data
+100 
+101     def create(self):
+102         while True:
+103             self._session_key = self._get_new_session_key()
+104             try:
+105                 self.save(must_create=True)
+106             except CreateError:
+107                 continue
+108             self.modified = True
+109             return
+110 
+111     def save(self, must_create=False):
+112         if self.session_key is None:
+113             return self.create()
+114         # Get the session data now, before we start messing
+115         # with the file it is stored within.
+116         session_data = self._get_session(no_load=must_create)
+117 
+118         session_file_name = self._key_to_file()
+119 
+120         try:
+121             # Make sure the file exists.  If it does not already exist, an
+122             # empty placeholder file is created.
+123             flags = os.O_WRONLY | getattr(os, 'O_BINARY', 0)
+124             if must_create:
+125                 flags |= os.O_EXCL | os.O_CREAT
+126             fd = os.open(session_file_name, flags)
+127             os.close(fd)
+128         except FileNotFoundError:
+129             if not must_create:
+130                 raise UpdateError
+131         except FileExistsError:
+132             if must_create:
+133                 raise CreateError
+134 
+135         # Write the session file without interfering with other threads
+136         # or processes.  By writing to an atomically generated temporary
+137         # file and then using the atomic os.rename() to make the complete
+138         # file visible, we avoid having to lock the session file, while
+139         # still maintaining its integrity.
+140         #
+141         # Note: Locking the session file was explored, but rejected in part
+142         # because in order to be atomic and cross-platform, it required a
+143         # long-lived lock file for each session, doubling the number of
+144         # files in the session storage directory at any given time.  This
+145         # rename solution is cleaner and avoids any additional overhead
+146         # when reading the session data, which is the more common case
+147         # unless SESSION_SAVE_EVERY_REQUEST = True.
+148         #
+149         # See ticket #8616.
+150         dir, prefix = os.path.split(session_file_name)
+151 
+152         try:
+153             output_file_fd, output_file_name = tempfile.mkstemp(dir=dir, prefix=prefix + '_out_')
+154             renamed = False
+155             try:
+156                 try:
+157                     os.write(output_file_fd, self.encode(session_data).encode())
+158                 finally:
+159                     os.close(output_file_fd)
+160 
+161                 # This will atomically rename the file (os.rename) if the OS
+162                 # supports it. Otherwise this will result in a shutil.copy2
+163                 # and os.unlink (for example on Windows). See #9084.
+164                 shutil.move(output_file_name, session_file_name)
+165                 renamed = True
+166             finally:
+167                 if not renamed:
+168                     os.unlink(output_file_name)
+169         except (EOFError, OSError):
+170             pass
+171 
+172     def exists(self, session_key):
+173         return os.path.exists(self._key_to_file(session_key))
+174 
+175     def delete(self, session_key=None):
+176         if session_key is None:
+177             if self.session_key is None:
+178                 return
+179             session_key = self.session_key
+180         try:
+181             os.unlink(self._key_to_file(session_key))
+182         except OSError:
+183             pass
+184 
+185     def clean(self):
+186         pass
+187 
+188     @classmethod
+189     def clear_expired(cls):
+190         storage_path = cls._get_storage_path()
+191         file_prefix = settings.SESSION_COOKIE_NAME
+192 
+193         for session_file in os.listdir(storage_path):
+194             if not session_file.startswith(file_prefix):
+195                 continue
+196             session_key = session_file[len(file_prefix):]
+197             session = cls(session_key)
+198             # When an expired session is loaded, its file is removed, and a
+199             # new file is immediately created. Prevent this by disabling
+200             # the create() method.
+201             session.create = lambda: None
+202             session.load()
+
+</code><intended_behavior>This method should return the expiry age of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/db.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+12 class SessionStore(SessionBase):
+13     """
+14     Implement database session store.
+15     """
+16     def __init__(self, session_key=None):
+17         super().__init__(session_key)
+18 
+19     @classmethod
+20     def get_model_class(cls):
+21         # Avoids a circular import and allows importing SessionStore when
+22         # django.contrib.sessions is not in INSTALLED_APPS.
+23         from django.contrib.sessions.models import Session
+24         return Session
+25 
+26     @cached_property
+27     def model(self):
+28         return self.get_model_class()
+29 
+30     def _get_session_from_db(self):
+31         try:
+32             return self.model.objects.get(
+33                 session_key=self.session_key,
+34                 expire_date__gt=timezone.now()
+35             )
+36         except (self.model.DoesNotExist, SuspiciousOperation) as e:
+37             if isinstance(e, SuspiciousOperation):
+38                 logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+39                 logger.warning(str(e))
+40             self._session_key = None
+41 
+42     def load(self):
+43         s = self._get_session_from_db()
+44         return self.decode(s.session_data) if s else {}
+45 
+46     def exists(self, session_key):
+47         return self.model.objects.filter(session_key=session_key).exists()
+48 
+49     def create(self):
+50         while True:
+51             self._session_key = self._get_new_session_key()
+52             try:
+53                 # Save immediately to ensure we have a unique entry in the
+54                 # database.
+55                 self.save(must_create=True)
+56             except CreateError:
+57                 # Key wasn't unique. Try again.
+58                 continue
+59             self.modified = True
+60             return
+61 
+62     def create_model_instance(self, data):
+63         """
+64         Return a new instance of the session model object, which represents the
+65         current session state. Intended to be used for saving the session data
+66         to the database.
+67         """
+68         return self.model(
+69             session_key=self._get_or_create_session_key(),
+70             session_data=self.encode(data),
+71             expire_date=self.get_expiry_date(),
+72         )
+73 
+74     def save(self, must_create=False):
+75         """
+76         Save the current session data to the database. If 'must_create' is
+77         True, raise a database error if the saving operation doesn't create a
+78         new entry (as opposed to possibly updating an existing entry).
+79         """
+80         if self.session_key is None:
+81             return self.create()
+82         data = self._get_session(no_load=must_create)
+83         obj = self.create_model_instance(data)
+84         using = router.db_for_write(self.model, instance=obj)
+85         try:
+86             with transaction.atomic(using=using):
+87                 obj.save(force_insert=must_create, force_update=not must_create, using=using)
+88         except IntegrityError:
+89             if must_create:
+90                 raise CreateError
+91             raise
+92         except DatabaseError:
+93             if not must_create:
+94                 raise UpdateError
+95             raise
+96 
+97     def delete(self, session_key=None):
+98         if session_key is None:
+99             if self.session_key is None:
+100                 return
+101             session_key = self.session_key
+102         try:
+103             self.model.objects.get(session_key=session_key).delete()
+104         except self.model.DoesNotExist:
+105             pass
+106 
+107     @classmethod
+108     def clear_expired(cls):
+109         cls.get_model_class().objects.filter(expire_date__lt=timezone.now()).delete()
+
+</code><intended_behavior>This method should return the expiry date of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/file.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+16 class SessionStore(SessionBase):
+17     """
+18     Implement a file based session store.
+19     """
+20     def __init__(self, session_key=None):
+21         self.storage_path = self._get_storage_path()
+22         self.file_prefix = settings.SESSION_COOKIE_NAME
+23         super().__init__(session_key)
+24 
+25     @classmethod
+26     def _get_storage_path(cls):
+27         try:
+28             return cls._storage_path
+29         except AttributeError:
+30             storage_path = getattr(settings, 'SESSION_FILE_PATH', None) or tempfile.gettempdir()
+31             # Make sure the storage path is valid.
+32             if not os.path.isdir(storage_path):
+33                 raise ImproperlyConfigured(
+34                     "The session storage path %r doesn't exist. Please set your"
+35                     " SESSION_FILE_PATH setting to an existing directory in which"
+36                     " Django can store session data." % storage_path)
+37 
+38             cls._storage_path = storage_path
+39             return storage_path
+40 
+41     def _key_to_file(self, session_key=None):
+42         """
+43         Get the file associated with this session key.
+44         """
+45         if session_key is None:
+46             session_key = self._get_or_create_session_key()
+47 
+48         # Make sure we're not vulnerable to directory traversal. Session keys
+49         # should always be md5s, so they should never contain directory
+50         # components.
+51         if not set(session_key).issubset(VALID_KEY_CHARS):
+52             raise InvalidSessionKey(
+53                 "Invalid characters in session key")
+54 
+55         return os.path.join(self.storage_path, self.file_prefix + session_key)
+56 
+57     def _last_modification(self):
+58         """
+59         Return the modification time of the file storing the session's content.
+60         """
+61         modification = os.stat(self._key_to_file()).st_mtime
+62         if settings.USE_TZ:
+63             modification = datetime.datetime.utcfromtimestamp(modification)
+64             return modification.replace(tzinfo=timezone.utc)
+65         return datetime.datetime.fromtimestamp(modification)
+66 
+67     def _expiry_date(self, session_data):
+68         """
+69         Return the expiry time of the file storing the session's content.
+70         """
+71         return session_data.get('_session_expiry') or (
+72             self._last_modification() + datetime.timedelta(seconds=settings.SESSION_COOKIE_AGE)
+73         )
+74 
+75     def load(self):
+76         session_data = {}
+77         try:
+78             with open(self._key_to_file(), encoding='ascii') as session_file:
+79                 file_data = session_file.read()
+80             # Don't fail if there is no data in the session file.
+81             # We may have opened the empty placeholder file.
+82             if file_data:
+83                 try:
+84                     session_data = self.decode(file_data)
+85                 except (EOFError, SuspiciousOperation) as e:
+86                     if isinstance(e, SuspiciousOperation):
+87                         logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+88                         logger.warning(str(e))
+89                     self.create()
+90 
+91                 # Remove expired sessions.
+92                 expiry_age = self.get_expiry_age(expiry=self._expiry_date(session_data))
+93                 if expiry_age <= 0:
+94                     session_data = {}
+95                     self.delete()
+96                     self.create()
+97         except (OSError, SuspiciousOperation):
+98             self._session_key = None
+99         return session_data
+100 
+101     def create(self):
+102         while True:
+103             self._session_key = self._get_new_session_key()
+104             try:
+105                 self.save(must_create=True)
+106             except CreateError:
+107                 continue
+108             self.modified = True
+109             return
+110 
+111     def save(self, must_create=False):
+112         if self.session_key is None:
+113             return self.create()
+114         # Get the session data now, before we start messing
+115         # with the file it is stored within.
+116         session_data = self._get_session(no_load=must_create)
+117 
+118         session_file_name = self._key_to_file()
+119 
+120         try:
+121             # Make sure the file exists.  If it does not already exist, an
+122             # empty placeholder file is created.
+123             flags = os.O_WRONLY | getattr(os, 'O_BINARY', 0)
+124             if must_create:
+125                 flags |= os.O_EXCL | os.O_CREAT
+126             fd = os.open(session_file_name, flags)
+127             os.close(fd)
+128         except FileNotFoundError:
+129             if not must_create:
+130                 raise UpdateError
+131         except FileExistsError:
+132             if must_create:
+133                 raise CreateError
+134 
+135         # Write the session file without interfering with other threads
+136         # or processes.  By writing to an atomically generated temporary
+137         # file and then using the atomic os.rename() to make the complete
+138         # file visible, we avoid having to lock the session file, while
+139         # still maintaining its integrity.
+140         #
+141         # Note: Locking the session file was explored, but rejected in part
+142         # because in order to be atomic and cross-platform, it required a
+143         # long-lived lock file for each session, doubling the number of
+144         # files in the session storage directory at any given time.  This
+145         # rename solution is cleaner and avoids any additional overhead
+146         # when reading the session data, which is the more common case
+147         # unless SESSION_SAVE_EVERY_REQUEST = True.
+148         #
+149         # See ticket #8616.
+150         dir, prefix = os.path.split(session_file_name)
+151 
+152         try:
+153             output_file_fd, output_file_name = tempfile.mkstemp(dir=dir, prefix=prefix + '_out_')
+154             renamed = False
+155             try:
+156                 try:
+157                     os.write(output_file_fd, self.encode(session_data).encode())
+158                 finally:
+159                     os.close(output_file_fd)
+160 
+161                 # This will atomically rename the file (os.rename) if the OS
+162                 # supports it. Otherwise this will result in a shutil.copy2
+163                 # and os.unlink (for example on Windows). See #9084.
+164                 shutil.move(output_file_name, session_file_name)
+165                 renamed = True
+166             finally:
+167                 if not renamed:
+168                     os.unlink(output_file_name)
+169         except (EOFError, OSError):
+170             pass
+171 
+172     def exists(self, session_key):
+173         return os.path.exists(self._key_to_file(session_key))
+174 
+175     def delete(self, session_key=None):
+176         if session_key is None:
+177             if self.session_key is None:
+178                 return
+179             session_key = self.session_key
+180         try:
+181             os.unlink(self._key_to_file(session_key))
+182         except OSError:
+183             pass
+184 
+185     def clean(self):
+186         pass
+187 
+188     @classmethod
+189     def clear_expired(cls):
+190         storage_path = cls._get_storage_path()
+191         file_prefix = settings.SESSION_COOKIE_NAME
+192 
+193         for session_file in os.listdir(storage_path):
+194             if not session_file.startswith(file_prefix):
+195                 continue
+196             session_key = session_file[len(file_prefix):]
+197             session = cls(session_key)
+198             # When an expired session is loaded, its file is removed, and a
+199             # new file is immediately created. Prevent this by disabling
+200             # the create() method.
+201             session.create = lambda: None
+202             session.load()
+
+</code><intended_behavior>This method should return the expiry date of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>]
+2025-11-12 00:50:16.482 | INFO     | Search completed. Bug locations: [<file>django/contrib/sessions/backends/db.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+12 class SessionStore(SessionBase):
+13     """
+14     Implement database session store.
+15     """
+16     def __init__(self, session_key=None):
+17         super().__init__(session_key)
+18 
+19     @classmethod
+20     def get_model_class(cls):
+21         # Avoids a circular import and allows importing SessionStore when
+22         # django.contrib.sessions is not in INSTALLED_APPS.
+23         from django.contrib.sessions.models import Session
+24         return Session
+25 
+26     @cached_property
+27     def model(self):
+28         return self.get_model_class()
+29 
+30     def _get_session_from_db(self):
+31         try:
+32             return self.model.objects.get(
+33                 session_key=self.session_key,
+34                 expire_date__gt=timezone.now()
+35             )
+36         except (self.model.DoesNotExist, SuspiciousOperation) as e:
+37             if isinstance(e, SuspiciousOperation):
+38                 logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+39                 logger.warning(str(e))
+40             self._session_key = None
+41 
+42     def load(self):
+43         s = self._get_session_from_db()
+44         return self.decode(s.session_data) if s else {}
+45 
+46     def exists(self, session_key):
+47         return self.model.objects.filter(session_key=session_key).exists()
+48 
+49     def create(self):
+50         while True:
+51             self._session_key = self._get_new_session_key()
+52             try:
+53                 # Save immediately to ensure we have a unique entry in the
+54                 # database.
+55                 self.save(must_create=True)
+56             except CreateError:
+57                 # Key wasn't unique. Try again.
+58                 continue
+59             self.modified = True
+60             return
+61 
+62     def create_model_instance(self, data):
+63         """
+64         Return a new instance of the session model object, which represents the
+65         current session state. Intended to be used for saving the session data
+66         to the database.
+67         """
+68         return self.model(
+69             session_key=self._get_or_create_session_key(),
+70             session_data=self.encode(data),
+71             expire_date=self.get_expiry_date(),
+72         )
+73 
+74     def save(self, must_create=False):
+75         """
+76         Save the current session data to the database. If 'must_create' is
+77         True, raise a database error if the saving operation doesn't create a
+78         new entry (as opposed to possibly updating an existing entry).
+79         """
+80         if self.session_key is None:
+81             return self.create()
+82         data = self._get_session(no_load=must_create)
+83         obj = self.create_model_instance(data)
+84         using = router.db_for_write(self.model, instance=obj)
+85         try:
+86             with transaction.atomic(using=using):
+87                 obj.save(force_insert=must_create, force_update=not must_create, using=using)
+88         except IntegrityError:
+89             if must_create:
+90                 raise CreateError
+91             raise
+92         except DatabaseError:
+93             if not must_create:
+94                 raise UpdateError
+95             raise
+96 
+97     def delete(self, session_key=None):
+98         if session_key is None:
+99             if self.session_key is None:
+100                 return
+101             session_key = self.session_key
+102         try:
+103             self.model.objects.get(session_key=session_key).delete()
+104         except self.model.DoesNotExist:
+105             pass
+106 
+107     @classmethod
+108     def clear_expired(cls):
+109         cls.get_model_class().objects.filter(expire_date__lt=timezone.now()).delete()
+
+</code><intended_behavior>This method should return the expiry age of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/file.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+16 class SessionStore(SessionBase):
+17     """
+18     Implement a file based session store.
+19     """
+20     def __init__(self, session_key=None):
+21         self.storage_path = self._get_storage_path()
+22         self.file_prefix = settings.SESSION_COOKIE_NAME
+23         super().__init__(session_key)
+24 
+25     @classmethod
+26     def _get_storage_path(cls):
+27         try:
+28             return cls._storage_path
+29         except AttributeError:
+30             storage_path = getattr(settings, 'SESSION_FILE_PATH', None) or tempfile.gettempdir()
+31             # Make sure the storage path is valid.
+32             if not os.path.isdir(storage_path):
+33                 raise ImproperlyConfigured(
+34                     "The session storage path %r doesn't exist. Please set your"
+35                     " SESSION_FILE_PATH setting to an existing directory in which"
+36                     " Django can store session data." % storage_path)
+37 
+38             cls._storage_path = storage_path
+39             return storage_path
+40 
+41     def _key_to_file(self, session_key=None):
+42         """
+43         Get the file associated with this session key.
+44         """
+45         if session_key is None:
+46             session_key = self._get_or_create_session_key()
+47 
+48         # Make sure we're not vulnerable to directory traversal. Session keys
+49         # should always be md5s, so they should never contain directory
+50         # components.
+51         if not set(session_key).issubset(VALID_KEY_CHARS):
+52             raise InvalidSessionKey(
+53                 "Invalid characters in session key")
+54 
+55         return os.path.join(self.storage_path, self.file_prefix + session_key)
+56 
+57     def _last_modification(self):
+58         """
+59         Return the modification time of the file storing the session's content.
+60         """
+61         modification = os.stat(self._key_to_file()).st_mtime
+62         if settings.USE_TZ:
+63             modification = datetime.datetime.utcfromtimestamp(modification)
+64             return modification.replace(tzinfo=timezone.utc)
+65         return datetime.datetime.fromtimestamp(modification)
+66 
+67     def _expiry_date(self, session_data):
+68         """
+69         Return the expiry time of the file storing the session's content.
+70         """
+71         return session_data.get('_session_expiry') or (
+72             self._last_modification() + datetime.timedelta(seconds=settings.SESSION_COOKIE_AGE)
+73         )
+74 
+75     def load(self):
+76         session_data = {}
+77         try:
+78             with open(self._key_to_file(), encoding='ascii') as session_file:
+79                 file_data = session_file.read()
+80             # Don't fail if there is no data in the session file.
+81             # We may have opened the empty placeholder file.
+82             if file_data:
+83                 try:
+84                     session_data = self.decode(file_data)
+85                 except (EOFError, SuspiciousOperation) as e:
+86                     if isinstance(e, SuspiciousOperation):
+87                         logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+88                         logger.warning(str(e))
+89                     self.create()
+90 
+91                 # Remove expired sessions.
+92                 expiry_age = self.get_expiry_age(expiry=self._expiry_date(session_data))
+93                 if expiry_age <= 0:
+94                     session_data = {}
+95                     self.delete()
+96                     self.create()
+97         except (OSError, SuspiciousOperation):
+98             self._session_key = None
+99         return session_data
+100 
+101     def create(self):
+102         while True:
+103             self._session_key = self._get_new_session_key()
+104             try:
+105                 self.save(must_create=True)
+106             except CreateError:
+107                 continue
+108             self.modified = True
+109             return
+110 
+111     def save(self, must_create=False):
+112         if self.session_key is None:
+113             return self.create()
+114         # Get the session data now, before we start messing
+115         # with the file it is stored within.
+116         session_data = self._get_session(no_load=must_create)
+117 
+118         session_file_name = self._key_to_file()
+119 
+120         try:
+121             # Make sure the file exists.  If it does not already exist, an
+122             # empty placeholder file is created.
+123             flags = os.O_WRONLY | getattr(os, 'O_BINARY', 0)
+124             if must_create:
+125                 flags |= os.O_EXCL | os.O_CREAT
+126             fd = os.open(session_file_name, flags)
+127             os.close(fd)
+128         except FileNotFoundError:
+129             if not must_create:
+130                 raise UpdateError
+131         except FileExistsError:
+132             if must_create:
+133                 raise CreateError
+134 
+135         # Write the session file without interfering with other threads
+136         # or processes.  By writing to an atomically generated temporary
+137         # file and then using the atomic os.rename() to make the complete
+138         # file visible, we avoid having to lock the session file, while
+139         # still maintaining its integrity.
+140         #
+141         # Note: Locking the session file was explored, but rejected in part
+142         # because in order to be atomic and cross-platform, it required a
+143         # long-lived lock file for each session, doubling the number of
+144         # files in the session storage directory at any given time.  This
+145         # rename solution is cleaner and avoids any additional overhead
+146         # when reading the session data, which is the more common case
+147         # unless SESSION_SAVE_EVERY_REQUEST = True.
+148         #
+149         # See ticket #8616.
+150         dir, prefix = os.path.split(session_file_name)
+151 
+152         try:
+153             output_file_fd, output_file_name = tempfile.mkstemp(dir=dir, prefix=prefix + '_out_')
+154             renamed = False
+155             try:
+156                 try:
+157                     os.write(output_file_fd, self.encode(session_data).encode())
+158                 finally:
+159                     os.close(output_file_fd)
+160 
+161                 # This will atomically rename the file (os.rename) if the OS
+162                 # supports it. Otherwise this will result in a shutil.copy2
+163                 # and os.unlink (for example on Windows). See #9084.
+164                 shutil.move(output_file_name, session_file_name)
+165                 renamed = True
+166             finally:
+167                 if not renamed:
+168                     os.unlink(output_file_name)
+169         except (EOFError, OSError):
+170             pass
+171 
+172     def exists(self, session_key):
+173         return os.path.exists(self._key_to_file(session_key))
+174 
+175     def delete(self, session_key=None):
+176         if session_key is None:
+177             if self.session_key is None:
+178                 return
+179             session_key = self.session_key
+180         try:
+181             os.unlink(self._key_to_file(session_key))
+182         except OSError:
+183             pass
+184 
+185     def clean(self):
+186         pass
+187 
+188     @classmethod
+189     def clear_expired(cls):
+190         storage_path = cls._get_storage_path()
+191         file_prefix = settings.SESSION_COOKIE_NAME
+192 
+193         for session_file in os.listdir(storage_path):
+194             if not session_file.startswith(file_prefix):
+195                 continue
+196             session_key = session_file[len(file_prefix):]
+197             session = cls(session_key)
+198             # When an expired session is loaded, its file is removed, and a
+199             # new file is immediately created. Prevent this by disabling
+200             # the create() method.
+201             session.create = lambda: None
+202             session.load()
+
+</code><intended_behavior>This method should return the expiry age of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/db.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+12 class SessionStore(SessionBase):
+13     """
+14     Implement database session store.
+15     """
+16     def __init__(self, session_key=None):
+17         super().__init__(session_key)
+18 
+19     @classmethod
+20     def get_model_class(cls):
+21         # Avoids a circular import and allows importing SessionStore when
+22         # django.contrib.sessions is not in INSTALLED_APPS.
+23         from django.contrib.sessions.models import Session
+24         return Session
+25 
+26     @cached_property
+27     def model(self):
+28         return self.get_model_class()
+29 
+30     def _get_session_from_db(self):
+31         try:
+32             return self.model.objects.get(
+33                 session_key=self.session_key,
+34                 expire_date__gt=timezone.now()
+35             )
+36         except (self.model.DoesNotExist, SuspiciousOperation) as e:
+37             if isinstance(e, SuspiciousOperation):
+38                 logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+39                 logger.warning(str(e))
+40             self._session_key = None
+41 
+42     def load(self):
+43         s = self._get_session_from_db()
+44         return self.decode(s.session_data) if s else {}
+45 
+46     def exists(self, session_key):
+47         return self.model.objects.filter(session_key=session_key).exists()
+48 
+49     def create(self):
+50         while True:
+51             self._session_key = self._get_new_session_key()
+52             try:
+53                 # Save immediately to ensure we have a unique entry in the
+54                 # database.
+55                 self.save(must_create=True)
+56             except CreateError:
+57                 # Key wasn't unique. Try again.
+58                 continue
+59             self.modified = True
+60             return
+61 
+62     def create_model_instance(self, data):
+63         """
+64         Return a new instance of the session model object, which represents the
+65         current session state. Intended to be used for saving the session data
+66         to the database.
+67         """
+68         return self.model(
+69             session_key=self._get_or_create_session_key(),
+70             session_data=self.encode(data),
+71             expire_date=self.get_expiry_date(),
+72         )
+73 
+74     def save(self, must_create=False):
+75         """
+76         Save the current session data to the database. If 'must_create' is
+77         True, raise a database error if the saving operation doesn't create a
+78         new entry (as opposed to possibly updating an existing entry).
+79         """
+80         if self.session_key is None:
+81             return self.create()
+82         data = self._get_session(no_load=must_create)
+83         obj = self.create_model_instance(data)
+84         using = router.db_for_write(self.model, instance=obj)
+85         try:
+86             with transaction.atomic(using=using):
+87                 obj.save(force_insert=must_create, force_update=not must_create, using=using)
+88         except IntegrityError:
+89             if must_create:
+90                 raise CreateError
+91             raise
+92         except DatabaseError:
+93             if not must_create:
+94                 raise UpdateError
+95             raise
+96 
+97     def delete(self, session_key=None):
+98         if session_key is None:
+99             if self.session_key is None:
+100                 return
+101             session_key = self.session_key
+102         try:
+103             self.model.objects.get(session_key=session_key).delete()
+104         except self.model.DoesNotExist:
+105             pass
+106 
+107     @classmethod
+108     def clear_expired(cls):
+109         cls.get_model_class().objects.filter(expire_date__lt=timezone.now()).delete()
+
+</code><intended_behavior>This method should return the expiry date of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>, <file>django/contrib/sessions/backends/file.py</file>
+<class>SessionStore</class>
+<method>None</method>
+<code>
+16 class SessionStore(SessionBase):
+17     """
+18     Implement a file based session store.
+19     """
+20     def __init__(self, session_key=None):
+21         self.storage_path = self._get_storage_path()
+22         self.file_prefix = settings.SESSION_COOKIE_NAME
+23         super().__init__(session_key)
+24 
+25     @classmethod
+26     def _get_storage_path(cls):
+27         try:
+28             return cls._storage_path
+29         except AttributeError:
+30             storage_path = getattr(settings, 'SESSION_FILE_PATH', None) or tempfile.gettempdir()
+31             # Make sure the storage path is valid.
+32             if not os.path.isdir(storage_path):
+33                 raise ImproperlyConfigured(
+34                     "The session storage path %r doesn't exist. Please set your"
+35                     " SESSION_FILE_PATH setting to an existing directory in which"
+36                     " Django can store session data." % storage_path)
+37 
+38             cls._storage_path = storage_path
+39             return storage_path
+40 
+41     def _key_to_file(self, session_key=None):
+42         """
+43         Get the file associated with this session key.
+44         """
+45         if session_key is None:
+46             session_key = self._get_or_create_session_key()
+47 
+48         # Make sure we're not vulnerable to directory traversal. Session keys
+49         # should always be md5s, so they should never contain directory
+50         # components.
+51         if not set(session_key).issubset(VALID_KEY_CHARS):
+52             raise InvalidSessionKey(
+53                 "Invalid characters in session key")
+54 
+55         return os.path.join(self.storage_path, self.file_prefix + session_key)
+56 
+57     def _last_modification(self):
+58         """
+59         Return the modification time of the file storing the session's content.
+60         """
+61         modification = os.stat(self._key_to_file()).st_mtime
+62         if settings.USE_TZ:
+63             modification = datetime.datetime.utcfromtimestamp(modification)
+64             return modification.replace(tzinfo=timezone.utc)
+65         return datetime.datetime.fromtimestamp(modification)
+66 
+67     def _expiry_date(self, session_data):
+68         """
+69         Return the expiry time of the file storing the session's content.
+70         """
+71         return session_data.get('_session_expiry') or (
+72             self._last_modification() + datetime.timedelta(seconds=settings.SESSION_COOKIE_AGE)
+73         )
+74 
+75     def load(self):
+76         session_data = {}
+77         try:
+78             with open(self._key_to_file(), encoding='ascii') as session_file:
+79                 file_data = session_file.read()
+80             # Don't fail if there is no data in the session file.
+81             # We may have opened the empty placeholder file.
+82             if file_data:
+83                 try:
+84                     session_data = self.decode(file_data)
+85                 except (EOFError, SuspiciousOperation) as e:
+86                     if isinstance(e, SuspiciousOperation):
+87                         logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
+88                         logger.warning(str(e))
+89                     self.create()
+90 
+91                 # Remove expired sessions.
+92                 expiry_age = self.get_expiry_age(expiry=self._expiry_date(session_data))
+93                 if expiry_age <= 0:
+94                     session_data = {}
+95                     self.delete()
+96                     self.create()
+97         except (OSError, SuspiciousOperation):
+98             self._session_key = None
+99         return session_data
+100 
+101     def create(self):
+102         while True:
+103             self._session_key = self._get_new_session_key()
+104             try:
+105                 self.save(must_create=True)
+106             except CreateError:
+107                 continue
+108             self.modified = True
+109             return
+110 
+111     def save(self, must_create=False):
+112         if self.session_key is None:
+113             return self.create()
+114         # Get the session data now, before we start messing
+115         # with the file it is stored within.
+116         session_data = self._get_session(no_load=must_create)
+117 
+118         session_file_name = self._key_to_file()
+119 
+120         try:
+121             # Make sure the file exists.  If it does not already exist, an
+122             # empty placeholder file is created.
+123             flags = os.O_WRONLY | getattr(os, 'O_BINARY', 0)
+124             if must_create:
+125                 flags |= os.O_EXCL | os.O_CREAT
+126             fd = os.open(session_file_name, flags)
+127             os.close(fd)
+128         except FileNotFoundError:
+129             if not must_create:
+130                 raise UpdateError
+131         except FileExistsError:
+132             if must_create:
+133                 raise CreateError
+134 
+135         # Write the session file without interfering with other threads
+136         # or processes.  By writing to an atomically generated temporary
+137         # file and then using the atomic os.rename() to make the complete
+138         # file visible, we avoid having to lock the session file, while
+139         # still maintaining its integrity.
+140         #
+141         # Note: Locking the session file was explored, but rejected in part
+142         # because in order to be atomic and cross-platform, it required a
+143         # long-lived lock file for each session, doubling the number of
+144         # files in the session storage directory at any given time.  This
+145         # rename solution is cleaner and avoids any additional overhead
+146         # when reading the session data, which is the more common case
+147         # unless SESSION_SAVE_EVERY_REQUEST = True.
+148         #
+149         # See ticket #8616.
+150         dir, prefix = os.path.split(session_file_name)
+151 
+152         try:
+153             output_file_fd, output_file_name = tempfile.mkstemp(dir=dir, prefix=prefix + '_out_')
+154             renamed = False
+155             try:
+156                 try:
+157                     os.write(output_file_fd, self.encode(session_data).encode())
+158                 finally:
+159                     os.close(output_file_fd)
+160 
+161                 # This will atomically rename the file (os.rename) if the OS
+162                 # supports it. Otherwise this will result in a shutil.copy2
+163                 # and os.unlink (for example on Windows). See #9084.
+164                 shutil.move(output_file_name, session_file_name)
+165                 renamed = True
+166             finally:
+167                 if not renamed:
+168                     os.unlink(output_file_name)
+169         except (EOFError, OSError):
+170             pass
+171 
+172     def exists(self, session_key):
+173         return os.path.exists(self._key_to_file(session_key))
+174 
+175     def delete(self, session_key=None):
+176         if session_key is None:
+177             if self.session_key is None:
+178                 return
+179             session_key = self.session_key
+180         try:
+181             os.unlink(self._key_to_file(session_key))
+182         except OSError:
+183             pass
+184 
+185     def clean(self):
+186         pass
+187 
+188     @classmethod
+189     def clear_expired(cls):
+190         storage_path = cls._get_storage_path()
+191         file_prefix = settings.SESSION_COOKIE_NAME
+192 
+193         for session_file in os.listdir(storage_path):
+194             if not session_file.startswith(file_prefix):
+195                 continue
+196             session_key = session_file[len(file_prefix):]
+197             session = cls(session_key)
+198             # When an expired session is loaded, its file is removed, and a
+199             # new file is immediately created. Prevent this by disabling
+200             # the create() method.
+201             session.create = lambda: None
+202             session.load()
+
+</code><intended_behavior>This method should return the expiry date of a session based on the SESSION_COOKIE_AGE setting and other parameters of the session.</intended_behavior>]
+2025-11-12 00:50:16.482 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-12 00:50:16.483 | INFO     | Search-only: skipping patch selection
+2025-11-12 00:50:16.626 | INFO     | Task django__django-11389 completed successfully.
+2025-11-12 00:50:16.627 | INFO     | No patch generated. You can try running ACR again.

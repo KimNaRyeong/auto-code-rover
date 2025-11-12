@@ -1,0 +1,695 @@
+2025-11-11 16:34:47.176 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-11 16:34:49.726 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-11 16:34:49.731 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-11 16:34:59.267 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-11 16:35:02.702 | DEBUG    | Extracted a valid json.
+2025-11-11 16:35:02.703 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_class(\"Func\")", "search_method_in_class(\"function\", \"Func\")", "search_code_in_file('ROUND', 'django/db/backends/base/expressions.py')", "search_method(\"Round\")"],
+    "bug_locations": []
+}
+2025-11-11 16:35:02.717 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-11 16:35:02.718 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-11 16:35:22.890 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-11 16:35:28.944 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-11 16:35:34.573 | DEBUG    | Extracted a valid json.
+2025-11-11 16:35:34.573 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"Round\")", "search_class_in_file(\"Func\", \"django/db/models/expressions.py\")", "search_method_in_class(\"__init__\", \"Func\")"],
+    "bug_locations":[{"file": "django/db/models/expressions.py", "class": "Func", "method": "", "intended_behavior": "The `Func` class should be able to define a database function with an optional precision argument, allowing users to round values to a specific precision."}]
+}
+2025-11-11 16:35:34.634 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-11 16:35:34.635 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-11 16:36:01.015 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-11 16:36:06.948 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-11 16:36:12.978 | DEBUG    | Extracted a valid json.
+2025-11-11 16:36:12.978 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "django/db/models/expressions.py", "class": "Func", "method": "", "intended_behavior": "The `Func` class should allow defining a database function with an optional precision argument, allowing users to round values to a specific precision."}, {"file": "django/db/backends/utils.py", "class": "", "method": "Round", "intended_behavior": "The Round function should take an optional precision argument, allowing users to round values to a specific precision."}]
+}
+2025-11-11 16:36:12.982 | DEBUG    | Bug location extracted successfully: [<file>django/db/models/expressions.py</file>
+<class>Func</class>
+<method>None</method>
+<code>
+636 class Func(SQLiteNumericMixin, Expression):
+637     """An SQL function call."""
+638     function = None
+639     template = '%(function)s(%(expressions)s)'
+640     arg_joiner = ', '
+641     arity = None  # The number of arguments the function accepts.
+642 
+643     def __init__(self, *expressions, output_field=None, **extra):
+644         if self.arity is not None and len(expressions) != self.arity:
+645             raise TypeError(
+646                 "'%s' takes exactly %s %s (%s given)" % (
+647                     self.__class__.__name__,
+648                     self.arity,
+649                     "argument" if self.arity == 1 else "arguments",
+650                     len(expressions),
+651                 )
+652             )
+653         super().__init__(output_field=output_field)
+654         self.source_expressions = self._parse_expressions(*expressions)
+655         self.extra = extra
+656 
+657     def __repr__(self):
+658         args = self.arg_joiner.join(str(arg) for arg in self.source_expressions)
+659         extra = {**self.extra, **self._get_repr_options()}
+660         if extra:
+661             extra = ', '.join(str(key) + '=' + str(val) for key, val in sorted(extra.items()))
+662             return "{}({}, {})".format(self.__class__.__name__, args, extra)
+663         return "{}({})".format(self.__class__.__name__, args)
+664 
+665     def _get_repr_options(self):
+666         """Return a dict of extra __init__() options to include in the repr."""
+667         return {}
+668 
+669     def get_source_expressions(self):
+670         return self.source_expressions
+671 
+672     def set_source_expressions(self, exprs):
+673         self.source_expressions = exprs
+674 
+675     def resolve_expression(self, query=None, allow_joins=True, reuse=None, summarize=False, for_save=False):
+676         c = self.copy()
+677         c.is_summary = summarize
+678         for pos, arg in enumerate(c.source_expressions):
+679             c.source_expressions[pos] = arg.resolve_expression(query, allow_joins, reuse, summarize, for_save)
+680         return c
+681 
+682     def as_sql(self, compiler, connection, function=None, template=None, arg_joiner=None, **extra_context):
+683         connection.ops.check_expression_support(self)
+684         sql_parts = []
+685         params = []
+686         for arg in self.source_expressions:
+687             arg_sql, arg_params = compiler.compile(arg)
+688             sql_parts.append(arg_sql)
+689             params.extend(arg_params)
+690         data = {**self.extra, **extra_context}
+691         # Use the first supplied value in this order: the parameter to this
+692         # method, a value supplied in __init__()'s **extra (the value in
+693         # `data`), or the value defined on the class.
+694         if function is not None:
+695             data['function'] = function
+696         else:
+697             data.setdefault('function', self.function)
+698         template = template or data.get('template', self.template)
+699         arg_joiner = arg_joiner or data.get('arg_joiner', self.arg_joiner)
+700         data['expressions'] = data['field'] = arg_joiner.join(sql_parts)
+701         return template % data, params
+702 
+703     def copy(self):
+704         copy = super().copy()
+705         copy.source_expressions = self.source_expressions[:]
+706         copy.extra = self.extra.copy()
+707         return copy
+
+</code><intended_behavior>The `Func` class should allow defining a database function with an optional precision argument, allowing users to round values to a specific precision.</intended_behavior>, <file>django/db/backends/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import datetime
+2 import decimal
+3 import functools
+4 import hashlib
+5 import logging
+6 import time
+7 from contextlib import contextmanager
+8 
+9 from django.db import NotSupportedError
+10 
+11 logger = logging.getLogger('django.db.backends')
+12 
+13 
+14 class CursorWrapper:
+15     def __init__(self, cursor, db):
+16         self.cursor = cursor
+17         self.db = db
+18 
+19     WRAP_ERROR_ATTRS = frozenset(['fetchone', 'fetchmany', 'fetchall', 'nextset'])
+20 
+21     def __getattr__(self, attr):
+22         cursor_attr = getattr(self.cursor, attr)
+23         if attr in CursorWrapper.WRAP_ERROR_ATTRS:
+24             return self.db.wrap_database_errors(cursor_attr)
+25         else:
+26             return cursor_attr
+27 
+28     def __iter__(self):
+29         with self.db.wrap_database_errors:
+30             yield from self.cursor
+31 
+32     def __enter__(self):
+33         return self
+34 
+35     def __exit__(self, type, value, traceback):
+36         # Close instead of passing through to avoid backend-specific behavior
+37         # (#17671). Catch errors liberally because errors in cleanup code
+38         # aren't useful.
+39         try:
+40             self.close()
+41         except self.db.Database.Error:
+42             pass
+43 
+44     # The following methods cannot be implemented in __getattr__, because the
+45     # code must run when the method is invoked, not just when it is accessed.
+46 
+47     def callproc(self, procname, params=None, kparams=None):
+48         # Keyword parameters for callproc aren't supported in PEP 249, but the
+49         # database driver may support them (e.g. cx_Oracle).
+50         if kparams is not None and not self.db.features.supports_callproc_kwargs:
+51             raise NotSupportedError(
+52                 'Keyword parameters for callproc are not supported on this '
+53                 'database backend.'
+54             )
+55         self.db.validate_no_broken_transaction()
+56         with self.db.wrap_database_errors:
+57             if params is None and kparams is None:
+58                 return self.cursor.callproc(procname)
+59             elif kparams is None:
+60                 return self.cursor.callproc(procname, params)
+61             else:
+62                 params = params or ()
+63                 return self.cursor.callproc(procname, params, kparams)
+64 
+65     def execute(self, sql, params=None):
+66         return self._execute_with_wrappers(sql, params, many=False, executor=self._execute)
+67 
+68     def executemany(self, sql, param_list):
+69         return self._execute_with_wrappers(sql, param_list, many=True, executor=self._executemany)
+70 
+71     def _execute_with_wrappers(self, sql, params, many, executor):
+72         context = {'connection': self.db, 'cursor': self}
+73         for wrapper in reversed(self.db.execute_wrappers):
+74             executor = functools.partial(wrapper, executor)
+75         return executor(sql, params, many, context)
+76 
+77     def _execute(self, sql, params, *ignored_wrapper_args):
+78         self.db.validate_no_broken_transaction()
+79         with self.db.wrap_database_errors:
+80             if params is None:
+81                 # params default might be backend specific.
+82                 return self.cursor.execute(sql)
+83             else:
+84                 return self.cursor.execute(sql, params)
+85 
+86     def _executemany(self, sql, param_list, *ignored_wrapper_args):
+87         self.db.validate_no_broken_transaction()
+88         with self.db.wrap_database_errors:
+89             return self.cursor.executemany(sql, param_list)
+90 
+91 
+92 class CursorDebugWrapper(CursorWrapper):
+93 
+94     # XXX callproc isn't instrumented at this time.
+95 
+96     def execute(self, sql, params=None):
+97         with self.debug_sql(sql, params, use_last_executed_query=True):
+98             return super().execute(sql, params)
+99 
+100     def executemany(self, sql, param_list):
+101         with self.debug_sql(sql, param_list, many=True):
+102             return super().executemany(sql, param_list)
+103 
+104     @contextmanager
+105     def debug_sql(self, sql=None, params=None, use_last_executed_query=False, many=False):
+106         start = time.monotonic()
+107         try:
+108             yield
+109         finally:
+110             stop = time.monotonic()
+111             duration = stop - start
+112             if use_last_executed_query:
+113                 sql = self.db.ops.last_executed_query(self.cursor, sql, params)
+114             try:
+115                 times = len(params) if many else ''
+116             except TypeError:
+117                 # params could be an iterator.
+118                 times = '?'
+119             self.db.queries_log.append({
+120                 'sql': '%s times: %s' % (times, sql) if many else sql,
+121                 'time': '%.3f' % duration,
+122             })
+123             logger.debug(
+124                 '(%.3f) %s; args=%s',
+125                 duration,
+126                 sql,
+127                 params,
+128                 extra={'duration': duration, 'sql': sql, 'params': params},
+129             )
+130 
+131 
+132 ###############################################
+133 # Converters from database (string) to Python #
+134 ###############################################
+135 
+136 def typecast_date(s):
+137     return datetime.date(*map(int, s.split('-'))) if s else None  # return None if s is null
+138 
+139 
+140 def typecast_time(s):  # does NOT store time zone information
+141     if not s:
+142         return None
+143     hour, minutes, seconds = s.split(':')
+144     if '.' in seconds:  # check whether seconds have a fractional part
+145         seconds, microseconds = seconds.split('.')
+146     else:
+147         microseconds = '0'
+148     return datetime.time(int(hour), int(minutes), int(seconds), int((microseconds + '000000')[:6]))
+149 
+150 
+151 def typecast_timestamp(s):  # does NOT store time zone information
+152     # "2005-07-29 15:48:00.590358-05"
+153     # "2005-07-29 09:56:00-05"
+154     if not s:
+155         return None
+156     if ' ' not in s:
+157         return typecast_date(s)
+158     d, t = s.split()
+159     # Remove timezone information.
+160     if '-' in t:
+161         t, _ = t.split('-', 1)
+162     elif '+' in t:
+163         t, _ = t.split('+', 1)
+164     dates = d.split('-')
+165     times = t.split(':')
+166     seconds = times[2]
+167     if '.' in seconds:  # check whether seconds have a fractional part
+168         seconds, microseconds = seconds.split('.')
+169     else:
+170         microseconds = '0'
+171     return datetime.datetime(
+172         int(dates[0]), int(dates[1]), int(dates[2]),
+173         int(times[0]), int(times[1]), int(seconds),
+174         int((microseconds + '000000')[:6])
+175     )
+176 
+177 
+178 ###############################################
+179 # Converters from Python to database (string) #
+180 ###############################################
+181 
+182 def split_identifier(identifier):
+183     """
+184     Split an SQL identifier into a two element tuple of (namespace, name).
+185 
+186     The identifier could be a table, column, or sequence name might be prefixed
+187     by a namespace.
+188     """
+189     try:
+190         namespace, name = identifier.split('"."')
+191     except ValueError:
+192         namespace, name = '', identifier
+193     return namespace.strip('"'), name.strip('"')
+194 
+195 
+196 def truncate_name(identifier, length=None, hash_len=4):
+197     """
+198     Shorten an SQL identifier to a repeatable mangled version with the given
+199     length.
+200 
+201     If a quote stripped name contains a namespace, e.g. USERNAME"."TABLE,
+202     truncate the table portion only.
+203     """
+204     namespace, name = split_identifier(identifier)
+205 
+206     if length is None or len(name) <= length:
+207         return identifier
+208 
+209     digest = names_digest(name, length=hash_len)
+210     return '%s%s%s' % ('%s"."' % namespace if namespace else '', name[:length - hash_len], digest)
+211 
+212 
+213 def names_digest(*args, length):
+214     """
+215     Generate a 32-bit digest of a set of arguments that can be used to shorten
+216     identifying names.
+217     """
+218     h = hashlib.md5()
+219     for arg in args:
+220         h.update(arg.encode())
+221     return h.hexdigest()[:length]
+222 
+223 
+224 def format_number(value, max_digits, decimal_places):
+225     """
+226     Format a number into a string with the requisite number of digits and
+227     decimal places.
+228     """
+229     if value is None:
+230         return None
+231     context = decimal.getcontext().copy()
+232     if max_digits is not None:
+233         context.prec = max_digits
+234     if decimal_places is not None:
+235         value = value.quantize(decimal.Decimal(1).scaleb(-decimal_places), context=context)
+236     else:
+237         context.traps[decimal.Rounded] = 1
+238         value = context.create_decimal(value)
+239     return "{:f}".format(value)
+240 
+241 
+242 def strip_quotes(table_name):
+243     """
+244     Strip quotes off of quoted table names to make them safe for use in index
+245     names, sequence names, etc. For example '"USER"."TABLE"' (an Oracle naming
+246     scheme) becomes 'USER"."TABLE'.
+247     """
+248     has_quotes = table_name.startswith('"') and table_name.endswith('"')
+249     return table_name[1:-1] if has_quotes else table_name
+
+</code><intended_behavior>The Round function should take an optional precision argument, allowing users to round values to a specific precision.</intended_behavior>]
+2025-11-11 16:36:12.982 | INFO     | Search completed. Bug locations: [<file>django/db/models/expressions.py</file>
+<class>Func</class>
+<method>None</method>
+<code>
+636 class Func(SQLiteNumericMixin, Expression):
+637     """An SQL function call."""
+638     function = None
+639     template = '%(function)s(%(expressions)s)'
+640     arg_joiner = ', '
+641     arity = None  # The number of arguments the function accepts.
+642 
+643     def __init__(self, *expressions, output_field=None, **extra):
+644         if self.arity is not None and len(expressions) != self.arity:
+645             raise TypeError(
+646                 "'%s' takes exactly %s %s (%s given)" % (
+647                     self.__class__.__name__,
+648                     self.arity,
+649                     "argument" if self.arity == 1 else "arguments",
+650                     len(expressions),
+651                 )
+652             )
+653         super().__init__(output_field=output_field)
+654         self.source_expressions = self._parse_expressions(*expressions)
+655         self.extra = extra
+656 
+657     def __repr__(self):
+658         args = self.arg_joiner.join(str(arg) for arg in self.source_expressions)
+659         extra = {**self.extra, **self._get_repr_options()}
+660         if extra:
+661             extra = ', '.join(str(key) + '=' + str(val) for key, val in sorted(extra.items()))
+662             return "{}({}, {})".format(self.__class__.__name__, args, extra)
+663         return "{}({})".format(self.__class__.__name__, args)
+664 
+665     def _get_repr_options(self):
+666         """Return a dict of extra __init__() options to include in the repr."""
+667         return {}
+668 
+669     def get_source_expressions(self):
+670         return self.source_expressions
+671 
+672     def set_source_expressions(self, exprs):
+673         self.source_expressions = exprs
+674 
+675     def resolve_expression(self, query=None, allow_joins=True, reuse=None, summarize=False, for_save=False):
+676         c = self.copy()
+677         c.is_summary = summarize
+678         for pos, arg in enumerate(c.source_expressions):
+679             c.source_expressions[pos] = arg.resolve_expression(query, allow_joins, reuse, summarize, for_save)
+680         return c
+681 
+682     def as_sql(self, compiler, connection, function=None, template=None, arg_joiner=None, **extra_context):
+683         connection.ops.check_expression_support(self)
+684         sql_parts = []
+685         params = []
+686         for arg in self.source_expressions:
+687             arg_sql, arg_params = compiler.compile(arg)
+688             sql_parts.append(arg_sql)
+689             params.extend(arg_params)
+690         data = {**self.extra, **extra_context}
+691         # Use the first supplied value in this order: the parameter to this
+692         # method, a value supplied in __init__()'s **extra (the value in
+693         # `data`), or the value defined on the class.
+694         if function is not None:
+695             data['function'] = function
+696         else:
+697             data.setdefault('function', self.function)
+698         template = template or data.get('template', self.template)
+699         arg_joiner = arg_joiner or data.get('arg_joiner', self.arg_joiner)
+700         data['expressions'] = data['field'] = arg_joiner.join(sql_parts)
+701         return template % data, params
+702 
+703     def copy(self):
+704         copy = super().copy()
+705         copy.source_expressions = self.source_expressions[:]
+706         copy.extra = self.extra.copy()
+707         return copy
+
+</code><intended_behavior>The `Func` class should allow defining a database function with an optional precision argument, allowing users to round values to a specific precision.</intended_behavior>, <file>django/db/backends/utils.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import datetime
+2 import decimal
+3 import functools
+4 import hashlib
+5 import logging
+6 import time
+7 from contextlib import contextmanager
+8 
+9 from django.db import NotSupportedError
+10 
+11 logger = logging.getLogger('django.db.backends')
+12 
+13 
+14 class CursorWrapper:
+15     def __init__(self, cursor, db):
+16         self.cursor = cursor
+17         self.db = db
+18 
+19     WRAP_ERROR_ATTRS = frozenset(['fetchone', 'fetchmany', 'fetchall', 'nextset'])
+20 
+21     def __getattr__(self, attr):
+22         cursor_attr = getattr(self.cursor, attr)
+23         if attr in CursorWrapper.WRAP_ERROR_ATTRS:
+24             return self.db.wrap_database_errors(cursor_attr)
+25         else:
+26             return cursor_attr
+27 
+28     def __iter__(self):
+29         with self.db.wrap_database_errors:
+30             yield from self.cursor
+31 
+32     def __enter__(self):
+33         return self
+34 
+35     def __exit__(self, type, value, traceback):
+36         # Close instead of passing through to avoid backend-specific behavior
+37         # (#17671). Catch errors liberally because errors in cleanup code
+38         # aren't useful.
+39         try:
+40             self.close()
+41         except self.db.Database.Error:
+42             pass
+43 
+44     # The following methods cannot be implemented in __getattr__, because the
+45     # code must run when the method is invoked, not just when it is accessed.
+46 
+47     def callproc(self, procname, params=None, kparams=None):
+48         # Keyword parameters for callproc aren't supported in PEP 249, but the
+49         # database driver may support them (e.g. cx_Oracle).
+50         if kparams is not None and not self.db.features.supports_callproc_kwargs:
+51             raise NotSupportedError(
+52                 'Keyword parameters for callproc are not supported on this '
+53                 'database backend.'
+54             )
+55         self.db.validate_no_broken_transaction()
+56         with self.db.wrap_database_errors:
+57             if params is None and kparams is None:
+58                 return self.cursor.callproc(procname)
+59             elif kparams is None:
+60                 return self.cursor.callproc(procname, params)
+61             else:
+62                 params = params or ()
+63                 return self.cursor.callproc(procname, params, kparams)
+64 
+65     def execute(self, sql, params=None):
+66         return self._execute_with_wrappers(sql, params, many=False, executor=self._execute)
+67 
+68     def executemany(self, sql, param_list):
+69         return self._execute_with_wrappers(sql, param_list, many=True, executor=self._executemany)
+70 
+71     def _execute_with_wrappers(self, sql, params, many, executor):
+72         context = {'connection': self.db, 'cursor': self}
+73         for wrapper in reversed(self.db.execute_wrappers):
+74             executor = functools.partial(wrapper, executor)
+75         return executor(sql, params, many, context)
+76 
+77     def _execute(self, sql, params, *ignored_wrapper_args):
+78         self.db.validate_no_broken_transaction()
+79         with self.db.wrap_database_errors:
+80             if params is None:
+81                 # params default might be backend specific.
+82                 return self.cursor.execute(sql)
+83             else:
+84                 return self.cursor.execute(sql, params)
+85 
+86     def _executemany(self, sql, param_list, *ignored_wrapper_args):
+87         self.db.validate_no_broken_transaction()
+88         with self.db.wrap_database_errors:
+89             return self.cursor.executemany(sql, param_list)
+90 
+91 
+92 class CursorDebugWrapper(CursorWrapper):
+93 
+94     # XXX callproc isn't instrumented at this time.
+95 
+96     def execute(self, sql, params=None):
+97         with self.debug_sql(sql, params, use_last_executed_query=True):
+98             return super().execute(sql, params)
+99 
+100     def executemany(self, sql, param_list):
+101         with self.debug_sql(sql, param_list, many=True):
+102             return super().executemany(sql, param_list)
+103 
+104     @contextmanager
+105     def debug_sql(self, sql=None, params=None, use_last_executed_query=False, many=False):
+106         start = time.monotonic()
+107         try:
+108             yield
+109         finally:
+110             stop = time.monotonic()
+111             duration = stop - start
+112             if use_last_executed_query:
+113                 sql = self.db.ops.last_executed_query(self.cursor, sql, params)
+114             try:
+115                 times = len(params) if many else ''
+116             except TypeError:
+117                 # params could be an iterator.
+118                 times = '?'
+119             self.db.queries_log.append({
+120                 'sql': '%s times: %s' % (times, sql) if many else sql,
+121                 'time': '%.3f' % duration,
+122             })
+123             logger.debug(
+124                 '(%.3f) %s; args=%s',
+125                 duration,
+126                 sql,
+127                 params,
+128                 extra={'duration': duration, 'sql': sql, 'params': params},
+129             )
+130 
+131 
+132 ###############################################
+133 # Converters from database (string) to Python #
+134 ###############################################
+135 
+136 def typecast_date(s):
+137     return datetime.date(*map(int, s.split('-'))) if s else None  # return None if s is null
+138 
+139 
+140 def typecast_time(s):  # does NOT store time zone information
+141     if not s:
+142         return None
+143     hour, minutes, seconds = s.split(':')
+144     if '.' in seconds:  # check whether seconds have a fractional part
+145         seconds, microseconds = seconds.split('.')
+146     else:
+147         microseconds = '0'
+148     return datetime.time(int(hour), int(minutes), int(seconds), int((microseconds + '000000')[:6]))
+149 
+150 
+151 def typecast_timestamp(s):  # does NOT store time zone information
+152     # "2005-07-29 15:48:00.590358-05"
+153     # "2005-07-29 09:56:00-05"
+154     if not s:
+155         return None
+156     if ' ' not in s:
+157         return typecast_date(s)
+158     d, t = s.split()
+159     # Remove timezone information.
+160     if '-' in t:
+161         t, _ = t.split('-', 1)
+162     elif '+' in t:
+163         t, _ = t.split('+', 1)
+164     dates = d.split('-')
+165     times = t.split(':')
+166     seconds = times[2]
+167     if '.' in seconds:  # check whether seconds have a fractional part
+168         seconds, microseconds = seconds.split('.')
+169     else:
+170         microseconds = '0'
+171     return datetime.datetime(
+172         int(dates[0]), int(dates[1]), int(dates[2]),
+173         int(times[0]), int(times[1]), int(seconds),
+174         int((microseconds + '000000')[:6])
+175     )
+176 
+177 
+178 ###############################################
+179 # Converters from Python to database (string) #
+180 ###############################################
+181 
+182 def split_identifier(identifier):
+183     """
+184     Split an SQL identifier into a two element tuple of (namespace, name).
+185 
+186     The identifier could be a table, column, or sequence name might be prefixed
+187     by a namespace.
+188     """
+189     try:
+190         namespace, name = identifier.split('"."')
+191     except ValueError:
+192         namespace, name = '', identifier
+193     return namespace.strip('"'), name.strip('"')
+194 
+195 
+196 def truncate_name(identifier, length=None, hash_len=4):
+197     """
+198     Shorten an SQL identifier to a repeatable mangled version with the given
+199     length.
+200 
+201     If a quote stripped name contains a namespace, e.g. USERNAME"."TABLE,
+202     truncate the table portion only.
+203     """
+204     namespace, name = split_identifier(identifier)
+205 
+206     if length is None or len(name) <= length:
+207         return identifier
+208 
+209     digest = names_digest(name, length=hash_len)
+210     return '%s%s%s' % ('%s"."' % namespace if namespace else '', name[:length - hash_len], digest)
+211 
+212 
+213 def names_digest(*args, length):
+214     """
+215     Generate a 32-bit digest of a set of arguments that can be used to shorten
+216     identifying names.
+217     """
+218     h = hashlib.md5()
+219     for arg in args:
+220         h.update(arg.encode())
+221     return h.hexdigest()[:length]
+222 
+223 
+224 def format_number(value, max_digits, decimal_places):
+225     """
+226     Format a number into a string with the requisite number of digits and
+227     decimal places.
+228     """
+229     if value is None:
+230         return None
+231     context = decimal.getcontext().copy()
+232     if max_digits is not None:
+233         context.prec = max_digits
+234     if decimal_places is not None:
+235         value = value.quantize(decimal.Decimal(1).scaleb(-decimal_places), context=context)
+236     else:
+237         context.traps[decimal.Rounded] = 1
+238         value = context.create_decimal(value)
+239     return "{:f}".format(value)
+240 
+241 
+242 def strip_quotes(table_name):
+243     """
+244     Strip quotes off of quoted table names to make them safe for use in index
+245     names, sequence names, etc. For example '"USER"."TABLE"' (an Oracle naming
+246     scheme) becomes 'USER"."TABLE'.
+247     """
+248     has_quotes = table_name.startswith('"') and table_name.endswith('"')
+249     return table_name[1:-1] if has_quotes else table_name
+
+</code><intended_behavior>The Round function should take an optional precision argument, allowing users to round values to a specific precision.</intended_behavior>]
+2025-11-11 16:36:12.982 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-11 16:36:12.983 | INFO     | Search-only: skipping patch selection
+2025-11-11 16:36:13.221 | INFO     | Task django__django-14182 completed successfully.
+2025-11-11 16:36:13.222 | INFO     | No patch generated. You can try running ACR again.

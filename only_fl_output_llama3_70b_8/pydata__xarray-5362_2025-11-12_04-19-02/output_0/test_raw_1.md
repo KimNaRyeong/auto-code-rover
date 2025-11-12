@@ -1,0 +1,28 @@
+I apologize for the mistake. Here is a new `reproducer.py` file that reproduces the issue:
+```python
+import xarray as xr
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    ds = xr.tutorial.open_dataset("air_temperature")
+    result = ds.weighted(xr.ones_like(ds["air"])).mean("dummy")
+    assert False, "Expected an error when dimensions don't exist"
+except ValueError as e:
+    # If the issue is fixed, a ValueError should be raised
+    print_stacktrace(e)
+else:
+    # If no exception is raised, it means the issue is still present
+    raise AssertionError("No error was raised when dimensions don't exist")
+```
+This script will raise an `AssertionError` if the issue is present (i.e., no error is raised when the dimension "dummy" doesn't exist). If the issue is fixed and a `ValueError` is raised, the script will catch the exception, print the stack trace using the provided function, and exit with code 0.

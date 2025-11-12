@@ -1,0 +1,36 @@
+Here is the reproducer script:
+
+```python
+import sphinx
+from docutils import nodes
+from sphinx.ext import autodoc
+from sphinx.util import inspect
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_issue():
+    try:
+        from project import func
+        autodoc.autodoc(func, out=None)
+        with open("_build/html/project.html", "r") as f:
+            content = f.read()
+            if "Literal" not in content:
+                raise AssertionError("Expected 'Literal' to be linked")
+    except AssertionError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+
+test_issue()
+```
+
+This script tries to generate the documentation for the `func` function using Sphinx's autodoc extension. If the generated HTML file does not contain the string "Literal" and it is not linked, it raises an `AssertionError`, which is then caught and a stack trace is printed.

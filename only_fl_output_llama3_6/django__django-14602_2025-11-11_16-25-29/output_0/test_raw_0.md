@@ -1,0 +1,20 @@
+Here is the reproducer script:
+
+```python
+import datetime
+from django.utils.dateparse import parse_time
+
+def reproduce_issue():
+    try:
+        time_str = '0:5:'
+        result = parse_time(time_str)
+        assert False, f"Expected ValueError for '{time_str}' but got {result}"
+    except Exception as e:
+        print_stacktrace(e)
+        exit(0)
+
+if __name__ == "__main__":
+    reproduce_issue()
+```
+
+This script attempts to parse the time string '0:5:' using `parse_time`. Since this is an invalid time format, it should raise a ValueError. The script catches this exception and prints the stack trace using the provided function. If the issue is fixed (i.e., the expected ValueError is raised), the script exits with code 0.
