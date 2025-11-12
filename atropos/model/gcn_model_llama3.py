@@ -24,7 +24,7 @@ def set_seed(seed):
     torch.use_deterministic_algorithms(True)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
     
-def data_load(data_dir):
+def data_load(data_dir, balanced):
     dataset_S = dict()
     dataset_F = dict()
     dataset_FA = dict()
@@ -33,9 +33,47 @@ def data_load(data_dir):
     for k in ks:
         data_for_k = torch.load(os.path.join(data_dir, str(k), 'gcn_dataset.pth'), weights_only=False)
 
-        dataset_S[k] = data_for_k["dataset_S"]
-        dataset_F[k] = data_for_k["dataset_F"]
-        dataset_FA[k] = data_for_k["dataset_FA"]
+        if balanced:
+            pos_data_S = [d for d in data_for_k["dataset_S"] if int(d.y.item()) == 1]
+            neg_data_S = [d for d in data_for_k["dataset_S"] if int(d.y.item()) == 0]
+            pos_data_F = [d for d in data_for_k["dataset_F"] if int(d.y.item()) == 1]
+            neg_data_F = [d for d in data_for_k["dataset_F"] if int(d.y.item()) == 0]
+            pos_data_FA = [d for d in data_for_k["dataset_FA"] if int(d.y.item()) == 1]
+            neg_data_FA = [d for d in data_for_k["dataset_FA"] if int(d.y.item()) == 0]
+
+            num_pos = len(pos_data_S)
+            num_neg = len(neg_data_S)
+
+            sampled_neg_data_idx = random.sample(list(range(num_neg)), int(num_pos*1.2))
+            print(f"The number of data with label 1: {num_pos}")
+            print(f"The number of sampled data with label 0: {len(sampled_neg_data_idx)}")
+
+            sampled_neg_data_S = []
+            sampled_neg_data_F = []
+            sampled_neg_data_FA = []
+            for idx in sampled_neg_data_idx:
+                if neg_data_S[idx].y.item() == 1:
+                    raise ValueError("The data is positive")
+                if neg_data_F[idx].y.item() == 1:
+                    raise ValueError("The data is positive")
+                if neg_data_FA[idx].y.item() == 1:
+                    raise ValueError("The data is positive")
+                
+                sampled_neg_data_S.append(neg_data_S[idx])
+                sampled_neg_data_F.append(neg_data_F[idx])
+                sampled_neg_data_FA.append(neg_data_FA[idx])
+
+            dataset_S[k] = pos_data_S + sampled_neg_data_S
+            dataset_F[k] = pos_data_F + sampled_neg_data_F
+            dataset_FA[k] = pos_data_FA + sampled_neg_data_FA
+            random.shuffle(dataset_S[k])
+            random.shuffle(dataset_F[k])
+            random.shuffle(dataset_FA[k])
+
+        else:
+            dataset_S[k] = data_for_k["dataset_S"]
+            dataset_F[k] = data_for_k["dataset_F"]
+            dataset_FA[k] = data_for_k["dataset_FA"]
     
     print("Datasets loaded successfully")
 
@@ -401,13 +439,14 @@ def save_checkpoint(model, path, meta=None):
 
 
 
-def main(dir_dict):
+def main(dir_dict, balanced):
     set_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     data_dir = dir_dict['data']
-    dataset_S, dataset_F, dataset_FA = data_load(data_dir)
+    print(data_dir)
+    dataset_S, dataset_F, dataset_FA = data_load(data_dir, balanced)
 
     result_dir = dir_dict['result']
     if not os.path.exists(result_dir):
@@ -440,7 +479,7 @@ def main(dir_dict):
     train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict)
     train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict)
 
-def get_dir_dict(repetition, nhot, answer, add):
+def get_dir_dict(repetition, nhot, answer, add, balanced):
     if nhot:
         hot_dir = 'nhot'
     else:
@@ -457,20 +496,36 @@ def get_dir_dict(repetition, nhot, answer, add):
         add_dir = 'not_add'
 
     if nhot:
-        dir_dict = {
-            'data': f'../data/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
-            'result': f'../results/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
-            'trained_model': f'../trained_model/llama3/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
-            'graph': f'../results/llama3/R{repetition}/graphs/{hot_dir}/{answer_dir}/{add_dir}'
-        }
+        if balanced:
+            dir_dict = {
+                'data': f'../data/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}',
+                'result': f'../results/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}/balanced',
+                'trained_model': f'../trained_model/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}/balanced',
+                'graph': f'../results/llama3/R{repetition}/1000size/graphs/{hot_dir}/{answer_dir}/{add_dir}/balanced'
+            }
+        else:
+            dir_dict = {
+                'data': f'../data/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}',
+                'result': f'../results/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}',
+                'trained_model': f'../trained_model/llama3/1000size/R{repetition}/{hot_dir}/{answer_dir}/{add_dir}',
+                'graph': f'../results/llama3/R{repetition}/1000size/graphs/{hot_dir}/{answer_dir}/{add_dir}'
+            }
         
     else:
-        dir_dict = {
-            'data': f'../data/llama3/R{repetition}/{hot_dir}/{answer_dir}',
-            'result': f'../results/llama3/R{repetition}/{hot_dir}/{answer_dir}',
-            'trained_model': f'../trained_model/llama3/R{repetition}/{hot_dir}/{answer_dir}',
-            'graph': f'../results/llama3/R{repetition}/graphs/{hot_dir}/{answer_dir}'
-        }
+        if balanced:
+            dir_dict = {
+                'data': f'../data/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}',
+                'result': f'../results/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/balanced',
+                'trained_model': f'../trained_model/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}/balanced',
+                'graph': f'../results/llama3/R{repetition}/1000size/graphs/{hot_dir}/{answer_dir}/balanced'
+            }
+        else:
+            dir_dict = {
+                'data': f'../data/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}',
+                'result': f'../results/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}',
+                'trained_model': f'../trained_model/llama3/R{repetition}/1000size/{hot_dir}/{answer_dir}',
+                'graph': f'../results/llama3/R{repetition}/1000size/graphs/{hot_dir}/{answer_dir}'
+            }
     return dir_dict
 
 
@@ -480,8 +535,9 @@ if __name__ == "__main__":
     parser.add_argument('--nhot', action='store_true')
     parser.add_argument('--answer', action='store_true', help='including the answer')
     parser.add_argument('--add', action='store_true')
+    parser.add_argument('--balanced', action='store_true')
     args = parser.parse_args()
 
-    dir_dict = get_dir_dict(args.repetition, args.nhot, args.answer, args.add)
+    dir_dict = get_dir_dict(args.repetition, args.nhot, args.answer, args.add, args.balanced)
 
-    main(dir_dict)
+    main(dir_dict, args.balanced)

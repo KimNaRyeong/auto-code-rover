@@ -1,2 +1,1 @@
 PYTHONPATH=. python app/main.py swe-bench --model llama3 --setup-map SWE-bench/setup_result/setup_map.json --tasks-map SWE-bench/setup_result/tasks_map.json --output-dir only_fl_output_llama3_6 --task-list-file SWE-bench/sampled_tasks2.txt
-PYTHONPATH=. python app/main.py swe-bench --model llama3 --setup-map SWE-bench/setup_result/setup_map.json --tasks-map SWE-bench/setup_result/tasks_map.json --output-dir only_fl_output_llama3_7 --task-list-file SWE-bench/sampled_tasks2.txt

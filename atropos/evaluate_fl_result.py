@@ -1,6 +1,7 @@
 import json
 import re
 import os
+import argparse
 from typing import List, Dict, Optional
 from collections import defaultdict
 
@@ -226,7 +227,9 @@ def save_diff_modif_dict(result_dir):
 
         modif_from_diff_dict[instance_name] = modif_dict
     
-    with open('./modif_from_developer_patch.json', 'w') as f:
+    print(len(modif_from_diff_dict.keys()))
+    
+    with open('./modif_from_developer_patch_1000size.json', 'w') as f:
         json.dump(modif_from_diff_dict, f, indent=4)
 
 # def vote_fl(filtered_result_dir):
@@ -356,7 +359,7 @@ def vote_and_ranks_final_answers(r):
         tie_broken_methods = []
 
         for i in range(1, r+1):
-            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json'
+            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_70b_{i}.json'
             with open(filtered_fl_result_file, 'r') as f:
                 fl_result = json.load(f)
             answer_list = fl_result[task]
@@ -373,12 +376,12 @@ def vote_and_ranks_final_answers(r):
     voting_score_dict = defaultdict(lambda: defaultdict(float))
     ranking_dict = dict()
 
-    task_list_file = './sampled_tasks2.txt'
+    task_list_file = './sampled_tasks.txt'
     with open(task_list_file, 'r') as f:
         task_list = f.read().splitlines()
-
+    print(len(task_list))
     for i in range(1, r+1):
-        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json'
+        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_70b_{i}.json'
         with open(filtered_fl_result_file, 'r') as f:
             fl_result = json.load(f)
         for task in task_list:
@@ -427,33 +430,25 @@ def vote_and_ranks_final_answers(r):
 
 # --- example usage ---
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-r', '--repetition', default=5, type=int)
+    parser.add_argument('-t', '--task_list', default='./sampled_tasks.txt')
+    args = parser.parse_args()
+
     # save_bug_locations()
-    for i in range(1, 6):
-        filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_1000size_{i}")
-        with open(f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json', 'w') as f:
+
+    for i in range(1, args.repetition+1):
+        filtered_fl_dict = extract_fl_results(f"../only_fl_output_llama3_70b_{i}")
+        print(len(filtered_fl_dict.keys()))
+        with open(f'./fl_results/filtered_fl_result_llama3_70b_{i}.json', 'w') as f:
             json.dump(filtered_fl_dict, f, indent=4)
-    # # print(filtered_fl_dict1)
-    # filtered_fl_dict2 = extract_fl_results("../only_fl_output2")
-    # # print(filtered_fl_dict2)
-    # filtered_fl_dict3 = extract_fl_results("../only_fl_output3")
-    # filtered_fl_dict4 = extract_fl_results("../only_fl_output4")
-    # filtered_fl_dict5 = extract_fl_results("../only_fl_output5")
 
-    # with open('./fl_results/filtered_fl_result_1.json', 'w') as f:
-    #     json.dump(filtered_fl_dict1, f, indent=4)
-    # with open('./fl_results/filtered_fl_result_2.json', 'w') as f:
-    #     json.dump(filtered_fl_dict2, f, indent=4)
-    # with open('./fl_results/filtered_fl_result_3.json', 'w') as f:
-    #     json.dump(filtered_fl_dict3, f, indent=4)
-    # with open('./fl_results/filtered_fl_result_4.json', 'w') as f:
-    #     json.dump(filtered_fl_dict4, f, indent=4)
-    # with open('./fl_results/filtered_fl_result_5.json', 'w') as f:
-    #     json.dump(filtered_fl_dict5, f, indent=4)
 
-    # # save_diff_modif_dict("../only_fl_output")
+    # save_diff_modif_dict("../only_fl_output_llama3_1000size_1")
 
     # verify_difficulty_of_benchmark()
-    # with open('./sampled_tasks.txt', 'r') as f:
+    # with open('./sampled_tasks2.txt', 'r') as f:
     #     sampled_tasks = f.read().splitlines()
     # with open('./fl_results/filtered_fl_result_1.json', 'r') as f:
     #     fl_result1 = json.load(f)
@@ -498,8 +493,9 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers(5)
-    with open('./R5_combined_fl_results_llama3_1000size.json', 'w') as f:
+    combined_dict = vote_and_ranks_final_answers(args.repetition)
+    print(len(combined_dict["ranking"].keys()))
+    with open('./R5_combined_fl_results_llama3_70b.json', 'w') as f:
         json.dump(combined_dict, f, indent=4)
     
 

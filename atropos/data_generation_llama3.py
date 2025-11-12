@@ -60,7 +60,7 @@ class Data_generater():
         for task in tqdm(self.task_list):
             for i in range(1, self.repetition+1):
 
-                output_dir = f'../only_fl_output_llama3_{i}/no_patch'
+                output_dir = f'../only_fl_output_llama3_70b_{i}/no_patch'
                 instance_list = os.listdir(output_dir)
 
                 tool_call_layer_file = None
@@ -81,7 +81,7 @@ class Data_generater():
         reasoning_paths_dict = defaultdict(list)
 
         for i in range(1, self.repetition+1):
-            fl_result_file = f'./fl_results/filtered_fl_result_llama3_{i}.json'
+            fl_result_file = f'./fl_results/filtered_fl_result_llama3_70b_{i}.json'
             with open(fl_result_file, 'r') as f:
                 fl_results_dict = json.load(f)
                 for task in self.task_list:
@@ -147,7 +147,7 @@ class Data_generater():
         return args_dict
     
     def get_labels_dict(self):
-        combined_result_file = f'./R{self.repetition}_combined_fl_results_llama3.json'
+        combined_result_file = f'./R{self.repetition}_combined_fl_results_llama3_70b.json'
         with open(combined_result_file, 'r') as f:
             combined_result = json.load(f)
 
@@ -210,9 +210,9 @@ class Data_generater():
             add_dir = 'not_add'
 
         if self.nhot:
-            save_dir = f'./data/llama3/R{self.repetition}/{hot_dir}/{answer_dir}/{add_dir}'
+            save_dir = f'./data/llama3_70b/R{self.repetition}/{hot_dir}/{answer_dir}/{add_dir}'
         else:
-            save_dir = f'./data/llama3/R{self.repetition}/{hot_dir}/{answer_dir}'
+            save_dir = f'./data/llama3_70b/R{self.repetition}/{hot_dir}/{answer_dir}'
         return save_dir
 
 
@@ -506,7 +506,7 @@ def examine_tool_call_layers():
     
     for task in task_list:
         for i in range(1, 6):
-            output_dir = f'../only_fl_output_llama3_{i}/no_patch'
+            output_dir = f'../only_fl_output_llama3_70b_{i}/no_patch'
             instance_list = os.listdir(output_dir)
 
             tool_call_layer_file = None
@@ -587,6 +587,5 @@ if __name__ == '__main__':
 
 
     
-
 
 

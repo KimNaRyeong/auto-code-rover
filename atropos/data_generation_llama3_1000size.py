@@ -1,0 +1,592 @@
+import os
+import json
+import argparse
+import copy
+import ast
+import torch
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+from collections import defaultdict
+from tqdm import tqdm
+from torch_geometric.utils import from_networkx
+
+class Data_generater():
+    def __init__(self, repetition, nhot = True, including_answer = True, add = False):
+        self.repetition = repetition
+        self.nhot = nhot
+        self.including_answer = including_answer
+        self.add_to_vector = add
+        self.function_types = ['search_class', 'search_class_in_file', 'search_method_in_file', 'search_method_in_class', 'search_method', 'search_code', 'search_code_in_file', 'get_code_around_line']
+        if nhot:
+            self.ks = list(range(1, 11))
+            if self.including_answer:
+                self.ks.extend([15, 16])
+            else:
+                self.ks.append(15)
+        else:
+            self.ks = list(range(1, 11))
+            if self.including_answer:
+                self.ks.extend([15, 20, 38])
+            else:
+                self.ks.extend([15, 20, 37])
+
+        task_list_file = './sampled_tasks_1_and_2.txt'
+        with open(task_list_file, 'r') as f:
+            self.task_list = f.read().splitlines()
+        # self.task_list = ['astropy__astropy-6938']
+        # self.task_list = ['django__django-17066']
+        # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
+        # self.task_list = ['scikit-learn__scikit-learn-26400']
+        self.trajs_dict = self.extract_trajs_from_logs()
+        self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
+
+        # print(self.trajs_dict)
+        # print()
+        # print(self.reasoning_paths_dict)
+        # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
+        # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
+        self.args_dict = self.get_args_dict_for_k()
+        # print(self.args_dict)
+        self.arg_vector_size_dict = self.get_arg_vector_size()
+        # print(self.arg_vector_size_dict)
+        self.label_dict = self.get_labels_dict()
+        # self.task_list = ['scikit-learn__scikit-learn-26400']
+        # self.task_list = ['astropy__astropy-6938']
+    
+    def extract_trajs_from_logs(self):
+        trajs_dict = defaultdict(dict)
+
+        for task in tqdm(self.task_list):
+            for i in range(1, self.repetition+1):
+
+                output_dir = f'../only_fl_output_llama3_1000size_{i}/no_patch'
+                instance_list = os.listdir(output_dir)
+
+                tool_call_layer_file = None
+                for instance in instance_list:
+                    if instance.startswith(task):
+                        tool_call_layer_file = os.path.join(output_dir, instance, 'output_0/search/tool_call_layers.json')
+                        break
+                
+                if not os.path.exists(tool_call_layer_file):
+                    trajs_dict[task][i] = []
+                else:
+                    with open(tool_call_layer_file, 'r') as f:
+                        trajs_dict[task][i] = json.load(f)
+        
+        return trajs_dict
+    
+    def generate_reasoning_paths_dict(self):
+        reasoning_paths_dict = defaultdict(list)
+
+        for i in range(1, self.repetition+1):
+            fl_result_file = f'./fl_results/filtered_fl_result_llama3_1000size_{i}.json'
+            with open(fl_result_file, 'r') as f:
+                fl_results_dict = json.load(f)
+                for task in self.task_list:
+                    traj = self.trajs_dict[task][i]
+                    if self.nhot:
+                        reasoning_path = copy.deepcopy(traj)
+                    else:
+                        reasoning_path = []
+                        for reasoning_step in traj:
+                            if reasoning_step:
+                                for fc in reasoning_step:
+                                    reasoning_path.append(fc)
+                            else:
+                                reasoning_path.append([])
+                    
+                    if self.including_answer:
+                        answer_list = []
+
+                        for fl in fl_results_dict[task]:
+                            answer = set()
+                            if fl["rel_file_path"]:
+                                answer.add(fl["rel_file_path"])
+                            if fl["class_name"]:
+                                answer.add(fl["class_name"])
+                            if fl["method_name"]:
+                                answer.add(fl["method_name"])
+                            answer_list.append(list(answer))
+                        
+                        if self.nhot:
+                            reasoning_path.append([{'answers': answer_list}])
+                        else:
+                            reasoning_path.append({'answers': answer_list})
+                    reasoning_paths_dict[task].append(reasoning_path)
+        return reasoning_paths_dict
+                
+    
+    def get_args_dict_for_k(self):
+
+        args_dict = defaultdict(lambda: defaultdict(set))
+
+        for task, reasoning_paths in self.reasoning_paths_dict.items():
+            for idx, path in enumerate(reasoning_paths):
+                for i, reasoning_step in enumerate(path):
+                    if self.nhot:
+                        for func_call in reasoning_step:
+                            for k in self.ks:
+                                if i < k:
+                                    if "arguments" in func_call.keys():
+                                        args_dict[task][k] = args_dict[task][k].union(set(func_call["arguments"].values()))
+                                    elif "answers" in func_call.keys():
+                                        for one_fl in func_call["answers"]:
+                                            args_dict[task][k] = args_dict[task][k].union(set(one_fl))
+                    
+                    else:
+                        for k in self.ks:
+                            if reasoning_step != [] and i < k:
+                                if "arguments" in reasoning_step.keys():
+                                    args_dict[task][k] = args_dict[task][k].union(set(reasoning_step["arguments"].values()))
+                                elif "answers" in reasoning_step.keys():
+                                    for one_fl in reasoning_step["answers"]:
+                                        args_dict[task][k] = args_dict[task][k].union(set(one_fl))
+
+        return args_dict
+    
+    def get_labels_dict(self):
+        combined_result_file = f'./R{self.repetition}_combined_fl_results_llama3_1000size.json'
+        with open(combined_result_file, 'r') as f:
+            combined_result = json.load(f)
+
+        with open('./modif_from_developer_patch_1000size.json', 'r') as f:
+            modif_from_diff_dict = json.load(f)
+
+        labels_dict = dict()
+
+        for task in self.task_list:
+            labels_dict[task] = 0
+        for task, ranking in combined_result["ranking"].items():
+            if ranking:
+                final_answer = ranking[0]
+                rel_file_path = final_answer.split('::')[0]
+                start, end = final_answer.split('_')[-2:]
+                start, end = int(start), int(end)
+                if rel_file_path in modif_from_diff_dict[task].keys():
+                    for modif in modif_from_diff_dict[task][rel_file_path]:
+                        if start <= modif["start_lineno"] and end >= modif["end_lineno"]:
+                            labels_dict[task] = 1
+        print(len(combined_result["ranking"]))
+        print(sum(labels_dict.values()))
+        return labels_dict
+    
+    def get_arg_vector_size(self):
+        arg_vector_size_dict = defaultdict(int)
+        for k in self.ks:
+            max_arg_size = 0
+            for _, arg_for_k in self.args_dict.items():
+                if len(arg_for_k[k]) > max_arg_size:
+                    max_arg_size = len(arg_for_k[k])
+            arg_vector_size_dict[k] = max_arg_size
+        return arg_vector_size_dict
+    
+    def save_graph_image(self, graph, filename):
+        plt.figure(figsize=(12, 12))
+        pos = nx.spring_layout(graph)
+        nx.draw(graph, pos, with_labels=False, node_size=700, node_color='lightblue', font_size=10, font_weight='bold')
+
+        edge_labels = nx.get_edge_attributes(graph, "weight")
+        nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels, font_size=9)
+
+        plt.savefig(filename, format='png')
+        plt.close()
+
+    def generate_save_dir(self):
+        if self.nhot:
+            hot_dir = 'nhot'
+        else:
+            hot_dir = 'onehot'
+        
+        if self.including_answer:
+            answer_dir = 'answer'
+        else:
+            answer_dir = 'no_answer'
+
+        if self.add_to_vector:
+            add_dir = 'add'
+        else:
+            add_dir = 'not_add'
+
+        if self.nhot:
+            save_dir = f'./data/llama3/R{self.repetition}/1000size/{hot_dir}/{answer_dir}/{add_dir}'
+        else:
+            save_dir = f'./data/llama3/R{self.repetition}/1000size/{hot_dir}/{answer_dir}'
+        return save_dir
+
+
+    def generate_LIG_for_all_k(self, save_data):
+        def add_weight_edge(G, u, v, weight=1):
+            if G.has_edge(u, v):
+                G[u][v]['weight'] += 1
+            else:
+                G.add_edge(u, v, weight = weight)
+
+        print("Generating the graphs for all tasks and ks")
+
+        # for k in [5]:
+        for k in self.ks:
+            dataset_S = []
+            dataset_F = []
+            dataset_FA = []
+            for task in tqdm(self.task_list):
+                arg_list = list(self.args_dict[task][k])
+                graph = nx.DiGraph()
+
+                for _, rp in enumerate(self.reasoning_paths_dict[task]):
+                    if not rp:
+                        # graph.add_node('[]')
+                        continue
+                    if self.nhot and self.including_answer and rp[0] and 'answers' in rp[0][0].keys():
+                        for fl in rp[0][0]['answers']:
+                            graph.add_node(str(fl))
+                    elif not self.nhot and self.including_answer and rp[0] and 'answers' in rp[0].keys():
+                        for fl in rp[0]['answers']:
+                            graph.add_node(str(fl))
+                    else:
+                        graph.add_node(str(rp[0]))
+                if not graph.nodes():
+                    graph.add_node('None')
+
+                for _, rp in enumerate(self.reasoning_paths_dict[task]):
+                    if not rp:
+                        continue
+                    for i, rs in enumerate(rp[1:]):
+                        if i + 1 < k:
+                            if self.nhot:
+                                if self.including_answer and rs and 'answers' in rs[0].keys():
+                                    for fl in rs[0]['answers']:
+                                        if not graph.has_node(str(fl)):
+                                            graph.add_node(str(fl))
+
+                                        add_weight_edge(graph, str(rp[i]), str(fl))
+                                else:
+                                    if not graph.has_node(str(rs)):
+                                        graph.add_node(str(rs))
+                                    add_weight_edge(graph, str(rp[i]), str(rs))
+                            else:
+                                if self.including_answer and rs and 'answers' in rs.keys():
+                                    for fl in rs['answers']:
+                                        if not graph.has_node(str(fl)):
+                                            graph.add_node(str(fl))
+
+                                        add_weight_edge(graph, str(rp[i]), str(fl))
+                                else:
+                                    if not graph.has_node(str(rs)):
+                                        graph.add_node(str(rs))
+                                    add_weight_edge(graph, str(rp[i]), str(rs))
+
+                            # for node in graph.nodes():
+                            #     print(node)
+                            # for edge in graph.edges():
+                            #     print(edge)
+
+                ################################################################
+                ############Draw and save the graphs in ./graphs/lig############
+                # if self.nhot:
+                #     if self.including_answer:
+                #         graph_dir = f'./graphs/lig/nhot/including_answer/{k}'
+                #     else:
+                #         graph_dir = f'./graphs/lig/nhot/no_answer/{k}'
+                # else:
+                #     if self.including_answer:
+                #         graph_dir = f'./graphs/lig/onehot/including_answer/{k}'
+                #     else:
+                #         graph_dir = f'./graphs/lig/onehot/no_answer/{k}'
+
+                # os.makedirs(graph_dir, exist_ok=True)
+                # try:
+                #     self.save_graph_image(graph, os.path.join(graph_dir, f'{task}.png'))
+                # except:
+                #     print(f"Failed to save the graph: {os.path.join(graph_dir, f'{task}.png')}")
+                ################################################################
+            
+                S_data = from_networkx(graph)
+                F_data = from_networkx(graph)
+                FA_data = from_networkx(graph)
+
+                # S_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # F_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # FA_data.edge_attr = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                # print(S_data.edge_attr)
+                # print(S_data.edge_weight)
+
+
+                S_node_x = []
+                F_node_x = []
+                FA_node_x = []
+                # print(arg_list)
+                
+
+                for node_str in graph.nodes():
+                    # print(node_str)
+                    node = ast.literal_eval(node_str)
+                    arg_vector = torch.zeros(self.arg_vector_size_dict[k], dtype=float)
+                    # print(arg_vector)
+                    if self.nhot:
+                        if not node:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            func_vector[-1] = 1
+                        elif self.including_answer and isinstance(node[0], str):
+                            func_vector = torch.ones(len(self.function_types) + 1, dtype=torch.float)
+                            for element in node:
+                                if self.add_to_vector:
+                                    arg_vector[arg_list.index(element)] += 1
+                                else:
+                                    arg_vector[arg_list.index(element)] = 1
+                        else:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            for func_call in node:
+                                if func_call['func_name'] in self.function_types:
+                                    func_idx = self.function_types.index(func_call['func_name'])
+                                else:
+                                    func_idx = -1
+                                if self.add_to_vector:
+                                    func_vector[func_idx] += 1
+                                else:
+                                    func_vector[func_idx] = 1
+                                
+                                for arg in func_call['arguments'].values():
+                                    if self.add_to_vector:
+                                        arg_vector[arg_list.index(arg)] += 1
+                                    else:
+                                        arg_vector[arg_list.index(arg)] = 1
+                    
+                    else:
+                        if not node:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            func_vector[-1] = 1
+                        elif self.including_answer and isinstance(node, list):
+                            func_vector = torch.ones(len(self.function_types) + 1, dtype=torch.float)
+                            for element in node:
+                                arg_vector[arg_list.index(element)] = 1
+                        else:
+                            func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
+                            try:
+                                if node['func_name'] in self.function_types:
+                                    func_idx = self.function_types.index(node['func_name'])
+                                else:
+                                    func_idx = -1
+                                func_vector[func_idx] = 1
+                            except:
+                                print(node)
+                                print(task)
+                            
+                            for arg in node['arguments'].values():
+                                arg_vector[arg_list.index(arg)] = 1
+                    
+                    zero_func_vector = torch.ones(len(self.function_types), dtype=torch.float)
+                    # print(func_vector)
+                    # print(arg_vector)
+                    # print("kk")
+                    func_answer_vector = torch.cat((func_vector, arg_vector))
+
+                    S_node_x.append(zero_func_vector)
+                    F_node_x.append(func_vector)
+                    FA_node_x.append(func_answer_vector)
+                    # print("For S")
+                    # print(zero_func_vector)
+                    # print("For F")
+                    # print(func_vector)
+                    # print("For FA")
+                    # print(func_answer_vector)
+                try:
+                    S_x_stack = np.vstack(S_node_x)
+                except:
+                    print(task)
+                    print(S_node_x)
+                    print(self.reasoning_paths_dict[task])
+                F_x_stack = np.vstack(F_node_x)
+                FA_x_stack = np.vstack(FA_node_x)
+
+                S_data.x = torch.tensor(S_x_stack, dtype=torch.float)
+                F_data.x = torch.tensor(F_x_stack, dtype=torch.float)
+                FA_data.x = torch.tensor(FA_x_stack, dtype=torch.float)
+
+                S_data.y = torch.tensor([self.label_dict[task]], dtype=float)
+                F_data.y = torch.tensor([self.label_dict[task]], dtype=float)
+                FA_data.y = torch.tensor([self.label_dict[task]], dtype=float)
+
+                for d in (S_data, F_data, FA_data):
+                    d.task = task
+                    d.edge_weight = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
+                    if hasattr(d, 'weight'):
+                        delattr(d, 'weight')
+
+                dataset_S.append(S_data)
+                dataset_F.append(F_data)
+                dataset_FA.append(FA_data)
+
+            if save_data:
+                save_dir = os.path.join(self.generate_save_dir(), str(k))
+                os.makedirs(save_dir, exist_ok=True)
+                torch.save({
+                    "dataset_S": dataset_S,
+                    "dataset_F": dataset_F,
+                    "dataset_FA": dataset_FA
+                }, os.path.join(save_dir, 'gcn_dataset.pth'))
+                print(f"{k}th GCN dataset saved in {save_dir}")
+                
+
+
+
+
+        
+
+
+            
+
+
+    def draw_length_distribution_graphs(self):
+        length_dict = defaultdict(int)
+        
+        for task_name, trajs in self.reasoning_paths_dict.items():
+            for traj in trajs:
+                length_dict[len(traj)] += 1
+        max_length = max(length_dict.keys())
+        print(max_length)
+        
+        # Draw the length distibution graphs
+        plt.bar(list(length_dict.keys()), list(length_dict.values()), color='skyblue')
+
+        title = 'The length distribution of each traj.'
+        if self.nhot:
+            title += ' (nhot,'
+        else:
+            title += ' (onehot,'
+        if self.including_answer:
+            title += ' answer)'
+        else:
+            title += ' no answer)'
+
+        plt.title(title)
+        plt.xlabel('Length')
+        plt.grid(axis='y')
+
+        fig_name = 'length_distribution'
+        if self.nhot:
+            fig_name += '_nhot'
+        else:
+            fig_name += '_onehot'
+        if self.including_answer:
+            fig_name += '_answer'
+        else:
+            fig_name += '_no_answer'
+        plt.savefig(f"./graphs/{fig_name}")
+
+
+    def generate_vector_for_all_tasks(self):
+        args_dict = defaultdict(set)
+        length_dict_nhot = defaultdict(int)
+        length_dict_onehot = defaultdict(int)
+        
+        for task_name, trajs in self.reasoning_paths_dict.items():
+            for traj in trajs:
+                vector_for_traj = []
+                num_fc = 0
+                for reasoning_step in traj:
+                    if self.nhot:
+                        func_vector = [0] * (len(self.function_types) + 1)
+                        for function_call in reasoning_step:
+                            if function_call in self.function_types:
+                                func_idx = self.function_types.index(function_call)
+                            else:
+                                func_idx = -1
+                            func_vector[func_idx] += 1 ## modify here!!
+                            func_vector[func_idx] = 1
+
+                        for function_call in reasoning_step:
+                            func_vector = [0] * (len(self.function_types) + 1)
+                
+def examine_tool_call_layers():
+    task_list_file = './sampled_tasks_1_and_2.txt'
+    with open(task_list_file, 'r') as f:
+        task_list = f.read().splitlines()
+    
+    for task in task_list:
+        for i in range(1, 6):
+            output_dir = f'../only_fl_output_llama3_1000size_{i}/no_patch'
+            instance_list = os.listdir(output_dir)
+
+            tool_call_layer_file = None
+            for instance in instance_list:
+                if instance.startswith(task):
+                    tool_call_layer_file = os.path.join(output_dir, instance, 'output_0/search/tool_call_layers.json')
+                    break
+            
+            if not os.path.exists(tool_call_layer_file):
+                print(f"No tool call layer file: {task}, {i}")
+            
+            else:
+                with open(tool_call_layer_file, 'r') as f:
+                    tool_call_layer = json.load(f)
+            
+            if not tool_call_layer:
+                print(f"Empty list in tool call layer file: {task}, {i}")
+            
+            if tool_call_layer[-1]:
+                print(f"The last reasoning step is not []: {task}, {i}")
+            
+            before_fl_file = os.path.join(output_dir, instance, 'output_0/search/bug_locations_before_process.json')
+
+            if not os.path.exists(before_fl_file):
+                print(f"No before answer file: {task} {i}")
+            else:
+                with open(before_fl_file, 'r') as f:
+                    before_fls = json.load(f)
+                if not before_fls:
+                    print(f"No content in the before answer file")
+
+            after_fl_file = os.path.join(output_dir, instance, 'output_0/search/bug_locations_after_process.json')
+            if not os.path.exists(after_fl_file):
+                print(f"No after answer file: {task} {i}")
+            else:
+                with open(after_fl_file, 'r') as f:
+                    after_fls = json.load(f)
+                if not after_fls:
+                    print(f"No content in the after answer file")
+
+
+if __name__ == '__main__':
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-r', '--repetition', default=5, type=int)
+    parser.add_argument('--nhot', action='store_true')
+    parser.add_argument('--answer', action='store_true', help='including the answer')
+    parser.add_argument('--add', action='store_true')
+    args = parser.parse_args()
+
+    data_generater = Data_generater(args.repetition, args.nhot, args.answer, args.add)
+
+    # data_generater.draw_length_distribution_graphs()
+
+
+    #=================================================================
+    # reasoning_paths_dict = data_generater.get_reasoning_paths_for_all_tasks()
+    # with open('./reasoning_paths.json', 'w') as f:
+    #     json.dump(reasoning_paths_dict, f, indent=4)
+
+    
+    # with open('./reasoning_paths.json', 'r') as f:
+    #     reasoning_paths_dict = json.load(f)
+    #     data_generater.reasoning_paths_dict = reasoning_paths_dict
+    # print(data_generater.reasoning_paths_dict)
+    # for task, trajs_args in data_generater.args_dict.items():
+    #     print(task)
+    #     for k, traj_args_for_k in trajs_args.items():
+    #         print(f"==============={k}===============")
+    #         for arg in list(traj_args_for_k):
+    #             print(arg)
+
+    # examine_tool_call_layers() 
+    # print(len(data_generater.label_dict.values()))
+    # print(sum(data_generater.label_dict.values()))
+    data_generater.generate_LIG_for_all_k(save_data=True)
+
+
+
+    
+
+
+
