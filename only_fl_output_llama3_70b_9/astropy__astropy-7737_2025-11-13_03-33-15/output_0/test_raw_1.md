@@ -1,0 +1,37 @@
+Here is the `reproducer.py` file to reproduce the issue:
+```
+import numpy as np
+from astropy.stats import biweight_location
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    try:
+        result = biweight_location(np.ones(4))
+        assert not np.isnan(result), "biweight_location returns nan for constant array"
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    if 'astropy' not in locals() and 'astropy' not in globals():
+        try:
+            import astropy
+        except ImportError:
+            print("Error: astropy is not installed. Please install it using `pip install astropy`.")
+            exit(1)
+    main()
+```
+This script will raise an `AssertionError` when the issue is present and print a stack trace of the issue. If the issue is fixed, it will exit with code 0.
+
+Please make sure to have `astropy` installed in your environment before running this script. You can install it using `pip install astropy`.
