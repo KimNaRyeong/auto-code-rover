@@ -1,0 +1,108 @@
+Here is the standalone Python script `reproducer.py` to reproduce the issue:
+```python
+import os
+from docutils.parsers.rst import Directive, directives
+from docutils.parsers.rst.directives.misc import Include
+from sphinx.application import Sphinx
+from sphinx.builders.html import StandaloneHTMLBuilder
+from sphinx.io import FileInput
+
+class LiteralInclude(Directive):
+    has_content = False
+    required_arguments = 1
+    optional_arguments = 0
+    final_argument_whitespace = True
+    option_spec = {'language': directives.unchanged,
+                   'prepend': directives.unchanged,
+                   'start-at': directives.unchanged,
+                   'end-at': directives.unchanged}
+
+def setup(app):
+    app.add_directive('literalinclude', LiteralInclude)
+
+def test_literalinclude():
+    src_dir = os.path.dirname(__file__)
+    conf_dir = os.path.join(src_dir, '')
+    out_dir = os.path.join(src_dir, '_build')
+    doctree_dir = os.path.join(out_dir, '.doctrees')
+
+    app = Sphinx(conf_dir, src_dir, out_dir, doctree_dir, 'html', False, [])
+    app.builder = StandaloneHTMLBuilder(app)
+    app.add_builder(app.builder)
+
+    index_rst = '''
+# hello world
+
+Code examples:
+
+.. literalinclude:: pom.xml
+   :language: xml
+   :prepend:       </plugin>
+   :start-at: <groupId>com.github.ekryd.sortpom</groupId>
+   :end-at: </plugin>
+'''
+
+    with open(os.path.join(src_dir, 'index.rst'), 'w') as f:
+        f.write(index_rst)
+
+    pom_xml = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.8.0</version>
+        <configuration>
+          <source>1.8</source>
+          <target>1.8</target>
+          <debug>true</debug>
+          <encoding>UTF-8</encoding>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>com.github.ekryd.sortpom</groupId>
+        <artifactId>sortpom-maven-plugin</artifactId>
+        <version>2.15.0</version>
+        <configuration>
+          <verifyFailOn>strict</verifyFailOn>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+'''
+
+    with open(os.path.join(src_dir, 'pom.xml'), 'w') as f:
+        f.write(pom_xml)
+
+    app.build()
+
+    with open(os.path.join(out_dir, 'index.html')) as f:
+        html = f.read()
+        expected_output = '''
+      <plugin>
+        <groupId>com.github.ekryd.sortpom</groupId>
+        <artifactId>sortpom-maven-plugin</artifactId>
+        <version>2.15.0</version>
+        <configuration>
+          <verifyFailOn>strict</verifyFailOn>
+        </configuration>
+      </plugin>
+'''
+        if html.find(expected_output) == -1:
+            raise AssertionError("Literalinclude prepend results in incorrect indent formatting for code examples")
+
+def main():
+    try:
+        test_literalinclude()
+    except Exception as e:
+        print_stacktrace(e)
+        return 1
+    return 0
+
+if __name__ == '__main__':
+    exit(main())
+```
+This script creates a minimal Sphinx project, defines a `literalinclude` directive, and uses it to include an XML snippet with a prepend prefix. It then checks if the resulting HTML output has the correct indentation. If not, it raises an `AssertionError`.

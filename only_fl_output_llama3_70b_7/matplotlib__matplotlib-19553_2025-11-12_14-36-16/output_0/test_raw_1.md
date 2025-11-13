@@ -1,0 +1,53 @@
+I apologize for the mistake. Here is a new standalone python file `reproducer.py` to reproduce the issue:
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib import colors
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+np.random.seed(19680801)
+Nr = 3
+Nc = 2
+cmap = "cool"
+
+fig, axs = plt.subplots(Nr, Nc)
+fig.suptitle('Multiple images')
+
+images = []
+for i in range(Nr):
+    for j in range(Nc):
+        data = ((1 + i + j) / 10) * np.random.rand(10, 20) * 1e-6
+        images.append(axs[i, j].imshow(data, cmap=cmap))
+        axs[i, j].label_outer()
+
+vmin = min(image.get_array().min() for image in images)
+vmax = max(image.get_array().max() for image in images)
+norm = colors.Normalize(vmin=vmin, vmax=vmax)
+for im in images:
+    im.set_norm(norm)
+
+fig.colorbar(images[0], ax=axs, orientation='horizontal', fraction=.1)
+
+images[1].set_clim(1e-9, 2e-8)
+fig.savefig('ax1_bad.png')
+
+try:
+    assert np.allclose(fig.axes[0].images[0].get_clim(), (1e-9, 2e-8))
+except AssertionError as e:
+    print_stacktrace(e)
+    raise SystemExit(1)
+
+print("Issue is fixed")
+```
+This script reproduces the issue by creating multiple images with a shared `Normalize` instance, updating the color limits of one image, and checking if the other images are updated accordingly. If the issue is present, it raises an `AssertionError` with a stack trace. If the issue is fixed, it prints "Issue is fixed" and exits with code 0.

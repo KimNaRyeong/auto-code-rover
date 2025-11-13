@@ -1,0 +1,40 @@
+Here is a revised standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+from django import setup
+from django.http import HttpResponse
+from django.contrib.messages.storage.fallback import MessageStorage
+
+def main():
+    try:
+        setup()
+        request = object()
+        request.COOKIES = {}
+        storage = MessageStorage(request)
+        storage.add_message(50, "123\\\"NOTRECEIVED\"")
+        response = HttpResponse("Reproducing issue")
+        storage.update(response)
+        cookie_header = response.cookies.output(header='').strip()
+        assert '\\"' not in cookie_header, "RFC 6265 non-compliant cookie found"
+    except AssertionError as e:
+        print_stacktrace(e)
+        os._exit(1)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    main()
+```
+This script sets up a Django environment, creates a message storage object, adds a message with an escaped double quote character, and checks if the resulting cookie header contains the escaped double quote character. If it does, an `AssertionError` is raised, and the `print_stacktrace` function is called to print the stack trace of the issue.
+
+Please note that you need to have Django installed in your environment for this script to work.

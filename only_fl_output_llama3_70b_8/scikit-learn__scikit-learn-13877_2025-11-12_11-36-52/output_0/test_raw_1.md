@@ -1,0 +1,51 @@
+It seems that the issue is not with the code, but with the installation of scikit-learn. The error message indicates that scikit-learn has not been built correctly.
+
+Here is a new standalone Python file `reproducer.py` to reproduce the issue:
+```python
+import numpy as np
+from sklearn.metrics import pairwise_distances
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    try:
+        import sklearn
+        sklearn_version = sklearn.__version__
+        if sklearn_version != '0.21.0':
+            raise ImportError("scikit-learn version is not 0.21.0")
+    except ImportError as e:
+        print_stacktrace(e)
+        exit(1)
+
+    X = np.array([
+        [1, 3],
+        [2, 1],
+        [3, 2]
+    ])
+
+    try:
+        distances = pairwise_distances(X, metric='cosine', n_jobs=-1)
+        expected_result = np.array([
+            [0., 0.29289322, 0.21064778],
+            [0.29289322, 0., 0.00772212],
+            [0.21064778, 0.00772212, 0.]
+        ])
+        assert np.allclose(distances, expected_result), "pairwise_distances returns zeros for metric cosine with n_jobs=-1"
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+This script first checks if scikit-learn is installed correctly and has the correct version. If not, it raises an `ImportError` and prints a stack trace of the issue. Then, it tries to reproduce the original issue with `pairwise_distances`. If the issue is present, it raises an `AssertionError` and prints a stack trace of the issue.

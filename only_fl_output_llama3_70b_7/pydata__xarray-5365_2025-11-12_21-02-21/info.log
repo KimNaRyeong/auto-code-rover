@@ -1,0 +1,1691 @@
+2025-11-12 21:02:21.724 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-12 21:02:49.675 | INFO     | registered non reproducing test 0
+2025-11-12 21:03:07.593 | INFO     | registered non reproducing test 1
+2025-11-12 21:03:35.124 | INFO     | registered non reproducing test 2
+2025-11-12 21:03:35.124 | WARNING  | Failed to write a reproducer test; skipping reproducer tracing
+2025-11-12 21:03:35.130 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 21:03:50.877 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 21:03:55.532 | INFO     | Refactored invocation argument parsing gives different result on "get_code_around_line('xarray/core/operations.py', 100, 10)": old result is ['xarray/core/operations.py', '100', '10'], new result  is ['xarray/core/operations.py', 100, 10]
+2025-11-12 21:03:55.533 | DEBUG    | Extracted a valid json.
+2025-11-12 21:03:55.539 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_method('dot')", "search_code_in_file('xr.apply_ufunc', 'xarray/core/operations.py')", "search_class('DataArray')", "search_method_in_class('cross', 'DataArray')", "get_code_around_line('xarray/core/operations.py', 100, 10)"],
+    "bug_locations": []
+}
+2025-11-12 21:03:55.553 | INFO     | Refactored invocation argument parsing gives different result on "get_code_around_line('xarray/core/operations.py', 100, 10)": old result is ['xarray/core/operations.py', '100', '10'], new result  is ['xarray/core/operations.py', 100, 10]
+2025-11-12 21:03:55.647 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-12 21:03:55.648 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-12 21:04:01.067 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 21:04:05.519 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 21:04:07.532 | DEBUG    | Extracted a valid json.
+2025-11-12 21:04:07.532 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"filename encoding\")", "search_code(\"upload error handling\")"],
+    "bug_locations": []
+}
+2025-11-12 21:04:07.543 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-12 21:04:07.543 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-12 21:04:14.277 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 21:04:19.402 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 21:04:21.750 | DEBUG    | Extracted a valid json.
+2025-11-12 21:04:21.750 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"encoding\")", "search_code(\"internationalization\")", "search_code(\"i18n\")"],
+    "bug_locations": []
+}
+2025-11-12 21:04:21.941 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-12 21:04:21.942 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-12 21:04:34.815 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-12 21:04:39.474 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-12 21:04:44.529 | DEBUG    | Extracted a valid json.
+2025-11-12 21:04:44.529 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "xarray/coding/strings.py", "intended_behavior": "The method should correctly handle non-English filenames during file uploads by properly encoding and decoding the filename."}, {"file": "xarray/backends/netCDF4_.py", "intended_behavior": "The method should correctly encode and decode filenames with non-English characters, ensuring that the uploaded file is stored correctly."}]
+}
+2025-11-12 21:04:44.532 | DEBUG    | Bug location extracted successfully: [<file>xarray/coding/strings.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Coders for strings."""
+2 from functools import partial
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.pycompat import is_duck_dask_array
+8 from ..core.variable import Variable
+9 from .variables import (
+10     VariableCoder,
+11     lazy_elemwise_func,
+12     pop_to,
+13     safe_setitem,
+14     unpack_for_decoding,
+15     unpack_for_encoding,
+16 )
+17 
+18 
+19 def create_vlen_dtype(element_type):
+20     # based on h5py.special_dtype
+21     return np.dtype("O", metadata={"element_type": element_type})
+22 
+23 
+24 def check_vlen_dtype(dtype):
+25     if dtype.kind != "O" or dtype.metadata is None:
+26         return None
+27     else:
+28         return dtype.metadata.get("element_type")
+29 
+30 
+31 def is_unicode_dtype(dtype):
+32     return dtype.kind == "U" or check_vlen_dtype(dtype) == str
+33 
+34 
+35 def is_bytes_dtype(dtype):
+36     return dtype.kind == "S" or check_vlen_dtype(dtype) == bytes
+37 
+38 
+39 class EncodedStringCoder(VariableCoder):
+40     """Transforms between unicode strings and fixed-width UTF-8 bytes."""
+41 
+42     def __init__(self, allows_unicode=True):
+43         self.allows_unicode = allows_unicode
+44 
+45     def encode(self, variable, name=None):
+46         dims, data, attrs, encoding = unpack_for_encoding(variable)
+47 
+48         contains_unicode = is_unicode_dtype(data.dtype)
+49         encode_as_char = encoding.get("dtype") == "S1"
+50 
+51         if encode_as_char:
+52             del encoding["dtype"]  # no longer relevant
+53 
+54         if contains_unicode and (encode_as_char or not self.allows_unicode):
+55             if "_FillValue" in attrs:
+56                 raise NotImplementedError(
+57                     "variable {!r} has a _FillValue specified, but "
+58                     "_FillValue is not yet supported on unicode strings: "
+59                     "https://github.com/pydata/xarray/issues/1647".format(name)
+60                 )
+61 
+62             string_encoding = encoding.pop("_Encoding", "utf-8")
+63             safe_setitem(attrs, "_Encoding", string_encoding, name=name)
+64             # TODO: figure out how to handle this in a lazy way with dask
+65             data = encode_string_array(data, string_encoding)
+66 
+67         return Variable(dims, data, attrs, encoding)
+68 
+69     def decode(self, variable, name=None):
+70         dims, data, attrs, encoding = unpack_for_decoding(variable)
+71 
+72         if "_Encoding" in attrs:
+73             string_encoding = pop_to(attrs, encoding, "_Encoding")
+74             func = partial(decode_bytes_array, encoding=string_encoding)
+75             data = lazy_elemwise_func(data, func, np.dtype(object))
+76 
+77         return Variable(dims, data, attrs, encoding)
+78 
+79 
+80 def decode_bytes_array(bytes_array, encoding="utf-8"):
+81     # This is faster than using np.char.decode() or np.vectorize()
+82     bytes_array = np.asarray(bytes_array)
+83     decoded = [x.decode(encoding) for x in bytes_array.ravel()]
+84     return np.array(decoded, dtype=object).reshape(bytes_array.shape)
+85 
+86 
+87 def encode_string_array(string_array, encoding="utf-8"):
+88     string_array = np.asarray(string_array)
+89     encoded = [x.encode(encoding) for x in string_array.ravel()]
+90     return np.array(encoded, dtype=bytes).reshape(string_array.shape)
+91 
+92 
+93 def ensure_fixed_length_bytes(var):
+94     """Ensure that a variable with vlen bytes is converted to fixed width."""
+95     dims, data, attrs, encoding = unpack_for_encoding(var)
+96     if check_vlen_dtype(data.dtype) == bytes:
+97         # TODO: figure out how to handle this with dask
+98         data = np.asarray(data, dtype=np.string_)
+99     return Variable(dims, data, attrs, encoding)
+100 
+101 
+102 class CharacterArrayCoder(VariableCoder):
+103     """Transforms between arrays containing bytes and character arrays."""
+104 
+105     def encode(self, variable, name=None):
+106         variable = ensure_fixed_length_bytes(variable)
+107 
+108         dims, data, attrs, encoding = unpack_for_encoding(variable)
+109         if data.dtype.kind == "S" and encoding.get("dtype") is not str:
+110             data = bytes_to_char(data)
+111             if "char_dim_name" in encoding.keys():
+112                 char_dim_name = encoding.pop("char_dim_name")
+113             else:
+114                 char_dim_name = f"string{data.shape[-1]}"
+115             dims = dims + (char_dim_name,)
+116         return Variable(dims, data, attrs, encoding)
+117 
+118     def decode(self, variable, name=None):
+119         dims, data, attrs, encoding = unpack_for_decoding(variable)
+120 
+121         if data.dtype == "S1" and dims:
+122             encoding["char_dim_name"] = dims[-1]
+123             dims = dims[:-1]
+124             data = char_to_bytes(data)
+125         return Variable(dims, data, attrs, encoding)
+126 
+127 
+128 def bytes_to_char(arr):
+129     """Convert numpy/dask arrays from fixed width bytes to characters."""
+130     if arr.dtype.kind != "S":
+131         raise ValueError("argument must have a fixed-width bytes dtype")
+132 
+133     if is_duck_dask_array(arr):
+134         import dask.array as da
+135 
+136         return da.map_blocks(
+137             _numpy_bytes_to_char,
+138             arr,
+139             dtype="S1",
+140             chunks=arr.chunks + ((arr.dtype.itemsize,)),
+141             new_axis=[arr.ndim],
+142         )
+143     return _numpy_bytes_to_char(arr)
+144 
+145 
+146 def _numpy_bytes_to_char(arr):
+147     """Like netCDF4.stringtochar, but faster and more flexible."""
+148     # ensure the array is contiguous
+149     arr = np.array(arr, copy=False, order="C", dtype=np.string_)
+150     return arr.reshape(arr.shape + (1,)).view("S1")
+151 
+152 
+153 def char_to_bytes(arr):
+154     """Convert numpy/dask arrays from characters to fixed width bytes."""
+155     if arr.dtype != "S1":
+156         raise ValueError("argument must have dtype='S1'")
+157 
+158     if not arr.ndim:
+159         # no dimension to concatenate along
+160         return arr
+161 
+162     size = arr.shape[-1]
+163 
+164     if not size:
+165         # can't make an S0 dtype
+166         return np.zeros(arr.shape[:-1], dtype=np.string_)
+167 
+168     if is_duck_dask_array(arr):
+169         import dask.array as da
+170 
+171         if len(arr.chunks[-1]) > 1:
+172             raise ValueError(
+173                 "cannot stacked dask character array with "
+174                 "multiple chunks in the last dimension: {}".format(arr)
+175             )
+176 
+177         dtype = np.dtype("S" + str(arr.shape[-1]))
+178         return da.map_blocks(
+179             _numpy_char_to_bytes,
+180             arr,
+181             dtype=dtype,
+182             chunks=arr.chunks[:-1],
+183             drop_axis=[arr.ndim - 1],
+184         )
+185     else:
+186         return StackedBytesArray(arr)
+187 
+188 
+189 def _numpy_char_to_bytes(arr):
+190     """Like netCDF4.chartostring, but faster and more flexible."""
+191     # based on: http://stackoverflow.com/a/10984878/809705
+192     arr = np.array(arr, copy=False, order="C")
+193     dtype = "S" + str(arr.shape[-1])
+194     return arr.view(dtype).reshape(arr.shape[:-1])
+195 
+196 
+197 class StackedBytesArray(indexing.ExplicitlyIndexedNDArrayMixin):
+198     """Wrapper around array-like objects to create a new indexable object where
+199     values, when accessed, are automatically stacked along the last dimension.
+200 
+201     >>> indexer = indexing.BasicIndexer((slice(None),))
+202     >>> StackedBytesArray(np.array(["a", "b", "c"], dtype="S1"))[indexer]
+203     array(b'abc', dtype='|S3')
+204     """
+205 
+206     def __init__(self, array):
+207         """
+208         Parameters
+209         ----------
+210         array : array-like
+211             Original array of values to wrap.
+212         """
+213         if array.dtype != "S1":
+214             raise ValueError(
+215                 "can only use StackedBytesArray if argument has dtype='S1'"
+216             )
+217         self.array = indexing.as_indexable(array)
+218 
+219     @property
+220     def dtype(self):
+221         return np.dtype("S" + str(self.array.shape[-1]))
+222 
+223     @property
+224     def shape(self):
+225         return self.array.shape[:-1]
+226 
+227     def __repr__(self):
+228         return "{}({!r})".format(type(self).__name__, self.array)
+229 
+230     def __getitem__(self, key):
+231         # require slicing the last dimension completely
+232         key = type(key)(indexing.expanded_indexer(key.tuple, self.array.ndim))
+233         if key.tuple[-1] != slice(None):
+234             raise IndexError("too many indices")
+235         return _numpy_char_to_bytes(self.array[key])
+
+</code><intended_behavior>The method should correctly handle non-English filenames during file uploads by properly encoding and decoding the filename.</intended_behavior>, <file>xarray/backends/netCDF4_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import functools
+2 import operator
+3 import os
+4 from contextlib import suppress
+5 
+6 import numpy as np
+7 
+8 from .. import coding
+9 from ..coding.variables import pop_to
+10 from ..core import indexing
+11 from ..core.utils import (
+12     FrozenDict,
+13     close_on_error,
+14     is_remote_uri,
+15     try_read_magic_number_from_path,
+16 )
+17 from ..core.variable import Variable
+18 from .common import (
+19     BACKEND_ENTRYPOINTS,
+20     BackendArray,
+21     BackendEntrypoint,
+22     WritableCFDataStore,
+23     _normalize_path,
+24     find_root_and_group,
+25     robust_getitem,
+26 )
+27 from .file_manager import CachingFileManager, DummyFileManager
+28 from .locks import HDF5_LOCK, NETCDFC_LOCK, combine_locks, ensure_lock, get_write_lock
+29 from .netcdf3 import encode_nc3_attr_value, encode_nc3_variable
+30 from .store import StoreBackendEntrypoint
+31 
+32 try:
+33     import netCDF4
+34 
+35     has_netcdf4 = True
+36 except ModuleNotFoundError:
+37     has_netcdf4 = False
+38 
+39 
+40 # This lookup table maps from dtype.byteorder to a readable endian
+41 # string used by netCDF4.
+42 _endian_lookup = {"=": "native", ">": "big", "<": "little", "|": "native"}
+43 
+44 
+45 NETCDF4_PYTHON_LOCK = combine_locks([NETCDFC_LOCK, HDF5_LOCK])
+46 
+47 
+48 class BaseNetCDF4Array(BackendArray):
+49     __slots__ = ("datastore", "dtype", "shape", "variable_name")
+50 
+51     def __init__(self, variable_name, datastore):
+52         self.datastore = datastore
+53         self.variable_name = variable_name
+54 
+55         array = self.get_array()
+56         self.shape = array.shape
+57 
+58         dtype = array.dtype
+59         if dtype is str:
+60             # use object dtype because that's the only way in numpy to
+61             # represent variable length strings; it also prevents automatic
+62             # string concatenation via conventions.decode_cf_variable
+63             dtype = np.dtype("O")
+64         self.dtype = dtype
+65 
+66     def __setitem__(self, key, value):
+67         with self.datastore.lock:
+68             data = self.get_array(needs_lock=False)
+69             data[key] = value
+70             if self.datastore.autoclose:
+71                 self.datastore.close(needs_lock=False)
+72 
+73     def get_array(self, needs_lock=True):
+74         raise NotImplementedError("Virtual Method")
+75 
+76 
+77 class NetCDF4ArrayWrapper(BaseNetCDF4Array):
+78     __slots__ = ()
+79 
+80     def get_array(self, needs_lock=True):
+81         ds = self.datastore._acquire(needs_lock)
+82         variable = ds.variables[self.variable_name]
+83         variable.set_auto_maskandscale(False)
+84         # only added in netCDF4-python v1.2.8
+85         with suppress(AttributeError):
+86             variable.set_auto_chartostring(False)
+87         return variable
+88 
+89     def __getitem__(self, key):
+90         return indexing.explicit_indexing_adapter(
+91             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+92         )
+93 
+94     def _getitem(self, key):
+95         if self.datastore.is_remote:  # pragma: no cover
+96             getitem = functools.partial(robust_getitem, catch=RuntimeError)
+97         else:
+98             getitem = operator.getitem
+99 
+100         try:
+101             with self.datastore.lock:
+102                 original_array = self.get_array(needs_lock=False)
+103                 array = getitem(original_array, key)
+104         except IndexError:
+105             # Catch IndexError in netCDF4 and return a more informative
+106             # error message.  This is most often called when an unsorted
+107             # indexer is used before the data is loaded from disk.
+108             msg = (
+109                 "The indexing operation you are attempting to perform "
+110                 "is not valid on netCDF4.Variable object. Try loading "
+111                 "your data into memory first by calling .load()."
+112             )
+113             raise IndexError(msg)
+114         return array
+115 
+116 
+117 def _encode_nc4_variable(var):
+118     for coder in [
+119         coding.strings.EncodedStringCoder(allows_unicode=True),
+120         coding.strings.CharacterArrayCoder(),
+121     ]:
+122         var = coder.encode(var)
+123     return var
+124 
+125 
+126 def _check_encoding_dtype_is_vlen_string(dtype):
+127     if dtype is not str:
+128         raise AssertionError(  # pragma: no cover
+129             f"unexpected dtype encoding {dtype!r}. This shouldn't happen: please "
+130             "file a bug report at github.com/pydata/xarray"
+131         )
+132 
+133 
+134 def _get_datatype(var, nc_format="NETCDF4", raise_on_invalid_encoding=False):
+135     if nc_format == "NETCDF4":
+136         return _nc4_dtype(var)
+137     if "dtype" in var.encoding:
+138         encoded_dtype = var.encoding["dtype"]
+139         _check_encoding_dtype_is_vlen_string(encoded_dtype)
+140         if raise_on_invalid_encoding:
+141             raise ValueError(
+142                 "encoding dtype=str for vlen strings is only supported "
+143                 "with format='NETCDF4'."
+144             )
+145     return var.dtype
+146 
+147 
+148 def _nc4_dtype(var):
+149     if "dtype" in var.encoding:
+150         dtype = var.encoding.pop("dtype")
+151         _check_encoding_dtype_is_vlen_string(dtype)
+152     elif coding.strings.is_unicode_dtype(var.dtype):
+153         dtype = str
+154     elif var.dtype.kind in ["i", "u", "f", "c", "S"]:
+155         dtype = var.dtype
+156     else:
+157         raise ValueError(f"unsupported dtype for netCDF4 variable: {var.dtype}")
+158     return dtype
+159 
+160 
+161 def _netcdf4_create_group(dataset, name):
+162     return dataset.createGroup(name)
+163 
+164 
+165 def _nc4_require_group(ds, group, mode, create_group=_netcdf4_create_group):
+166     if group in {None, "", "/"}:
+167         # use the root group
+168         return ds
+169     else:
+170         # make sure it's a string
+171         if not isinstance(group, str):
+172             raise ValueError("group must be a string or None")
+173         # support path-like syntax
+174         path = group.strip("/").split("/")
+175         for key in path:
+176             try:
+177                 ds = ds.groups[key]
+178             except KeyError as e:
+179                 if mode != "r":
+180                     ds = create_group(ds, key)
+181                 else:
+182                     # wrap error to provide slightly more helpful message
+183                     raise OSError(f"group not found: {key}", e)
+184         return ds
+185 
+186 
+187 def _ensure_fill_value_valid(data, attributes):
+188     # work around for netCDF4/scipy issue where _FillValue has the wrong type:
+189     # https://github.com/Unidata/netcdf4-python/issues/271
+190     if data.dtype.kind == "S" and "_FillValue" in attributes:
+191         attributes["_FillValue"] = np.string_(attributes["_FillValue"])
+192 
+193 
+194 def _force_native_endianness(var):
+195     # possible values for byteorder are:
+196     #     =    native
+197     #     <    little-endian
+198     #     >    big-endian
+199     #     |    not applicable
+200     # Below we check if the data type is not native or NA
+201     if var.dtype.byteorder not in ["=", "|"]:
+202         # if endianness is specified explicitly, convert to the native type
+203         data = var.data.astype(var.dtype.newbyteorder("="))
+204         var = Variable(var.dims, data, var.attrs, var.encoding)
+205         # if endian exists, remove it from the encoding.
+206         var.encoding.pop("endian", None)
+207     # check to see if encoding has a value for endian its 'native'
+208     if var.encoding.get("endian", "native") != "native":
+209         raise NotImplementedError(
+210             "Attempt to write non-native endian type, "
+211             "this is not supported by the netCDF4 "
+212             "python library."
+213         )
+214     return var
+215 
+216 
+217 def _extract_nc4_variable_encoding(
+218     variable,
+219     raise_on_invalid=False,
+220     lsd_okay=True,
+221     h5py_okay=False,
+222     backend="netCDF4",
+223     unlimited_dims=None,
+224 ):
+225     if unlimited_dims is None:
+226         unlimited_dims = ()
+227 
+228     encoding = variable.encoding.copy()
+229 
+230     safe_to_drop = {"source", "original_shape"}
+231     valid_encodings = {
+232         "zlib",
+233         "complevel",
+234         "fletcher32",
+235         "contiguous",
+236         "chunksizes",
+237         "shuffle",
+238         "_FillValue",
+239         "dtype",
+240     }
+241     if lsd_okay:
+242         valid_encodings.add("least_significant_digit")
+243     if h5py_okay:
+244         valid_encodings.add("compression")
+245         valid_encodings.add("compression_opts")
+246 
+247     if not raise_on_invalid and encoding.get("chunksizes") is not None:
+248         # It's possible to get encoded chunksizes larger than a dimension size
+249         # if the original file had an unlimited dimension. This is problematic
+250         # if the new file no longer has an unlimited dimension.
+251         chunksizes = encoding["chunksizes"]
+252         chunks_too_big = any(
+253             c > d and dim not in unlimited_dims
+254             for c, d, dim in zip(chunksizes, variable.shape, variable.dims)
+255         )
+256         has_original_shape = "original_shape" in encoding
+257         changed_shape = (
+258             has_original_shape and encoding.get("original_shape") != variable.shape
+259         )
+260         if chunks_too_big or changed_shape:
+261             del encoding["chunksizes"]
+262 
+263     var_has_unlim_dim = any(dim in unlimited_dims for dim in variable.dims)
+264     if not raise_on_invalid and var_has_unlim_dim and "contiguous" in encoding.keys():
+265         del encoding["contiguous"]
+266 
+267     for k in safe_to_drop:
+268         if k in encoding:
+269             del encoding[k]
+270 
+271     if raise_on_invalid:
+272         invalid = [k for k in encoding if k not in valid_encodings]
+273         if invalid:
+274             raise ValueError(
+275                 f"unexpected encoding parameters for {backend!r} backend: {invalid!r}. Valid "
+276                 f"encodings are: {valid_encodings!r}"
+277             )
+278     else:
+279         for k in list(encoding):
+280             if k not in valid_encodings:
+281                 del encoding[k]
+282 
+283     return encoding
+284 
+285 
+286 def _is_list_of_strings(value):
+287     arr = np.asarray(value)
+288     return arr.dtype.kind in ["U", "S"] and arr.size > 1
+289 
+290 
+291 class NetCDF4DataStore(WritableCFDataStore):
+292     """Store for reading and writing data via the Python-NetCDF4 library.
+293 
+294     This store supports NetCDF3, NetCDF4 and OpenDAP datasets.
+295     """
+296 
+297     __slots__ = (
+298         "autoclose",
+299         "format",
+300         "is_remote",
+301         "lock",
+302         "_filename",
+303         "_group",
+304         "_manager",
+305         "_mode",
+306     )
+307 
+308     def __init__(
+309         self, manager, group=None, mode=None, lock=NETCDF4_PYTHON_LOCK, autoclose=False
+310     ):
+311 
+312         if isinstance(manager, netCDF4.Dataset):
+313             if group is None:
+314                 root, group = find_root_and_group(manager)
+315             else:
+316                 if type(manager) is not netCDF4.Dataset:
+317                     raise ValueError(
+318                         "must supply a root netCDF4.Dataset if the group "
+319                         "argument is provided"
+320                     )
+321                 root = manager
+322             manager = DummyFileManager(root)
+323 
+324         self._manager = manager
+325         self._group = group
+326         self._mode = mode
+327         self.format = self.ds.data_model
+328         self._filename = self.ds.filepath()
+329         self.is_remote = is_remote_uri(self._filename)
+330         self.lock = ensure_lock(lock)
+331         self.autoclose = autoclose
+332 
+333     @classmethod
+334     def open(
+335         cls,
+336         filename,
+337         mode="r",
+338         format="NETCDF4",
+339         group=None,
+340         clobber=True,
+341         diskless=False,
+342         persist=False,
+343         lock=None,
+344         lock_maker=None,
+345         autoclose=False,
+346     ):
+347 
+348         if isinstance(filename, os.PathLike):
+349             filename = os.fspath(filename)
+350 
+351         if not isinstance(filename, str):
+352             raise ValueError(
+353                 "can only read bytes or file-like objects "
+354                 "with engine='scipy' or 'h5netcdf'"
+355             )
+356 
+357         if format is None:
+358             format = "NETCDF4"
+359 
+360         if lock is None:
+361             if mode == "r":
+362                 if is_remote_uri(filename):
+363                     lock = NETCDFC_LOCK
+364                 else:
+365                     lock = NETCDF4_PYTHON_LOCK
+366             else:
+367                 if format is None or format.startswith("NETCDF4"):
+368                     base_lock = NETCDF4_PYTHON_LOCK
+369                 else:
+370                     base_lock = NETCDFC_LOCK
+371                 lock = combine_locks([base_lock, get_write_lock(filename)])
+372 
+373         kwargs = dict(
+374             clobber=clobber, diskless=diskless, persist=persist, format=format
+375         )
+376         manager = CachingFileManager(
+377             netCDF4.Dataset, filename, mode=mode, kwargs=kwargs
+378         )
+379         return cls(manager, group=group, mode=mode, lock=lock, autoclose=autoclose)
+380 
+381     def _acquire(self, needs_lock=True):
+382         with self._manager.acquire_context(needs_lock) as root:
+383             ds = _nc4_require_group(root, self._group, self._mode)
+384         return ds
+385 
+386     @property
+387     def ds(self):
+388         return self._acquire()
+389 
+390     def open_store_variable(self, name, var):
+391         dimensions = var.dimensions
+392         data = indexing.LazilyIndexedArray(NetCDF4ArrayWrapper(name, self))
+393         attributes = {k: var.getncattr(k) for k in var.ncattrs()}
+394         _ensure_fill_value_valid(data, attributes)
+395         # netCDF4 specific encoding; save _FillValue for later
+396         encoding = {}
+397         filters = var.filters()
+398         if filters is not None:
+399             encoding.update(filters)
+400         chunking = var.chunking()
+401         if chunking is not None:
+402             if chunking == "contiguous":
+403                 encoding["contiguous"] = True
+404                 encoding["chunksizes"] = None
+405             else:
+406                 encoding["contiguous"] = False
+407                 encoding["chunksizes"] = tuple(chunking)
+408         # TODO: figure out how to round-trip "endian-ness" without raising
+409         # warnings from netCDF4
+410         # encoding['endian'] = var.endian()
+411         pop_to(attributes, encoding, "least_significant_digit")
+412         # save source so __repr__ can detect if it's local or not
+413         encoding["source"] = self._filename
+414         encoding["original_shape"] = var.shape
+415         encoding["dtype"] = var.dtype
+416 
+417         return Variable(dimensions, data, attributes, encoding)
+418 
+419     def get_variables(self):
+420         return FrozenDict(
+421             (k, self.open_store_variable(k, v)) for k, v in self.ds.variables.items()
+422         )
+423 
+424     def get_attrs(self):
+425         return FrozenDict((k, self.ds.getncattr(k)) for k in self.ds.ncattrs())
+426 
+427     def get_dimensions(self):
+428         return FrozenDict((k, len(v)) for k, v in self.ds.dimensions.items())
+429 
+430     def get_encoding(self):
+431         return {
+432             "unlimited_dims": {
+433                 k for k, v in self.ds.dimensions.items() if v.isunlimited()
+434             }
+435         }
+436 
+437     def set_dimension(self, name, length, is_unlimited=False):
+438         dim_length = length if not is_unlimited else None
+439         self.ds.createDimension(name, size=dim_length)
+440 
+441     def set_attribute(self, key, value):
+442         if self.format != "NETCDF4":
+443             value = encode_nc3_attr_value(value)
+444         if _is_list_of_strings(value):
+445             # encode as NC_STRING if attr is list of strings
+446             self.ds.setncattr_string(key, value)
+447         else:
+448             self.ds.setncattr(key, value)
+449 
+450     def encode_variable(self, variable):
+451         variable = _force_native_endianness(variable)
+452         if self.format == "NETCDF4":
+453             variable = _encode_nc4_variable(variable)
+454         else:
+455             variable = encode_nc3_variable(variable)
+456         return variable
+457 
+458     def prepare_variable(
+459         self, name, variable, check_encoding=False, unlimited_dims=None
+460     ):
+461         datatype = _get_datatype(
+462             variable, self.format, raise_on_invalid_encoding=check_encoding
+463         )
+464         attrs = variable.attrs.copy()
+465 
+466         fill_value = attrs.pop("_FillValue", None)
+467 
+468         if datatype is str and fill_value is not None:
+469             raise NotImplementedError(
+470                 "netCDF4 does not yet support setting a fill value for "
+471                 "variable-length strings "
+472                 "(https://github.com/Unidata/netcdf4-python/issues/730). "
+473                 f"Either remove '_FillValue' from encoding on variable {name!r} "
+474                 "or set {'dtype': 'S1'} in encoding to use the fixed width "
+475                 "NC_CHAR type."
+476             )
+477 
+478         encoding = _extract_nc4_variable_encoding(
+479             variable, raise_on_invalid=check_encoding, unlimited_dims=unlimited_dims
+480         )
+481 
+482         if name in self.ds.variables:
+483             nc4_var = self.ds.variables[name]
+484         else:
+485             nc4_var = self.ds.createVariable(
+486                 varname=name,
+487                 datatype=datatype,
+488                 dimensions=variable.dims,
+489                 zlib=encoding.get("zlib", False),
+490                 complevel=encoding.get("complevel", 4),
+491                 shuffle=encoding.get("shuffle", True),
+492                 fletcher32=encoding.get("fletcher32", False),
+493                 contiguous=encoding.get("contiguous", False),
+494                 chunksizes=encoding.get("chunksizes"),
+495                 endian="native",
+496                 least_significant_digit=encoding.get("least_significant_digit"),
+497                 fill_value=fill_value,
+498             )
+499 
+500         nc4_var.setncatts(attrs)
+501 
+502         target = NetCDF4ArrayWrapper(name, self)
+503 
+504         return target, variable.data
+505 
+506     def sync(self):
+507         self.ds.sync()
+508 
+509     def close(self, **kwargs):
+510         self._manager.close(**kwargs)
+511 
+512 
+513 class NetCDF4BackendEntrypoint(BackendEntrypoint):
+514     available = has_netcdf4
+515 
+516     def guess_can_open(self, filename_or_obj):
+517         if isinstance(filename_or_obj, str) and is_remote_uri(filename_or_obj):
+518             return True
+519         magic_number = try_read_magic_number_from_path(filename_or_obj)
+520         if magic_number is not None:
+521             # netcdf 3 or HDF5
+522             return magic_number.startswith((b"CDF", b"\211HDF\r\n\032\n"))
+523         try:
+524             _, ext = os.path.splitext(filename_or_obj)
+525         except TypeError:
+526             return False
+527         return ext in {".nc", ".nc4", ".cdf"}
+528 
+529     def open_dataset(
+530         self,
+531         filename_or_obj,
+532         mask_and_scale=True,
+533         decode_times=True,
+534         concat_characters=True,
+535         decode_coords=True,
+536         drop_variables=None,
+537         use_cftime=None,
+538         decode_timedelta=None,
+539         group=None,
+540         mode="r",
+541         format="NETCDF4",
+542         clobber=True,
+543         diskless=False,
+544         persist=False,
+545         lock=None,
+546         autoclose=False,
+547     ):
+548 
+549         filename_or_obj = _normalize_path(filename_or_obj)
+550         store = NetCDF4DataStore.open(
+551             filename_or_obj,
+552             mode=mode,
+553             format=format,
+554             group=group,
+555             clobber=clobber,
+556             diskless=diskless,
+557             persist=persist,
+558             lock=lock,
+559             autoclose=autoclose,
+560         )
+561 
+562         store_entrypoint = StoreBackendEntrypoint()
+563         with close_on_error(store):
+564             ds = store_entrypoint.open_dataset(
+565                 store,
+566                 mask_and_scale=mask_and_scale,
+567                 decode_times=decode_times,
+568                 concat_characters=concat_characters,
+569                 decode_coords=decode_coords,
+570                 drop_variables=drop_variables,
+571                 use_cftime=use_cftime,
+572                 decode_timedelta=decode_timedelta,
+573             )
+574         return ds
+575 
+576 
+577 BACKEND_ENTRYPOINTS["netcdf4"] = NetCDF4BackendEntrypoint
+
+</code><intended_behavior>The method should correctly encode and decode filenames with non-English characters, ensuring that the uploaded file is stored correctly.</intended_behavior>]
+2025-11-12 21:04:44.532 | INFO     | Search completed. Bug locations: [<file>xarray/coding/strings.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Coders for strings."""
+2 from functools import partial
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.pycompat import is_duck_dask_array
+8 from ..core.variable import Variable
+9 from .variables import (
+10     VariableCoder,
+11     lazy_elemwise_func,
+12     pop_to,
+13     safe_setitem,
+14     unpack_for_decoding,
+15     unpack_for_encoding,
+16 )
+17 
+18 
+19 def create_vlen_dtype(element_type):
+20     # based on h5py.special_dtype
+21     return np.dtype("O", metadata={"element_type": element_type})
+22 
+23 
+24 def check_vlen_dtype(dtype):
+25     if dtype.kind != "O" or dtype.metadata is None:
+26         return None
+27     else:
+28         return dtype.metadata.get("element_type")
+29 
+30 
+31 def is_unicode_dtype(dtype):
+32     return dtype.kind == "U" or check_vlen_dtype(dtype) == str
+33 
+34 
+35 def is_bytes_dtype(dtype):
+36     return dtype.kind == "S" or check_vlen_dtype(dtype) == bytes
+37 
+38 
+39 class EncodedStringCoder(VariableCoder):
+40     """Transforms between unicode strings and fixed-width UTF-8 bytes."""
+41 
+42     def __init__(self, allows_unicode=True):
+43         self.allows_unicode = allows_unicode
+44 
+45     def encode(self, variable, name=None):
+46         dims, data, attrs, encoding = unpack_for_encoding(variable)
+47 
+48         contains_unicode = is_unicode_dtype(data.dtype)
+49         encode_as_char = encoding.get("dtype") == "S1"
+50 
+51         if encode_as_char:
+52             del encoding["dtype"]  # no longer relevant
+53 
+54         if contains_unicode and (encode_as_char or not self.allows_unicode):
+55             if "_FillValue" in attrs:
+56                 raise NotImplementedError(
+57                     "variable {!r} has a _FillValue specified, but "
+58                     "_FillValue is not yet supported on unicode strings: "
+59                     "https://github.com/pydata/xarray/issues/1647".format(name)
+60                 )
+61 
+62             string_encoding = encoding.pop("_Encoding", "utf-8")
+63             safe_setitem(attrs, "_Encoding", string_encoding, name=name)
+64             # TODO: figure out how to handle this in a lazy way with dask
+65             data = encode_string_array(data, string_encoding)
+66 
+67         return Variable(dims, data, attrs, encoding)
+68 
+69     def decode(self, variable, name=None):
+70         dims, data, attrs, encoding = unpack_for_decoding(variable)
+71 
+72         if "_Encoding" in attrs:
+73             string_encoding = pop_to(attrs, encoding, "_Encoding")
+74             func = partial(decode_bytes_array, encoding=string_encoding)
+75             data = lazy_elemwise_func(data, func, np.dtype(object))
+76 
+77         return Variable(dims, data, attrs, encoding)
+78 
+79 
+80 def decode_bytes_array(bytes_array, encoding="utf-8"):
+81     # This is faster than using np.char.decode() or np.vectorize()
+82     bytes_array = np.asarray(bytes_array)
+83     decoded = [x.decode(encoding) for x in bytes_array.ravel()]
+84     return np.array(decoded, dtype=object).reshape(bytes_array.shape)
+85 
+86 
+87 def encode_string_array(string_array, encoding="utf-8"):
+88     string_array = np.asarray(string_array)
+89     encoded = [x.encode(encoding) for x in string_array.ravel()]
+90     return np.array(encoded, dtype=bytes).reshape(string_array.shape)
+91 
+92 
+93 def ensure_fixed_length_bytes(var):
+94     """Ensure that a variable with vlen bytes is converted to fixed width."""
+95     dims, data, attrs, encoding = unpack_for_encoding(var)
+96     if check_vlen_dtype(data.dtype) == bytes:
+97         # TODO: figure out how to handle this with dask
+98         data = np.asarray(data, dtype=np.string_)
+99     return Variable(dims, data, attrs, encoding)
+100 
+101 
+102 class CharacterArrayCoder(VariableCoder):
+103     """Transforms between arrays containing bytes and character arrays."""
+104 
+105     def encode(self, variable, name=None):
+106         variable = ensure_fixed_length_bytes(variable)
+107 
+108         dims, data, attrs, encoding = unpack_for_encoding(variable)
+109         if data.dtype.kind == "S" and encoding.get("dtype") is not str:
+110             data = bytes_to_char(data)
+111             if "char_dim_name" in encoding.keys():
+112                 char_dim_name = encoding.pop("char_dim_name")
+113             else:
+114                 char_dim_name = f"string{data.shape[-1]}"
+115             dims = dims + (char_dim_name,)
+116         return Variable(dims, data, attrs, encoding)
+117 
+118     def decode(self, variable, name=None):
+119         dims, data, attrs, encoding = unpack_for_decoding(variable)
+120 
+121         if data.dtype == "S1" and dims:
+122             encoding["char_dim_name"] = dims[-1]
+123             dims = dims[:-1]
+124             data = char_to_bytes(data)
+125         return Variable(dims, data, attrs, encoding)
+126 
+127 
+128 def bytes_to_char(arr):
+129     """Convert numpy/dask arrays from fixed width bytes to characters."""
+130     if arr.dtype.kind != "S":
+131         raise ValueError("argument must have a fixed-width bytes dtype")
+132 
+133     if is_duck_dask_array(arr):
+134         import dask.array as da
+135 
+136         return da.map_blocks(
+137             _numpy_bytes_to_char,
+138             arr,
+139             dtype="S1",
+140             chunks=arr.chunks + ((arr.dtype.itemsize,)),
+141             new_axis=[arr.ndim],
+142         )
+143     return _numpy_bytes_to_char(arr)
+144 
+145 
+146 def _numpy_bytes_to_char(arr):
+147     """Like netCDF4.stringtochar, but faster and more flexible."""
+148     # ensure the array is contiguous
+149     arr = np.array(arr, copy=False, order="C", dtype=np.string_)
+150     return arr.reshape(arr.shape + (1,)).view("S1")
+151 
+152 
+153 def char_to_bytes(arr):
+154     """Convert numpy/dask arrays from characters to fixed width bytes."""
+155     if arr.dtype != "S1":
+156         raise ValueError("argument must have dtype='S1'")
+157 
+158     if not arr.ndim:
+159         # no dimension to concatenate along
+160         return arr
+161 
+162     size = arr.shape[-1]
+163 
+164     if not size:
+165         # can't make an S0 dtype
+166         return np.zeros(arr.shape[:-1], dtype=np.string_)
+167 
+168     if is_duck_dask_array(arr):
+169         import dask.array as da
+170 
+171         if len(arr.chunks[-1]) > 1:
+172             raise ValueError(
+173                 "cannot stacked dask character array with "
+174                 "multiple chunks in the last dimension: {}".format(arr)
+175             )
+176 
+177         dtype = np.dtype("S" + str(arr.shape[-1]))
+178         return da.map_blocks(
+179             _numpy_char_to_bytes,
+180             arr,
+181             dtype=dtype,
+182             chunks=arr.chunks[:-1],
+183             drop_axis=[arr.ndim - 1],
+184         )
+185     else:
+186         return StackedBytesArray(arr)
+187 
+188 
+189 def _numpy_char_to_bytes(arr):
+190     """Like netCDF4.chartostring, but faster and more flexible."""
+191     # based on: http://stackoverflow.com/a/10984878/809705
+192     arr = np.array(arr, copy=False, order="C")
+193     dtype = "S" + str(arr.shape[-1])
+194     return arr.view(dtype).reshape(arr.shape[:-1])
+195 
+196 
+197 class StackedBytesArray(indexing.ExplicitlyIndexedNDArrayMixin):
+198     """Wrapper around array-like objects to create a new indexable object where
+199     values, when accessed, are automatically stacked along the last dimension.
+200 
+201     >>> indexer = indexing.BasicIndexer((slice(None),))
+202     >>> StackedBytesArray(np.array(["a", "b", "c"], dtype="S1"))[indexer]
+203     array(b'abc', dtype='|S3')
+204     """
+205 
+206     def __init__(self, array):
+207         """
+208         Parameters
+209         ----------
+210         array : array-like
+211             Original array of values to wrap.
+212         """
+213         if array.dtype != "S1":
+214             raise ValueError(
+215                 "can only use StackedBytesArray if argument has dtype='S1'"
+216             )
+217         self.array = indexing.as_indexable(array)
+218 
+219     @property
+220     def dtype(self):
+221         return np.dtype("S" + str(self.array.shape[-1]))
+222 
+223     @property
+224     def shape(self):
+225         return self.array.shape[:-1]
+226 
+227     def __repr__(self):
+228         return "{}({!r})".format(type(self).__name__, self.array)
+229 
+230     def __getitem__(self, key):
+231         # require slicing the last dimension completely
+232         key = type(key)(indexing.expanded_indexer(key.tuple, self.array.ndim))
+233         if key.tuple[-1] != slice(None):
+234             raise IndexError("too many indices")
+235         return _numpy_char_to_bytes(self.array[key])
+
+</code><intended_behavior>The method should correctly handle non-English filenames during file uploads by properly encoding and decoding the filename.</intended_behavior>, <file>xarray/backends/netCDF4_.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import functools
+2 import operator
+3 import os
+4 from contextlib import suppress
+5 
+6 import numpy as np
+7 
+8 from .. import coding
+9 from ..coding.variables import pop_to
+10 from ..core import indexing
+11 from ..core.utils import (
+12     FrozenDict,
+13     close_on_error,
+14     is_remote_uri,
+15     try_read_magic_number_from_path,
+16 )
+17 from ..core.variable import Variable
+18 from .common import (
+19     BACKEND_ENTRYPOINTS,
+20     BackendArray,
+21     BackendEntrypoint,
+22     WritableCFDataStore,
+23     _normalize_path,
+24     find_root_and_group,
+25     robust_getitem,
+26 )
+27 from .file_manager import CachingFileManager, DummyFileManager
+28 from .locks import HDF5_LOCK, NETCDFC_LOCK, combine_locks, ensure_lock, get_write_lock
+29 from .netcdf3 import encode_nc3_attr_value, encode_nc3_variable
+30 from .store import StoreBackendEntrypoint
+31 
+32 try:
+33     import netCDF4
+34 
+35     has_netcdf4 = True
+36 except ModuleNotFoundError:
+37     has_netcdf4 = False
+38 
+39 
+40 # This lookup table maps from dtype.byteorder to a readable endian
+41 # string used by netCDF4.
+42 _endian_lookup = {"=": "native", ">": "big", "<": "little", "|": "native"}
+43 
+44 
+45 NETCDF4_PYTHON_LOCK = combine_locks([NETCDFC_LOCK, HDF5_LOCK])
+46 
+47 
+48 class BaseNetCDF4Array(BackendArray):
+49     __slots__ = ("datastore", "dtype", "shape", "variable_name")
+50 
+51     def __init__(self, variable_name, datastore):
+52         self.datastore = datastore
+53         self.variable_name = variable_name
+54 
+55         array = self.get_array()
+56         self.shape = array.shape
+57 
+58         dtype = array.dtype
+59         if dtype is str:
+60             # use object dtype because that's the only way in numpy to
+61             # represent variable length strings; it also prevents automatic
+62             # string concatenation via conventions.decode_cf_variable
+63             dtype = np.dtype("O")
+64         self.dtype = dtype
+65 
+66     def __setitem__(self, key, value):
+67         with self.datastore.lock:
+68             data = self.get_array(needs_lock=False)
+69             data[key] = value
+70             if self.datastore.autoclose:
+71                 self.datastore.close(needs_lock=False)
+72 
+73     def get_array(self, needs_lock=True):
+74         raise NotImplementedError("Virtual Method")
+75 
+76 
+77 class NetCDF4ArrayWrapper(BaseNetCDF4Array):
+78     __slots__ = ()
+79 
+80     def get_array(self, needs_lock=True):
+81         ds = self.datastore._acquire(needs_lock)
+82         variable = ds.variables[self.variable_name]
+83         variable.set_auto_maskandscale(False)
+84         # only added in netCDF4-python v1.2.8
+85         with suppress(AttributeError):
+86             variable.set_auto_chartostring(False)
+87         return variable
+88 
+89     def __getitem__(self, key):
+90         return indexing.explicit_indexing_adapter(
+91             key, self.shape, indexing.IndexingSupport.OUTER, self._getitem
+92         )
+93 
+94     def _getitem(self, key):
+95         if self.datastore.is_remote:  # pragma: no cover
+96             getitem = functools.partial(robust_getitem, catch=RuntimeError)
+97         else:
+98             getitem = operator.getitem
+99 
+100         try:
+101             with self.datastore.lock:
+102                 original_array = self.get_array(needs_lock=False)
+103                 array = getitem(original_array, key)
+104         except IndexError:
+105             # Catch IndexError in netCDF4 and return a more informative
+106             # error message.  This is most often called when an unsorted
+107             # indexer is used before the data is loaded from disk.
+108             msg = (
+109                 "The indexing operation you are attempting to perform "
+110                 "is not valid on netCDF4.Variable object. Try loading "
+111                 "your data into memory first by calling .load()."
+112             )
+113             raise IndexError(msg)
+114         return array
+115 
+116 
+117 def _encode_nc4_variable(var):
+118     for coder in [
+119         coding.strings.EncodedStringCoder(allows_unicode=True),
+120         coding.strings.CharacterArrayCoder(),
+121     ]:
+122         var = coder.encode(var)
+123     return var
+124 
+125 
+126 def _check_encoding_dtype_is_vlen_string(dtype):
+127     if dtype is not str:
+128         raise AssertionError(  # pragma: no cover
+129             f"unexpected dtype encoding {dtype!r}. This shouldn't happen: please "
+130             "file a bug report at github.com/pydata/xarray"
+131         )
+132 
+133 
+134 def _get_datatype(var, nc_format="NETCDF4", raise_on_invalid_encoding=False):
+135     if nc_format == "NETCDF4":
+136         return _nc4_dtype(var)
+137     if "dtype" in var.encoding:
+138         encoded_dtype = var.encoding["dtype"]
+139         _check_encoding_dtype_is_vlen_string(encoded_dtype)
+140         if raise_on_invalid_encoding:
+141             raise ValueError(
+142                 "encoding dtype=str for vlen strings is only supported "
+143                 "with format='NETCDF4'."
+144             )
+145     return var.dtype
+146 
+147 
+148 def _nc4_dtype(var):
+149     if "dtype" in var.encoding:
+150         dtype = var.encoding.pop("dtype")
+151         _check_encoding_dtype_is_vlen_string(dtype)
+152     elif coding.strings.is_unicode_dtype(var.dtype):
+153         dtype = str
+154     elif var.dtype.kind in ["i", "u", "f", "c", "S"]:
+155         dtype = var.dtype
+156     else:
+157         raise ValueError(f"unsupported dtype for netCDF4 variable: {var.dtype}")
+158     return dtype
+159 
+160 
+161 def _netcdf4_create_group(dataset, name):
+162     return dataset.createGroup(name)
+163 
+164 
+165 def _nc4_require_group(ds, group, mode, create_group=_netcdf4_create_group):
+166     if group in {None, "", "/"}:
+167         # use the root group
+168         return ds
+169     else:
+170         # make sure it's a string
+171         if not isinstance(group, str):
+172             raise ValueError("group must be a string or None")
+173         # support path-like syntax
+174         path = group.strip("/").split("/")
+175         for key in path:
+176             try:
+177                 ds = ds.groups[key]
+178             except KeyError as e:
+179                 if mode != "r":
+180                     ds = create_group(ds, key)
+181                 else:
+182                     # wrap error to provide slightly more helpful message
+183                     raise OSError(f"group not found: {key}", e)
+184         return ds
+185 
+186 
+187 def _ensure_fill_value_valid(data, attributes):
+188     # work around for netCDF4/scipy issue where _FillValue has the wrong type:
+189     # https://github.com/Unidata/netcdf4-python/issues/271
+190     if data.dtype.kind == "S" and "_FillValue" in attributes:
+191         attributes["_FillValue"] = np.string_(attributes["_FillValue"])
+192 
+193 
+194 def _force_native_endianness(var):
+195     # possible values for byteorder are:
+196     #     =    native
+197     #     <    little-endian
+198     #     >    big-endian
+199     #     |    not applicable
+200     # Below we check if the data type is not native or NA
+201     if var.dtype.byteorder not in ["=", "|"]:
+202         # if endianness is specified explicitly, convert to the native type
+203         data = var.data.astype(var.dtype.newbyteorder("="))
+204         var = Variable(var.dims, data, var.attrs, var.encoding)
+205         # if endian exists, remove it from the encoding.
+206         var.encoding.pop("endian", None)
+207     # check to see if encoding has a value for endian its 'native'
+208     if var.encoding.get("endian", "native") != "native":
+209         raise NotImplementedError(
+210             "Attempt to write non-native endian type, "
+211             "this is not supported by the netCDF4 "
+212             "python library."
+213         )
+214     return var
+215 
+216 
+217 def _extract_nc4_variable_encoding(
+218     variable,
+219     raise_on_invalid=False,
+220     lsd_okay=True,
+221     h5py_okay=False,
+222     backend="netCDF4",
+223     unlimited_dims=None,
+224 ):
+225     if unlimited_dims is None:
+226         unlimited_dims = ()
+227 
+228     encoding = variable.encoding.copy()
+229 
+230     safe_to_drop = {"source", "original_shape"}
+231     valid_encodings = {
+232         "zlib",
+233         "complevel",
+234         "fletcher32",
+235         "contiguous",
+236         "chunksizes",
+237         "shuffle",
+238         "_FillValue",
+239         "dtype",
+240     }
+241     if lsd_okay:
+242         valid_encodings.add("least_significant_digit")
+243     if h5py_okay:
+244         valid_encodings.add("compression")
+245         valid_encodings.add("compression_opts")
+246 
+247     if not raise_on_invalid and encoding.get("chunksizes") is not None:
+248         # It's possible to get encoded chunksizes larger than a dimension size
+249         # if the original file had an unlimited dimension. This is problematic
+250         # if the new file no longer has an unlimited dimension.
+251         chunksizes = encoding["chunksizes"]
+252         chunks_too_big = any(
+253             c > d and dim not in unlimited_dims
+254             for c, d, dim in zip(chunksizes, variable.shape, variable.dims)
+255         )
+256         has_original_shape = "original_shape" in encoding
+257         changed_shape = (
+258             has_original_shape and encoding.get("original_shape") != variable.shape
+259         )
+260         if chunks_too_big or changed_shape:
+261             del encoding["chunksizes"]
+262 
+263     var_has_unlim_dim = any(dim in unlimited_dims for dim in variable.dims)
+264     if not raise_on_invalid and var_has_unlim_dim and "contiguous" in encoding.keys():
+265         del encoding["contiguous"]
+266 
+267     for k in safe_to_drop:
+268         if k in encoding:
+269             del encoding[k]
+270 
+271     if raise_on_invalid:
+272         invalid = [k for k in encoding if k not in valid_encodings]
+273         if invalid:
+274             raise ValueError(
+275                 f"unexpected encoding parameters for {backend!r} backend: {invalid!r}. Valid "
+276                 f"encodings are: {valid_encodings!r}"
+277             )
+278     else:
+279         for k in list(encoding):
+280             if k not in valid_encodings:
+281                 del encoding[k]
+282 
+283     return encoding
+284 
+285 
+286 def _is_list_of_strings(value):
+287     arr = np.asarray(value)
+288     return arr.dtype.kind in ["U", "S"] and arr.size > 1
+289 
+290 
+291 class NetCDF4DataStore(WritableCFDataStore):
+292     """Store for reading and writing data via the Python-NetCDF4 library.
+293 
+294     This store supports NetCDF3, NetCDF4 and OpenDAP datasets.
+295     """
+296 
+297     __slots__ = (
+298         "autoclose",
+299         "format",
+300         "is_remote",
+301         "lock",
+302         "_filename",
+303         "_group",
+304         "_manager",
+305         "_mode",
+306     )
+307 
+308     def __init__(
+309         self, manager, group=None, mode=None, lock=NETCDF4_PYTHON_LOCK, autoclose=False
+310     ):
+311 
+312         if isinstance(manager, netCDF4.Dataset):
+313             if group is None:
+314                 root, group = find_root_and_group(manager)
+315             else:
+316                 if type(manager) is not netCDF4.Dataset:
+317                     raise ValueError(
+318                         "must supply a root netCDF4.Dataset if the group "
+319                         "argument is provided"
+320                     )
+321                 root = manager
+322             manager = DummyFileManager(root)
+323 
+324         self._manager = manager
+325         self._group = group
+326         self._mode = mode
+327         self.format = self.ds.data_model
+328         self._filename = self.ds.filepath()
+329         self.is_remote = is_remote_uri(self._filename)
+330         self.lock = ensure_lock(lock)
+331         self.autoclose = autoclose
+332 
+333     @classmethod
+334     def open(
+335         cls,
+336         filename,
+337         mode="r",
+338         format="NETCDF4",
+339         group=None,
+340         clobber=True,
+341         diskless=False,
+342         persist=False,
+343         lock=None,
+344         lock_maker=None,
+345         autoclose=False,
+346     ):
+347 
+348         if isinstance(filename, os.PathLike):
+349             filename = os.fspath(filename)
+350 
+351         if not isinstance(filename, str):
+352             raise ValueError(
+353                 "can only read bytes or file-like objects "
+354                 "with engine='scipy' or 'h5netcdf'"
+355             )
+356 
+357         if format is None:
+358             format = "NETCDF4"
+359 
+360         if lock is None:
+361             if mode == "r":
+362                 if is_remote_uri(filename):
+363                     lock = NETCDFC_LOCK
+364                 else:
+365                     lock = NETCDF4_PYTHON_LOCK
+366             else:
+367                 if format is None or format.startswith("NETCDF4"):
+368                     base_lock = NETCDF4_PYTHON_LOCK
+369                 else:
+370                     base_lock = NETCDFC_LOCK
+371                 lock = combine_locks([base_lock, get_write_lock(filename)])
+372 
+373         kwargs = dict(
+374             clobber=clobber, diskless=diskless, persist=persist, format=format
+375         )
+376         manager = CachingFileManager(
+377             netCDF4.Dataset, filename, mode=mode, kwargs=kwargs
+378         )
+379         return cls(manager, group=group, mode=mode, lock=lock, autoclose=autoclose)
+380 
+381     def _acquire(self, needs_lock=True):
+382         with self._manager.acquire_context(needs_lock) as root:
+383             ds = _nc4_require_group(root, self._group, self._mode)
+384         return ds
+385 
+386     @property
+387     def ds(self):
+388         return self._acquire()
+389 
+390     def open_store_variable(self, name, var):
+391         dimensions = var.dimensions
+392         data = indexing.LazilyIndexedArray(NetCDF4ArrayWrapper(name, self))
+393         attributes = {k: var.getncattr(k) for k in var.ncattrs()}
+394         _ensure_fill_value_valid(data, attributes)
+395         # netCDF4 specific encoding; save _FillValue for later
+396         encoding = {}
+397         filters = var.filters()
+398         if filters is not None:
+399             encoding.update(filters)
+400         chunking = var.chunking()
+401         if chunking is not None:
+402             if chunking == "contiguous":
+403                 encoding["contiguous"] = True
+404                 encoding["chunksizes"] = None
+405             else:
+406                 encoding["contiguous"] = False
+407                 encoding["chunksizes"] = tuple(chunking)
+408         # TODO: figure out how to round-trip "endian-ness" without raising
+409         # warnings from netCDF4
+410         # encoding['endian'] = var.endian()
+411         pop_to(attributes, encoding, "least_significant_digit")
+412         # save source so __repr__ can detect if it's local or not
+413         encoding["source"] = self._filename
+414         encoding["original_shape"] = var.shape
+415         encoding["dtype"] = var.dtype
+416 
+417         return Variable(dimensions, data, attributes, encoding)
+418 
+419     def get_variables(self):
+420         return FrozenDict(
+421             (k, self.open_store_variable(k, v)) for k, v in self.ds.variables.items()
+422         )
+423 
+424     def get_attrs(self):
+425         return FrozenDict((k, self.ds.getncattr(k)) for k in self.ds.ncattrs())
+426 
+427     def get_dimensions(self):
+428         return FrozenDict((k, len(v)) for k, v in self.ds.dimensions.items())
+429 
+430     def get_encoding(self):
+431         return {
+432             "unlimited_dims": {
+433                 k for k, v in self.ds.dimensions.items() if v.isunlimited()
+434             }
+435         }
+436 
+437     def set_dimension(self, name, length, is_unlimited=False):
+438         dim_length = length if not is_unlimited else None
+439         self.ds.createDimension(name, size=dim_length)
+440 
+441     def set_attribute(self, key, value):
+442         if self.format != "NETCDF4":
+443             value = encode_nc3_attr_value(value)
+444         if _is_list_of_strings(value):
+445             # encode as NC_STRING if attr is list of strings
+446             self.ds.setncattr_string(key, value)
+447         else:
+448             self.ds.setncattr(key, value)
+449 
+450     def encode_variable(self, variable):
+451         variable = _force_native_endianness(variable)
+452         if self.format == "NETCDF4":
+453             variable = _encode_nc4_variable(variable)
+454         else:
+455             variable = encode_nc3_variable(variable)
+456         return variable
+457 
+458     def prepare_variable(
+459         self, name, variable, check_encoding=False, unlimited_dims=None
+460     ):
+461         datatype = _get_datatype(
+462             variable, self.format, raise_on_invalid_encoding=check_encoding
+463         )
+464         attrs = variable.attrs.copy()
+465 
+466         fill_value = attrs.pop("_FillValue", None)
+467 
+468         if datatype is str and fill_value is not None:
+469             raise NotImplementedError(
+470                 "netCDF4 does not yet support setting a fill value for "
+471                 "variable-length strings "
+472                 "(https://github.com/Unidata/netcdf4-python/issues/730). "
+473                 f"Either remove '_FillValue' from encoding on variable {name!r} "
+474                 "or set {'dtype': 'S1'} in encoding to use the fixed width "
+475                 "NC_CHAR type."
+476             )
+477 
+478         encoding = _extract_nc4_variable_encoding(
+479             variable, raise_on_invalid=check_encoding, unlimited_dims=unlimited_dims
+480         )
+481 
+482         if name in self.ds.variables:
+483             nc4_var = self.ds.variables[name]
+484         else:
+485             nc4_var = self.ds.createVariable(
+486                 varname=name,
+487                 datatype=datatype,
+488                 dimensions=variable.dims,
+489                 zlib=encoding.get("zlib", False),
+490                 complevel=encoding.get("complevel", 4),
+491                 shuffle=encoding.get("shuffle", True),
+492                 fletcher32=encoding.get("fletcher32", False),
+493                 contiguous=encoding.get("contiguous", False),
+494                 chunksizes=encoding.get("chunksizes"),
+495                 endian="native",
+496                 least_significant_digit=encoding.get("least_significant_digit"),
+497                 fill_value=fill_value,
+498             )
+499 
+500         nc4_var.setncatts(attrs)
+501 
+502         target = NetCDF4ArrayWrapper(name, self)
+503 
+504         return target, variable.data
+505 
+506     def sync(self):
+507         self.ds.sync()
+508 
+509     def close(self, **kwargs):
+510         self._manager.close(**kwargs)
+511 
+512 
+513 class NetCDF4BackendEntrypoint(BackendEntrypoint):
+514     available = has_netcdf4
+515 
+516     def guess_can_open(self, filename_or_obj):
+517         if isinstance(filename_or_obj, str) and is_remote_uri(filename_or_obj):
+518             return True
+519         magic_number = try_read_magic_number_from_path(filename_or_obj)
+520         if magic_number is not None:
+521             # netcdf 3 or HDF5
+522             return magic_number.startswith((b"CDF", b"\211HDF\r\n\032\n"))
+523         try:
+524             _, ext = os.path.splitext(filename_or_obj)
+525         except TypeError:
+526             return False
+527         return ext in {".nc", ".nc4", ".cdf"}
+528 
+529     def open_dataset(
+530         self,
+531         filename_or_obj,
+532         mask_and_scale=True,
+533         decode_times=True,
+534         concat_characters=True,
+535         decode_coords=True,
+536         drop_variables=None,
+537         use_cftime=None,
+538         decode_timedelta=None,
+539         group=None,
+540         mode="r",
+541         format="NETCDF4",
+542         clobber=True,
+543         diskless=False,
+544         persist=False,
+545         lock=None,
+546         autoclose=False,
+547     ):
+548 
+549         filename_or_obj = _normalize_path(filename_or_obj)
+550         store = NetCDF4DataStore.open(
+551             filename_or_obj,
+552             mode=mode,
+553             format=format,
+554             group=group,
+555             clobber=clobber,
+556             diskless=diskless,
+557             persist=persist,
+558             lock=lock,
+559             autoclose=autoclose,
+560         )
+561 
+562         store_entrypoint = StoreBackendEntrypoint()
+563         with close_on_error(store):
+564             ds = store_entrypoint.open_dataset(
+565                 store,
+566                 mask_and_scale=mask_and_scale,
+567                 decode_times=decode_times,
+568                 concat_characters=concat_characters,
+569                 decode_coords=decode_coords,
+570                 drop_variables=drop_variables,
+571                 use_cftime=use_cftime,
+572                 decode_timedelta=decode_timedelta,
+573             )
+574         return ds
+575 
+576 
+577 BACKEND_ENTRYPOINTS["netcdf4"] = NetCDF4BackendEntrypoint
+
+</code><intended_behavior>The method should correctly encode and decode filenames with non-English characters, ensuring that the uploaded file is stored correctly.</intended_behavior>]
+2025-11-12 21:04:44.532 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-12 21:04:44.532 | INFO     | Search-only: skipping patch selection
+2025-11-12 21:04:44.624 | INFO     | Task pydata__xarray-5365 completed successfully.
+2025-11-12 21:04:44.625 | INFO     | No patch generated. You can try running ACR again.

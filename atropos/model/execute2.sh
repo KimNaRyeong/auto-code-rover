@@ -1,6 +1,6 @@
-python gcn_model_llama3.py --nhot --answer --add --balanced
-python gcn_model_llama3.py --nhot --answer --balanced
-python gcn_model_llama3.py --nhot --add --balanced
-python gcn_model_llama3.py --nhot --balanced
-python gcn_model_llama3.py --answer --balanced
-python gcn_model_llama3.py --balanced
+python gcn_model_llama3_70b.py --nhot --answer --add
+python gcn_model_llama3_70b.py --nhot --answer
+python gcn_model_llama3_70b.py --nhot --add
+python gcn_model_llama3_70b.py --nhot
+# python gcn_model_llama3_70b.py --answer
+# python gcn_model_llama3_70b.py
