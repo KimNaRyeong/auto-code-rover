@@ -1,0 +1,43 @@
+Here is a standalone Python script `reproducer.py` to reproduce the issue:
+```python
+import django
+from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.contrib.auth.models import AbstractBaseUser, User
+from django.core.exceptions import ValidationError
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+# Create a test user
+user = User.objects.create_user('testuser', 'foo@example.com', 'password')
+
+# Request password reset for the original email
+token_generator = PasswordResetTokenGenerator()
+reset_token = token_generator.make_token(user)
+print(f"Password reset token: {reset_token}")
+
+# Change the user's email address
+user.email = 'bar@example.com'
+user.save()
+
+try:
+    # Try to use the password reset token with the new email address
+    token_generator.check_token(user, reset_token)
+    print("Password reset token is valid!")
+    raise AssertionError("Password reset token should be invalid after changing email address")
+except ValidationError as e:
+    print_stacktrace(e)
+    print("Password reset token is invalid, as expected.")
+```
+This script creates a test user, requests a password reset for the original email address, changes the user's email address, and then tries to use the password reset token with the new email address. If the issue is present, the `check_token` method will succeed, and an `AssertionError` will be raised. If the issue is fixed, a `ValidationError` will be raised when trying to use the password reset token with the new email address.
+
+To run this script, save it as `reproducer.py` in the root directory of your Django project and execute it with `python3 reproducer.py`.
