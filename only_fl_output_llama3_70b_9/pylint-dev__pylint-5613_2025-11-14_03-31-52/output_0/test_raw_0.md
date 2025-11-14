@@ -1,0 +1,33 @@
+Here is the `reproducer.py` file that reproduces the issue:
+```
+import pylint
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    name = "my_project"
+    files = ["file1.py", "file2.py"]
+
+    try:
+        pylint.pyreverse(output=pylint.PNG, project=name, files=files)
+        print("No error raised. The issue is fixed.")
+        sys.exit(0)
+    except AttributeError as e:
+        print_stacktrace(e)
+        raise AssertionError("The issue is still present")
+
+if __name__ == "__main__":
+    main()
+```
+This script tries to call `pylint.pyreverse` with the desired API, and if it raises an `AttributeError`, it prints the stack trace using the provided function and raises an `AssertionError`. If no error is raised, it prints a success message and exits with code 0.

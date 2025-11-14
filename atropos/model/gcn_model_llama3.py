@@ -1,5 +1,6 @@
 import torch.nn as nn
 import os
+import json
 import torch
 import numpy as np
 import argparse
@@ -9,7 +10,7 @@ from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.loader import DataLoader
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, roc_curve, auc
+from sklearn.metrics import roc_auc_score, roc_curve, auc, accuracy_score
 from sklearn.metrics import precision_score, recall_score, confusion_matrix
 import random
 
@@ -437,7 +438,49 @@ def save_checkpoint(model, path, meta=None):
         payload.update(meta)
     torch.save(payload, path)
 
+def get_confidence_score(dataset):
+    combined_result_file = '../R5_combined_fl_results_llama3_70b.json'
+    with open(combined_result_file, 'r') as f:
+        combined_result = json.load(f)
 
+    all_labels = []
+    all_preds = []
+    all_confidences = []
+
+    for data in dataset[1]:
+        all_labels.append(data.y.item())
+        
+        task_name = data.task_name
+
+        if task_name in combined_result["ranking"].keys():
+            final_result = combined_result["ranking"][task_name][0]
+            confidence_score = combined_result["confidence_score"][task_name][final_result]
+        else:
+            confidence_score = 0
+        all_confidences.append(confidence_score)
+        all_preds.append(1 if confidence_score >= 0.5 else 0)
+
+    tp = 0
+    tn = 0
+    fp = 0
+    fn = 0
+    print(all_labels)
+    print(all_confidences)
+    for i in range(len(all_preds)):
+        if all_labels[i] == 1 and all_confidences[i] >=0.5:
+            tp += 1
+        elif all_labels[i] == 1 and all_confidences[i] < 0.5:
+            fn += 1
+        elif all_labels[i] == 0 and all_confidences[i] >= 0.5:
+            fp += 1
+        else:
+            tn += 1
+    print(tp, tn, fp, fn)
+
+    accuracy = accuracy_score(all_labels, all_preds)
+    roc_auc = roc_auc_score(all_labels, all_confidences)
+
+    return accuracy, roc_auc
 
 def main(dir_dict, balanced):
     set_seed(42)
@@ -453,9 +496,9 @@ def main(dir_dict, balanced):
         os.makedirs(result_dir)
     result_file = os.path.join(result_dir, 'result.txt')
 
-    if os.path.exists(result_file):
-        os.remove(result_file)
-        print(f"{result_file} is removed")
+    # if os.path.exists(result_file):
+    #     os.remove(result_file)
+    #     print(f"{result_file} is removed")
     
     ks = [int(k) for k in os.listdir(data_dir)]
     
@@ -464,20 +507,23 @@ def main(dir_dict, balanced):
     print_metadata(dataset_F, ks, "dataset_F")
     print_metadata(dataset_FA, ks, "dataset_FA")
 
-    criterion = nn.BCEWithLogitsLoss()
-    output_dim = 1
-    K = 5 
-    kf = KFold(n_splits=K, shuffle=True, random_state=42)
-    lr = 0.001
-    batch_size = 32
-    hidden_dim = 32
-    dropout_p = 0.8
-    num_layer = 2
-    num_epochs = 150
+    confidence_acc, confidence_auc = get_confidence_score(dataset_S)
+    print(confidence_acc, confidence_auc)
 
-    train_and_test_model(dataset_S, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_S", dir_dict)
-    train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict)
-    train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict)
+    # criterion = nn.BCEWithLogitsLoss()
+    # output_dim = 1
+    # K = 5 
+    # kf = KFold(n_splits=K, shuffle=True, random_state=42)
+    # lr = 0.001
+    # batch_size = 32
+    # hidden_dim = 32
+    # dropout_p = 0.8
+    # num_layer = 2
+    # num_epochs = 150
+
+    # train_and_test_model(dataset_S, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_S", dir_dict)
+    # train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict)
+    # train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict)
 
 def get_dir_dict(repetition, nhot, answer, add, balanced):
     if nhot:

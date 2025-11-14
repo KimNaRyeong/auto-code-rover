@@ -60,7 +60,7 @@ class Data_generater():
         for task in tqdm(self.task_list):
             for i in range(1, self.repetition+1):
 
-                output_dir = f'../only_fl_output_llama3_1000size_{i}/no_patch'
+                output_dir = f'../fl_outputs/only_fl_output_llama3_1000size_{i}/no_patch'
                 instance_list = os.listdir(output_dir)
 
                 tool_call_layer_file = None
@@ -408,6 +408,10 @@ class Data_generater():
                 F_data.y = torch.tensor([self.label_dict[task]], dtype=float)
                 FA_data.y = torch.tensor([self.label_dict[task]], dtype=float)
 
+                S_data.task_name = task
+                F_data.task_name = task
+                FA_data.task_name = task
+
                 for d in (S_data, F_data, FA_data):
                     d.task = task
                     d.edge_weight = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)
@@ -506,7 +510,7 @@ def examine_tool_call_layers():
     
     for task in task_list:
         for i in range(1, 6):
-            output_dir = f'../only_fl_output_llama3_1000size_{i}/no_patch'
+            output_dir = f'../fl_outputs/only_fl_output_llama3_1000size_{i}/no_patch'
             instance_list = os.listdir(output_dir)
 
             tool_call_layer_file = None

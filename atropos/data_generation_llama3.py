@@ -60,7 +60,7 @@ class Data_generater():
         for task in tqdm(self.task_list):
             for i in range(1, self.repetition+1):
 
-                output_dir = f'../only_fl_output_llama3_70b_{i}/no_patch'
+                output_dir = f'../fl_outputs/only_fl_output_llama3_70b_{i}/no_patch'
                 instance_list = os.listdir(output_dir)
 
                 tool_call_layer_file = None
@@ -429,7 +429,7 @@ class Data_generater():
                     "dataset_S": dataset_S,
                     "dataset_F": dataset_F,
                     "dataset_FA": dataset_FA
-                }, os.path.join(save_dir, 'gcn_dataset.pth'))
+                }, os.path.join(save_dir, 'gcn_dataset_try.pth'))
                 print(f"{k}th GCN dataset saved in {save_dir}")
                 
 
@@ -510,7 +510,7 @@ def examine_tool_call_layers():
     
     for task in task_list:
         for i in range(1, 6):
-            output_dir = f'../only_fl_output_llama3_70b_{i}/no_patch'
+            output_dir = f'../fl_outputs/only_fl_output_llama3_70b_{i}/no_patch'
             instance_list = os.listdir(output_dir)
 
             tool_call_layer_file = None
