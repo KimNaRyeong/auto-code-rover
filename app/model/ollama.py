@@ -149,3 +149,8 @@ class Llama3_70B(OllamaModel):
     def __init__(self):
         super().__init__("llama3:70b")
         self.note = "Llama3 70B model."
+
+class Gpt_oss_20B(OllamaModel):
+    def __init__(self):
+        super().__init__("gpt-oss:20b")
+        self.note = "Gpt-oss 20B model."

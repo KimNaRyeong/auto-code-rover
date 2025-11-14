@@ -45,6 +45,7 @@ def register_all_models() -> None:
 
     common.register_model(ollama.Llama3_8B())
     common.register_model(ollama.Llama3_70B())
+    common.register_model(ollama.Gpt_oss_20B())
 
     common.register_model(groq.Llama3_8B())
     common.register_model(groq.Llama3_70B())
