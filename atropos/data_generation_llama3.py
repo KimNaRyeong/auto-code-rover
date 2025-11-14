@@ -408,6 +408,10 @@ class Data_generater():
                 F_data.y = torch.tensor([self.label_dict[task]], dtype=float)
                 FA_data.y = torch.tensor([self.label_dict[task]], dtype=float)
 
+                S_data.task_name = task
+                F_data.task_name = task
+                FA_data.task_name = task
+
                 for d in (S_data, F_data, FA_data):
                     d.task = task
                     d.edge_weight = torch.tensor([graph[u][v]['weight'] for u, v in graph.edges()], dtype = torch.float)

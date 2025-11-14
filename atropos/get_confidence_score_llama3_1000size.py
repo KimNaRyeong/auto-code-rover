@@ -75,13 +75,13 @@ def main(dir_dict):
 
     acc_new_line = f'Confidence-score accuracy: {accuracy:.4f}\n'
     auc_new_line = f'Confidence-score roc-auc: {roc_auc:.4f}\n'
-    # with open(result_file, 'r') as rf:
-    #     results = rf.read()
-    # print(result_file)
-    # with open(result_file, 'w') as rf:
-    #     rf.write(acc_new_line + auc_new_line + results)
+    with open(result_file, 'r') as rf:
+        results = rf.read()
+    print(result_file)
+    with open(result_file, 'w') as rf:
+        rf.write(acc_new_line + auc_new_line + results)
 
-def get_dir_dict(nhot, answer, add):
+def get_dir_dict(nhot, answer, add, balanced):
     if nhot:
         hot_dir = 'nhot'
     else:
@@ -97,21 +97,35 @@ def get_dir_dict(nhot, answer, add):
     else:
         add_dir = 'not_add'
 
-    if nhot:
-        dir_dict = {
-            'data': f'./data/llama3/R5/1000size/{hot_dir}/{answer_dir}/{add_dir}',
-            'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}/{add_dir}',
-            'trained_model': f'./llama3/R5/1000size/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
-            'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}/{add_dir}'
-        }
-        
+    if balanced:
+        if nhot:
+            dir_dict = {
+                'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}/{add_dir}/balanced',
+                'trained_model': f'./llama3/R5/1000size/trained_model/{hot_dir}/{answer_dir}/{add_dir}/balanced',
+                'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}/{add_dir}/balanced'
+            }
+            
+        else:
+            dir_dict = {
+                'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}/balanced',
+                'trained_model': f'./trained_model/llama3/R5/1000size/{hot_dir}/{answer_dir}/balanced',
+                'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}/balanced'
+            }
     else:
-        dir_dict = {
-            'data': f'./data/llama3/R5/1000size/{hot_dir}/{answer_dir}',
-            'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}',
-            'trained_model': f'./trained_model/llama3/R5/1000size/{hot_dir}/{answer_dir}',
-            'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}'
-        }
+        if nhot:
+            dir_dict = {
+                'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}/{add_dir}',
+                'trained_model': f'./llama3/R5/1000size/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
+                'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}/{add_dir}'
+            }
+            
+        else:
+            dir_dict = {
+                'data': f'./data/llama3/R5/1000size/{hot_dir}/{answer_dir}',
+                'result': f'./results/llama3/R5/1000size/{hot_dir}/{answer_dir}',
+                'trained_model': f'./trained_model/llama3/R5/1000size/{hot_dir}/{answer_dir}',
+                'graph': f'./results/llama3/R5/1000size/graphs/{hot_dir}/{answer_dir}'
+            }
     return dir_dict
     
 if __name__ == '__main__':
@@ -119,8 +133,9 @@ if __name__ == '__main__':
     parser.add_argument('--nhot', action='store_true')
     parser.add_argument('--answer', action='store_true', help='including the answer')
     parser.add_argument('--add', action='store_true')
+    parser.add_argument('--balanced', action='store_true')
     args = parser.parse_args()
 
-    dir_dict = get_dir_dict(args.nhot, args.answer, args.add)
+    dir_dict = get_dir_dict(args.nhot, args.answer, args.add, args.balanced)
 
     main(dir_dict)

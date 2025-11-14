@@ -7,7 +7,7 @@ def get_accuracy(dir_dict):
     all_preds = []
     all_confidences = []
 
-    combined_result_file = './R10_combined_fl_results_llama3.json'
+    combined_result_file = './R5_combined_fl_results_llama3_70b.json'
 
     task_list_file = './sampled_tasks.txt'
     with open(task_list_file, 'r') as f:
@@ -75,11 +75,11 @@ def main(dir_dict):
 
     acc_new_line = f'Confidence-score accuracy: {accuracy:.4f}\n'
     auc_new_line = f'Confidence-score roc-auc: {roc_auc:.4f}\n'
-    # with open(result_file, 'r') as rf:
-    #     results = rf.read()
-    # print(result_file)
-    # with open(result_file, 'w') as rf:
-    #     rf.write(acc_new_line + auc_new_line + results)
+    with open(result_file, 'r') as rf:
+        results = rf.read()
+    print(result_file)
+    with open(result_file, 'w') as rf:
+        rf.write(acc_new_line + auc_new_line + results)
 
 def get_dir_dict(nhot, answer, add):
     if nhot:
@@ -99,18 +99,18 @@ def get_dir_dict(nhot, answer, add):
 
     if nhot:
         dir_dict = {
-            'data': f'./data/llama3/R10/{hot_dir}/{answer_dir}/{add_dir}',
-            'result': f'./results/llama3/R10/{hot_dir}/{answer_dir}/{add_dir}',
-            'trained_model': f'./llama3/R10/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
-            'graph': f'./results/llama3/R10/graphs/{hot_dir}/{answer_dir}/{add_dir}'
+            'data': f'./data/llama3_70b/R5/{hot_dir}/{answer_dir}/{add_dir}',
+            'result': f'./results/llama3_70b/R5/{hot_dir}/{answer_dir}/{add_dir}',
+            'trained_model': f'./llama3_70b/R5/trained_model/{hot_dir}/{answer_dir}/{add_dir}',
+            'graph': f'./results/llama3_70b/R5/graphs/{hot_dir}/{answer_dir}/{add_dir}'
         }
         
     else:
         dir_dict = {
-            'data': f'./data/llama3/R10/{hot_dir}/{answer_dir}',
-            'result': f'./results/llama3/R10/{hot_dir}/{answer_dir}',
-            'trained_model': f'./trained_model/llama3/R10/{hot_dir}/{answer_dir}',
-            'graph': f'./results/llama3/R10/graphs/{hot_dir}/{answer_dir}'
+            'data': f'./data/llama3_70b/R5/{hot_dir}/{answer_dir}',
+            'result': f'./results/llama3_70b/R5/{hot_dir}/{answer_dir}',
+            'trained_model': f'./trained_model/llama3_70b/R5/{hot_dir}/{answer_dir}',
+            'graph': f'./results/llama3_70b/R5/graphs/{hot_dir}/{answer_dir}'
         }
     return dir_dict
     
