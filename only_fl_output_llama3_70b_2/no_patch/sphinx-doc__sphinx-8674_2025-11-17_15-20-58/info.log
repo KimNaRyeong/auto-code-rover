@@ -1,0 +1,1372 @@
+2025-11-17 15:20:58.514 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-17 15:21:00.604 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-17 15:21:00.608 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 15:21:16.445 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 15:21:20.999 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("sphinx/directives/code.py", 100, 5)': old result is ['sphinx/directives/code.py', '100', '5'], new result  is ['sphinx/directives/code.py', 100, 5]
+2025-11-17 15:21:21.000 | DEBUG    | Extracted a valid json.
+2025-11-17 15:21:21.000 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"pygments\")", "search_class_in_file(\"Sphinx\", \"conf.py\")", "search_method(\"highlight\")", "search_code_in_file(\":startsinline:\", \"**/*.rst\")", "get_code_around_line(\"sphinx/directives/code.py\", 100, 5)"],
+    "bug_locations": []
+}
+2025-11-17 15:21:21.030 | INFO     | Refactored invocation argument parsing gives different result on 'get_code_around_line("sphinx/directives/code.py", 100, 5)': old result is ['sphinx/directives/code.py', '100', '5'], new result  is ['sphinx/directives/code.py', 100, 5]
+2025-11-17 15:21:21.038 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-17 15:21:21.038 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-17 15:21:44.765 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 15:21:52.244 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 15:21:57.815 | DEBUG    | Extracted a valid json.
+2025-11-17 15:21:57.815 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "sphinx/highlighting.py", "class": "", "method": "", "intended_behavior": "This method should allow passing options to Pygments, specifically the \":startsinline:\" option for PHP snippets."}, {"file": "sphinx/config.py", "class": "", "method": "", "intended_behavior": "This method should store and handle default options for Pygments, allowing them to be overridden by sourcecode block options."}]
+}
+2025-11-17 15:21:57.819 | DEBUG    | Bug location extracted successfully: [<file>sphinx/highlighting.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.highlighting
+3     ~~~~~~~~~~~~~~~~~~~
+4 
+5     Highlight code blocks using Pygments.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 from functools import partial
+12 from importlib import import_module
+13 from typing import Any, Dict
+14 
+15 from pygments import highlight
+16 from pygments.filters import ErrorToken
+17 from pygments.formatter import Formatter
+18 from pygments.formatters import HtmlFormatter, LatexFormatter
+19 from pygments.lexer import Lexer
+20 from pygments.lexers import (CLexer, Python3Lexer, PythonConsoleLexer, PythonLexer, RstLexer,
+21                              TextLexer, get_lexer_by_name, guess_lexer)
+22 from pygments.style import Style
+23 from pygments.styles import get_style_by_name
+24 from pygments.util import ClassNotFound
+25 
+26 from sphinx.locale import __
+27 from sphinx.pygments_styles import NoneStyle, SphinxStyle
+28 from sphinx.util import logging, texescape
+29 
+30 logger = logging.getLogger(__name__)
+31 
+32 lexers = {}  # type: Dict[str, Lexer]
+33 lexer_classes = {
+34     'none': partial(TextLexer, stripnl=False),
+35     'python': partial(PythonLexer, stripnl=False),
+36     'python3': partial(Python3Lexer, stripnl=False),
+37     'pycon': partial(PythonConsoleLexer, stripnl=False),
+38     'pycon3': partial(PythonConsoleLexer, python3=True, stripnl=False),
+39     'rest': partial(RstLexer, stripnl=False),
+40     'c': partial(CLexer, stripnl=False),
+41 }  # type: Dict[str, Lexer]
+42 
+43 
+44 escape_hl_chars = {ord('\\'): '\\PYGZbs{}',
+45                    ord('{'): '\\PYGZob{}',
+46                    ord('}'): '\\PYGZcb{}'}
+47 
+48 # used if Pygments is available
+49 # use textcomp quote to get a true single quote
+50 _LATEX_ADD_STYLES = r'''
+51 \renewcommand\PYGZsq{\textquotesingle}
+52 '''
+53 
+54 
+55 class PygmentsBridge:
+56     # Set these attributes if you want to have different Pygments formatters
+57     # than the default ones.
+58     html_formatter = HtmlFormatter
+59     latex_formatter = LatexFormatter
+60 
+61     def __init__(self, dest: str = 'html', stylename: str = 'sphinx',
+62                  latex_engine: str = None) -> None:
+63         self.dest = dest
+64         self.latex_engine = latex_engine
+65 
+66         style = self.get_style(stylename)
+67         self.formatter_args = {'style': style}  # type: Dict[str, Any]
+68         if dest == 'html':
+69             self.formatter = self.html_formatter
+70         else:
+71             self.formatter = self.latex_formatter
+72             self.formatter_args['commandprefix'] = 'PYG'
+73 
+74     def get_style(self, stylename: str) -> Style:
+75         if stylename is None or stylename == 'sphinx':
+76             return SphinxStyle
+77         elif stylename == 'none':
+78             return NoneStyle
+79         elif '.' in stylename:
+80             module, stylename = stylename.rsplit('.', 1)
+81             return getattr(import_module(module), stylename)
+82         else:
+83             return get_style_by_name(stylename)
+84 
+85     def get_formatter(self, **kwargs: Any) -> Formatter:
+86         kwargs.update(self.formatter_args)
+87         return self.formatter(**kwargs)
+88 
+89     def get_lexer(self, source: str, lang: str, opts: Dict = None,
+90                   force: bool = False, location: Any = None) -> Lexer:
+91         if not opts:
+92             opts = {}
+93 
+94         # find out which lexer to use
+95         if lang in ('py', 'python'):
+96             if source.startswith('>>>'):
+97                 # interactive session
+98                 lang = 'pycon'
+99             else:
+100                 lang = 'python'
+101         elif lang in ('py3', 'python3', 'default'):
+102             if source.startswith('>>>'):
+103                 lang = 'pycon3'
+104             else:
+105                 lang = 'python3'
+106 
+107         if lang in lexers:
+108             # just return custom lexers here (without installing raiseonerror filter)
+109             return lexers[lang]
+110         elif lang in lexer_classes:
+111             lexer = lexer_classes[lang](**opts)
+112         else:
+113             try:
+114                 if lang == 'guess':
+115                     lexer = guess_lexer(source, **opts)
+116                 else:
+117                     lexer = get_lexer_by_name(lang, **opts)
+118             except ClassNotFound:
+119                 logger.warning(__('Pygments lexer name %r is not known'), lang,
+120                                location=location)
+121                 lexer = lexer_classes['none'](**opts)
+122 
+123         if not force:
+124             lexer.add_filter('raiseonerror')
+125 
+126         return lexer
+127 
+128     def highlight_block(self, source: str, lang: str, opts: Dict = None,
+129                         force: bool = False, location: Any = None, **kwargs: Any) -> str:
+130         if not isinstance(source, str):
+131             source = source.decode()
+132 
+133         lexer = self.get_lexer(source, lang, opts, force, location)
+134 
+135         # highlight via Pygments
+136         formatter = self.get_formatter(**kwargs)
+137         try:
+138             hlsource = highlight(source, lexer, formatter)
+139         except ErrorToken:
+140             # this is most probably not the selected language,
+141             # so let it pass unhighlighted
+142             if lang == 'default':
+143                 pass  # automatic highlighting failed.
+144             else:
+145                 logger.warning(__('Could not lex literal_block as "%s". '
+146                                   'Highlighting skipped.'), lang,
+147                                type='misc', subtype='highlighting_failure',
+148                                location=location)
+149             lexer = self.get_lexer(source, 'none', opts, force, location)
+150             hlsource = highlight(source, lexer, formatter)
+151 
+152         if self.dest == 'html':
+153             return hlsource
+154         else:
+155             # MEMO: this is done to escape Unicode chars with non-Unicode engines
+156             return texescape.hlescape(hlsource, self.latex_engine)
+157 
+158     def get_stylesheet(self) -> str:
+159         formatter = self.get_formatter()
+160         if self.dest == 'html':
+161             return formatter.get_style_defs('.highlight')
+162         else:
+163             return formatter.get_style_defs() + _LATEX_ADD_STYLES
+
+</code><intended_behavior>This method should allow passing options to Pygments, specifically the ":startsinline:" option for PHP snippets.</intended_behavior>, <file>sphinx/config.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.config
+3     ~~~~~~~~~~~~~
+4 
+5     Build configuration file handling.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import traceback
+13 import types
+14 import warnings
+15 from collections import OrderedDict
+16 from os import getenv, path
+17 from typing import (Any, Callable, Dict, Generator, Iterator, List, NamedTuple, Set, Tuple,
+18                     Union)
+19 
+20 from sphinx.deprecation import RemovedInSphinx40Warning
+21 from sphinx.errors import ConfigError, ExtensionError
+22 from sphinx.locale import _, __
+23 from sphinx.util import logging
+24 from sphinx.util.i18n import format_date
+25 from sphinx.util.osutil import cd
+26 from sphinx.util.pycompat import execfile_
+27 from sphinx.util.tags import Tags
+28 from sphinx.util.typing import NoneType
+29 
+30 if False:
+31     # For type annotation
+32     from sphinx.application import Sphinx
+33     from sphinx.environment import BuildEnvironment
+34 
+35 logger = logging.getLogger(__name__)
+36 
+37 CONFIG_FILENAME = 'conf.py'
+38 UNSERIALIZABLE_TYPES = (type, types.ModuleType, types.FunctionType)
+39 copyright_year_re = re.compile(r'^((\d{4}-)?)(\d{4})(?=[ ,])')
+40 
+41 ConfigValue = NamedTuple('ConfigValue', [('name', str),
+42                                          ('value', Any),
+43                                          ('rebuild', Union[bool, str])])
+44 
+45 
+46 def is_serializable(obj: Any) -> bool:
+47     """Check if object is serializable or not."""
+48     if isinstance(obj, UNSERIALIZABLE_TYPES):
+49         return False
+50     elif isinstance(obj, dict):
+51         for key, value in obj.items():
+52             if not is_serializable(key) or not is_serializable(value):
+53                 return False
+54     elif isinstance(obj, (list, tuple, set)):
+55         return all(is_serializable(i) for i in obj)
+56 
+57     return True
+58 
+59 
+60 class ENUM:
+61     """represents the config value should be a one of candidates.
+62 
+63     Example:
+64         app.add_config_value('latex_show_urls', 'no', None, ENUM('no', 'footnote', 'inline'))
+65     """
+66     def __init__(self, *candidates: str) -> None:
+67         self.candidates = candidates
+68 
+69     def match(self, value: Union[str, List, Tuple]) -> bool:
+70         if isinstance(value, (list, tuple)):
+71             return all(item in self.candidates for item in value)
+72         else:
+73             return value in self.candidates
+74 
+75 
+76 # RemovedInSphinx40Warning
+77 string_classes = [str]  # type: List
+78 
+79 
+80 class Config:
+81     """Configuration file abstraction.
+82 
+83     The config object makes the values of all config values available as
+84     attributes.
+85 
+86     It is exposed via the :py:attr:`sphinx.application.Application.config` and
+87     :py:attr:`sphinx.environment.Environment.config` attributes. For example,
+88     to get the value of :confval:`language`, use either ``app.config.language``
+89     or ``env.config.language``.
+90     """
+91 
+92     # the values are: (default, what needs to be rebuilt if changed)
+93 
+94     # If you add a value here, don't forget to include it in the
+95     # quickstart.py file template as well as in the docs!
+96 
+97     config_values = {
+98         # general options
+99         'project': ('Python', 'env', []),
+100         'author': ('unknown', 'env', []),
+101         'project_copyright': ('', 'html', [str]),
+102         'copyright': (lambda c: c.project_copyright, 'html', [str]),
+103         'version': ('', 'env', []),
+104         'release': ('', 'env', []),
+105         'today': ('', 'env', []),
+106         # the real default is locale-dependent
+107         'today_fmt': (None, 'env', [str]),
+108 
+109         'language': (None, 'env', [str]),
+110         'locale_dirs': (['locales'], 'env', []),
+111         'figure_language_filename': ('{root}.{language}{ext}', 'env', [str]),
+112 
+113         'master_doc': ('index', 'env', []),
+114         'source_suffix': ({'.rst': 'restructuredtext'}, 'env', Any),
+115         'source_encoding': ('utf-8-sig', 'env', []),
+116         'source_parsers': ({}, 'env', []),
+117         'exclude_patterns': ([], 'env', []),
+118         'default_role': (None, 'env', [str]),
+119         'add_function_parentheses': (True, 'env', []),
+120         'add_module_names': (True, 'env', []),
+121         'trim_footnote_reference_space': (False, 'env', []),
+122         'show_authors': (False, 'env', []),
+123         'pygments_style': (None, 'html', [str]),
+124         'highlight_language': ('default', 'env', []),
+125         'highlight_options': ({}, 'env', []),
+126         'templates_path': ([], 'html', []),
+127         'template_bridge': (None, 'html', [str]),
+128         'keep_warnings': (False, 'env', []),
+129         'suppress_warnings': ([], 'env', []),
+130         'modindex_common_prefix': ([], 'html', []),
+131         'rst_epilog': (None, 'env', [str]),
+132         'rst_prolog': (None, 'env', [str]),
+133         'trim_doctest_flags': (True, 'env', []),
+134         'primary_domain': ('py', 'env', [NoneType]),
+135         'needs_sphinx': (None, None, [str]),
+136         'needs_extensions': ({}, None, []),
+137         'manpages_url': (None, 'env', []),
+138         'nitpicky': (False, None, []),
+139         'nitpick_ignore': ([], None, []),
+140         'numfig': (False, 'env', []),
+141         'numfig_secnum_depth': (1, 'env', []),
+142         'numfig_format': ({}, 'env', []),  # will be initialized in init_numfig_format()
+143 
+144         'math_number_all': (False, 'env', []),
+145         'math_eqref_format': (None, 'env', [str]),
+146         'math_numfig': (True, 'env', []),
+147         'tls_verify': (True, 'env', []),
+148         'tls_cacerts': (None, 'env', []),
+149         'user_agent': (None, 'env', [str]),
+150         'smartquotes': (True, 'env', []),
+151         'smartquotes_action': ('qDe', 'env', []),
+152         'smartquotes_excludes': ({'languages': ['ja'],
+153                                   'builders': ['man', 'text']},
+154                                  'env', []),
+155     }  # type: Dict[str, Tuple]
+156 
+157     def __init__(self, config: Dict[str, Any] = {}, overrides: Dict[str, Any] = {}) -> None:
+158         self.overrides = dict(overrides)
+159         self.values = Config.config_values.copy()
+160         self._raw_config = config
+161         self.setup = config.get('setup', None)  # type: Callable
+162 
+163         if 'extensions' in self.overrides:
+164             if isinstance(self.overrides['extensions'], str):
+165                 config['extensions'] = self.overrides.pop('extensions').split(',')
+166             else:
+167                 config['extensions'] = self.overrides.pop('extensions')
+168         self.extensions = config.get('extensions', [])  # type: List[str]
+169 
+170     @classmethod
+171     def read(cls, confdir: str, overrides: Dict = None, tags: Tags = None) -> "Config":
+172         """Create a Config object from configuration file."""
+173         filename = path.join(confdir, CONFIG_FILENAME)
+174         namespace = eval_config_file(filename, tags)
+175         return cls(namespace, overrides or {})
+176 
+177     def convert_overrides(self, name: str, value: Any) -> Any:
+178         if not isinstance(value, str):
+179             return value
+180         else:
+181             defvalue = self.values[name][0]
+182             if self.values[name][2] == Any:
+183                 return value
+184             elif self.values[name][2] == {bool, str}:
+185                 if value == '0':
+186                     # given falsy string from command line option
+187                     return False
+188                 elif value == '1':
+189                     return True
+190                 else:
+191                     return value
+192             elif type(defvalue) is bool or self.values[name][2] == [bool]:
+193                 if value == '0':
+194                     # given falsy string from command line option
+195                     return False
+196                 else:
+197                     return bool(value)
+198             elif isinstance(defvalue, dict):
+199                 raise ValueError(__('cannot override dictionary config setting %r, '
+200                                     'ignoring (use %r to set individual elements)') %
+201                                  (name, name + '.key=value'))
+202             elif isinstance(defvalue, list):
+203                 return value.split(',')
+204             elif isinstance(defvalue, int):
+205                 try:
+206                     return int(value)
+207                 except ValueError as exc:
+208                     raise ValueError(__('invalid number %r for config value %r, ignoring') %
+209                                      (value, name)) from exc
+210             elif hasattr(defvalue, '__call__'):
+211                 return value
+212             elif defvalue is not None and not isinstance(defvalue, str):
+213                 raise ValueError(__('cannot override config setting %r with unsupported '
+214                                     'type, ignoring') % name)
+215             else:
+216                 return value
+217 
+218     def pre_init_values(self) -> None:
+219         """
+220         Initialize some limited config variables before initialize i18n and loading extensions
+221         """
+222         variables = ['needs_sphinx', 'suppress_warnings', 'language', 'locale_dirs']
+223         for name in variables:
+224             try:
+225                 if name in self.overrides:
+226                     self.__dict__[name] = self.convert_overrides(name, self.overrides[name])
+227                 elif name in self._raw_config:
+228                     self.__dict__[name] = self._raw_config[name]
+229             except ValueError as exc:
+230                 logger.warning("%s", exc)
+231 
+232     def init_values(self) -> None:
+233         config = self._raw_config
+234         for valname, value in self.overrides.items():
+235             try:
+236                 if '.' in valname:
+237                     realvalname, key = valname.split('.', 1)
+238                     config.setdefault(realvalname, {})[key] = value
+239                     continue
+240                 elif valname not in self.values:
+241                     logger.warning(__('unknown config value %r in override, ignoring'),
+242                                    valname)
+243                     continue
+244                 if isinstance(value, str):
+245                     config[valname] = self.convert_overrides(valname, value)
+246                 else:
+247                     config[valname] = value
+248             except ValueError as exc:
+249                 logger.warning("%s", exc)
+250         for name in config:
+251             if name in self.values:
+252                 self.__dict__[name] = config[name]
+253 
+254     def __getattr__(self, name: str) -> Any:
+255         if name.startswith('_'):
+256             raise AttributeError(name)
+257         if name not in self.values:
+258             raise AttributeError(__('No such config value: %s') % name)
+259         default = self.values[name][0]
+260         if hasattr(default, '__call__'):
+261             return default(self)
+262         return default
+263 
+264     def __getitem__(self, name: str) -> str:
+265         return getattr(self, name)
+266 
+267     def __setitem__(self, name: str, value: Any) -> None:
+268         setattr(self, name, value)
+269 
+270     def __delitem__(self, name: str) -> None:
+271         delattr(self, name)
+272 
+273     def __contains__(self, name: str) -> bool:
+274         return name in self.values
+275 
+276     def __iter__(self) -> Generator[ConfigValue, None, None]:
+277         for name, value in self.values.items():
+278             yield ConfigValue(name, getattr(self, name), value[1])
+279 
+280     def add(self, name: str, default: Any, rebuild: Union[bool, str], types: Any) -> None:
+281         if name in self.values:
+282             raise ExtensionError(__('Config value %r already present') % name)
+283         else:
+284             self.values[name] = (default, rebuild, types)
+285 
+286     def filter(self, rebuild: Union[str, List[str]]) -> Iterator[ConfigValue]:
+287         if isinstance(rebuild, str):
+288             rebuild = [rebuild]
+289         return (value for value in self if value.rebuild in rebuild)
+290 
+291     def __getstate__(self) -> Dict:
+292         """Obtains serializable data for pickling."""
+293         # remove potentially pickling-problematic values from config
+294         __dict__ = {}
+295         for key, value in self.__dict__.items():
+296             if key.startswith('_') or not is_serializable(value):
+297                 pass
+298             else:
+299                 __dict__[key] = value
+300 
+301         # create a picklable copy of values list
+302         __dict__['values'] = {}
+303         for key, value in self.values.items():
+304             real_value = getattr(self, key)
+305             if not is_serializable(real_value):
+306                 # omit unserializable value
+307                 real_value = None
+308 
+309             # types column is also omitted
+310             __dict__['values'][key] = (real_value, value[1], None)
+311 
+312         return __dict__
+313 
+314     def __setstate__(self, state: Dict) -> None:
+315         self.__dict__.update(state)
+316 
+317 
+318 def eval_config_file(filename: str, tags: Tags) -> Dict[str, Any]:
+319     """Evaluate a config file."""
+320     namespace = {}  # type: Dict[str, Any]
+321     namespace['__file__'] = filename
+322     namespace['tags'] = tags
+323 
+324     with cd(path.dirname(filename)):
+325         # during executing config file, current dir is changed to ``confdir``.
+326         try:
+327             execfile_(filename, namespace)
+328         except SyntaxError as err:
+329             msg = __("There is a syntax error in your configuration file: %s\n")
+330             raise ConfigError(msg % err) from err
+331         except SystemExit as exc:
+332             msg = __("The configuration file (or one of the modules it imports) "
+333                      "called sys.exit()")
+334             raise ConfigError(msg) from exc
+335         except ConfigError:
+336             # pass through ConfigError from conf.py as is.  It will be shown in console.
+337             raise
+338         except Exception as exc:
+339             msg = __("There is a programmable error in your configuration file:\n\n%s")
+340             raise ConfigError(msg % traceback.format_exc()) from exc
+341 
+342     return namespace
+343 
+344 
+345 def convert_source_suffix(app: "Sphinx", config: Config) -> None:
+346     """This converts old styled source_suffix to new styled one.
+347 
+348     * old style: str or list
+349     * new style: a dict which maps from fileext to filetype
+350     """
+351     source_suffix = config.source_suffix
+352     if isinstance(source_suffix, str):
+353         # if str, considers as default filetype (None)
+354         #
+355         # The default filetype is determined on later step.
+356         # By default, it is considered as restructuredtext.
+357         config.source_suffix = OrderedDict({source_suffix: None})  # type: ignore
+358     elif isinstance(source_suffix, (list, tuple)):
+359         # if list, considers as all of them are default filetype
+360         config.source_suffix = OrderedDict([(s, None) for s in source_suffix])  # type: ignore  # NOQA
+361     elif isinstance(source_suffix, dict):
+362         # if dict, convert it to OrderedDict
+363         config.source_suffix = OrderedDict(config.source_suffix)  # type: ignore
+364     else:
+365         logger.warning(__("The config value `source_suffix' expects "
+366                           "a string, list of strings, or dictionary. "
+367                           "But `%r' is given." % source_suffix))
+368 
+369 
+370 def init_numfig_format(app: "Sphinx", config: Config) -> None:
+371     """Initialize :confval:`numfig_format`."""
+372     numfig_format = {'section': _('Section %s'),
+373                      'figure': _('Fig. %s'),
+374                      'table': _('Table %s'),
+375                      'code-block': _('Listing %s')}
+376 
+377     # override default labels by configuration
+378     numfig_format.update(config.numfig_format)
+379     config.numfig_format = numfig_format  # type: ignore
+380 
+381 
+382 def correct_copyright_year(app: "Sphinx", config: Config) -> None:
+383     """correct values of copyright year that are not coherent with
+384     the SOURCE_DATE_EPOCH environment variable (if set)
+385 
+386     See https://reproducible-builds.org/specs/source-date-epoch/
+387     """
+388     if getenv('SOURCE_DATE_EPOCH') is not None:
+389         for k in ('copyright', 'epub_copyright'):
+390             if k in config:
+391                 replace = r'\g<1>%s' % format_date('%Y')
+392                 config[k] = copyright_year_re.sub(replace, config[k])
+393 
+394 
+395 def check_confval_types(app: "Sphinx", config: Config) -> None:
+396     """check all values for deviation from the default value's type, since
+397     that can result in TypeErrors all over the place NB.
+398     """
+399     for confval in config:
+400         default, rebuild, annotations = config.values[confval.name]
+401 
+402         if hasattr(default, '__call__'):
+403             default = default(config)  # evaluate default value
+404         if default is None and not annotations:
+405             continue  # neither inferrable nor expliclitly annotated types
+406 
+407         if annotations is Any:
+408             # any type of value is accepted
+409             pass
+410         elif isinstance(annotations, ENUM):
+411             if not annotations.match(confval.value):
+412                 msg = __("The config value `{name}` has to be a one of {candidates}, "
+413                          "but `{current}` is given.")
+414                 logger.warning(msg.format(name=confval.name,
+415                                           current=confval.value,
+416                                           candidates=annotations.candidates))
+417         else:
+418             if type(confval.value) is type(default):
+419                 continue
+420             if type(confval.value) in annotations:
+421                 continue
+422 
+423             common_bases = (set(type(confval.value).__bases__ + (type(confval.value),)) &
+424                             set(type(default).__bases__))
+425             common_bases.discard(object)
+426             if common_bases:
+427                 continue  # at least we share a non-trivial base class
+428 
+429             if annotations:
+430                 msg = __("The config value `{name}' has type `{current.__name__}'; "
+431                          "expected {permitted}.")
+432                 wrapped_annotations = ["`{}'".format(c.__name__) for c in annotations]
+433                 if len(wrapped_annotations) > 2:
+434                     permitted = "{}, or {}".format(
+435                         ", ".join(wrapped_annotations[:-1]),
+436                         wrapped_annotations[-1])
+437                 else:
+438                     permitted = " or ".join(wrapped_annotations)
+439                 logger.warning(msg.format(name=confval.name,
+440                                           current=type(confval.value),
+441                                           permitted=permitted))
+442             else:
+443                 msg = __("The config value `{name}' has type `{current.__name__}', "
+444                          "defaults to `{default.__name__}'.")
+445                 logger.warning(msg.format(name=confval.name,
+446                                           current=type(confval.value),
+447                                           default=type(default)))
+448 
+449 
+450 def check_unicode(config: Config) -> None:
+451     """check all string values for non-ASCII characters in bytestrings,
+452     since that can result in UnicodeErrors all over the place
+453     """
+454     warnings.warn('sphinx.config.check_unicode() is deprecated.',
+455                   RemovedInSphinx40Warning, stacklevel=2)
+456 
+457     nonascii_re = re.compile(br'[\x80-\xff]')
+458 
+459     for name, value in config._raw_config.items():
+460         if isinstance(value, bytes) and nonascii_re.search(value):
+461             logger.warning(__('the config value %r is set to a string with non-ASCII '
+462                               'characters; this can lead to Unicode errors occurring. '
+463                               'Please use Unicode strings, e.g. %r.'), name, 'Content')
+464 
+465 
+466 def check_primary_domain(app: "Sphinx", config: Config) -> None:
+467     primary_domain = config.primary_domain
+468     if primary_domain and not app.registry.has_domain(primary_domain):
+469         logger.warning(__('primary_domain %r not found, ignored.'), primary_domain)
+470         config.primary_domain = None  # type: ignore
+471 
+472 
+473 def check_master_doc(app: "Sphinx", env: "BuildEnvironment", added: Set[str],
+474                      changed: Set[str], removed: Set[str]) -> Set[str]:
+475     """Adjust master_doc to 'contents' to support an old project which does not have
+476     no master_doc setting.
+477     """
+478     if (app.config.master_doc == 'index' and
+479             'index' not in app.project.docnames and
+480             'contents' in app.project.docnames):
+481         logger.warning(__('Since v2.0, Sphinx uses "index" as master_doc by default. '
+482                           'Please add "master_doc = \'contents\'" to your conf.py.'))
+483         app.config.master_doc = "contents"  # type: ignore
+484 
+485     return changed
+486 
+487 
+488 def setup(app: "Sphinx") -> Dict[str, Any]:
+489     app.connect('config-inited', convert_source_suffix, priority=800)
+490     app.connect('config-inited', init_numfig_format, priority=800)
+491     app.connect('config-inited', correct_copyright_year, priority=800)
+492     app.connect('config-inited', check_confval_types, priority=800)
+493     app.connect('config-inited', check_primary_domain, priority=800)
+494     app.connect('env-get-outdated', check_master_doc)
+495 
+496     return {
+497         'version': 'builtin',
+498         'parallel_read_safe': True,
+499         'parallel_write_safe': True,
+500     }
+
+</code><intended_behavior>This method should store and handle default options for Pygments, allowing them to be overridden by sourcecode block options.</intended_behavior>]
+2025-11-17 15:21:57.819 | INFO     | Search completed. Bug locations: [<file>sphinx/highlighting.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.highlighting
+3     ~~~~~~~~~~~~~~~~~~~
+4 
+5     Highlight code blocks using Pygments.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 from functools import partial
+12 from importlib import import_module
+13 from typing import Any, Dict
+14 
+15 from pygments import highlight
+16 from pygments.filters import ErrorToken
+17 from pygments.formatter import Formatter
+18 from pygments.formatters import HtmlFormatter, LatexFormatter
+19 from pygments.lexer import Lexer
+20 from pygments.lexers import (CLexer, Python3Lexer, PythonConsoleLexer, PythonLexer, RstLexer,
+21                              TextLexer, get_lexer_by_name, guess_lexer)
+22 from pygments.style import Style
+23 from pygments.styles import get_style_by_name
+24 from pygments.util import ClassNotFound
+25 
+26 from sphinx.locale import __
+27 from sphinx.pygments_styles import NoneStyle, SphinxStyle
+28 from sphinx.util import logging, texescape
+29 
+30 logger = logging.getLogger(__name__)
+31 
+32 lexers = {}  # type: Dict[str, Lexer]
+33 lexer_classes = {
+34     'none': partial(TextLexer, stripnl=False),
+35     'python': partial(PythonLexer, stripnl=False),
+36     'python3': partial(Python3Lexer, stripnl=False),
+37     'pycon': partial(PythonConsoleLexer, stripnl=False),
+38     'pycon3': partial(PythonConsoleLexer, python3=True, stripnl=False),
+39     'rest': partial(RstLexer, stripnl=False),
+40     'c': partial(CLexer, stripnl=False),
+41 }  # type: Dict[str, Lexer]
+42 
+43 
+44 escape_hl_chars = {ord('\\'): '\\PYGZbs{}',
+45                    ord('{'): '\\PYGZob{}',
+46                    ord('}'): '\\PYGZcb{}'}
+47 
+48 # used if Pygments is available
+49 # use textcomp quote to get a true single quote
+50 _LATEX_ADD_STYLES = r'''
+51 \renewcommand\PYGZsq{\textquotesingle}
+52 '''
+53 
+54 
+55 class PygmentsBridge:
+56     # Set these attributes if you want to have different Pygments formatters
+57     # than the default ones.
+58     html_formatter = HtmlFormatter
+59     latex_formatter = LatexFormatter
+60 
+61     def __init__(self, dest: str = 'html', stylename: str = 'sphinx',
+62                  latex_engine: str = None) -> None:
+63         self.dest = dest
+64         self.latex_engine = latex_engine
+65 
+66         style = self.get_style(stylename)
+67         self.formatter_args = {'style': style}  # type: Dict[str, Any]
+68         if dest == 'html':
+69             self.formatter = self.html_formatter
+70         else:
+71             self.formatter = self.latex_formatter
+72             self.formatter_args['commandprefix'] = 'PYG'
+73 
+74     def get_style(self, stylename: str) -> Style:
+75         if stylename is None or stylename == 'sphinx':
+76             return SphinxStyle
+77         elif stylename == 'none':
+78             return NoneStyle
+79         elif '.' in stylename:
+80             module, stylename = stylename.rsplit('.', 1)
+81             return getattr(import_module(module), stylename)
+82         else:
+83             return get_style_by_name(stylename)
+84 
+85     def get_formatter(self, **kwargs: Any) -> Formatter:
+86         kwargs.update(self.formatter_args)
+87         return self.formatter(**kwargs)
+88 
+89     def get_lexer(self, source: str, lang: str, opts: Dict = None,
+90                   force: bool = False, location: Any = None) -> Lexer:
+91         if not opts:
+92             opts = {}
+93 
+94         # find out which lexer to use
+95         if lang in ('py', 'python'):
+96             if source.startswith('>>>'):
+97                 # interactive session
+98                 lang = 'pycon'
+99             else:
+100                 lang = 'python'
+101         elif lang in ('py3', 'python3', 'default'):
+102             if source.startswith('>>>'):
+103                 lang = 'pycon3'
+104             else:
+105                 lang = 'python3'
+106 
+107         if lang in lexers:
+108             # just return custom lexers here (without installing raiseonerror filter)
+109             return lexers[lang]
+110         elif lang in lexer_classes:
+111             lexer = lexer_classes[lang](**opts)
+112         else:
+113             try:
+114                 if lang == 'guess':
+115                     lexer = guess_lexer(source, **opts)
+116                 else:
+117                     lexer = get_lexer_by_name(lang, **opts)
+118             except ClassNotFound:
+119                 logger.warning(__('Pygments lexer name %r is not known'), lang,
+120                                location=location)
+121                 lexer = lexer_classes['none'](**opts)
+122 
+123         if not force:
+124             lexer.add_filter('raiseonerror')
+125 
+126         return lexer
+127 
+128     def highlight_block(self, source: str, lang: str, opts: Dict = None,
+129                         force: bool = False, location: Any = None, **kwargs: Any) -> str:
+130         if not isinstance(source, str):
+131             source = source.decode()
+132 
+133         lexer = self.get_lexer(source, lang, opts, force, location)
+134 
+135         # highlight via Pygments
+136         formatter = self.get_formatter(**kwargs)
+137         try:
+138             hlsource = highlight(source, lexer, formatter)
+139         except ErrorToken:
+140             # this is most probably not the selected language,
+141             # so let it pass unhighlighted
+142             if lang == 'default':
+143                 pass  # automatic highlighting failed.
+144             else:
+145                 logger.warning(__('Could not lex literal_block as "%s". '
+146                                   'Highlighting skipped.'), lang,
+147                                type='misc', subtype='highlighting_failure',
+148                                location=location)
+149             lexer = self.get_lexer(source, 'none', opts, force, location)
+150             hlsource = highlight(source, lexer, formatter)
+151 
+152         if self.dest == 'html':
+153             return hlsource
+154         else:
+155             # MEMO: this is done to escape Unicode chars with non-Unicode engines
+156             return texescape.hlescape(hlsource, self.latex_engine)
+157 
+158     def get_stylesheet(self) -> str:
+159         formatter = self.get_formatter()
+160         if self.dest == 'html':
+161             return formatter.get_style_defs('.highlight')
+162         else:
+163             return formatter.get_style_defs() + _LATEX_ADD_STYLES
+
+</code><intended_behavior>This method should allow passing options to Pygments, specifically the ":startsinline:" option for PHP snippets.</intended_behavior>, <file>sphinx/config.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.config
+3     ~~~~~~~~~~~~~
+4 
+5     Build configuration file handling.
+6 
+7     :copyright: Copyright 2007-2021 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import traceback
+13 import types
+14 import warnings
+15 from collections import OrderedDict
+16 from os import getenv, path
+17 from typing import (Any, Callable, Dict, Generator, Iterator, List, NamedTuple, Set, Tuple,
+18                     Union)
+19 
+20 from sphinx.deprecation import RemovedInSphinx40Warning
+21 from sphinx.errors import ConfigError, ExtensionError
+22 from sphinx.locale import _, __
+23 from sphinx.util import logging
+24 from sphinx.util.i18n import format_date
+25 from sphinx.util.osutil import cd
+26 from sphinx.util.pycompat import execfile_
+27 from sphinx.util.tags import Tags
+28 from sphinx.util.typing import NoneType
+29 
+30 if False:
+31     # For type annotation
+32     from sphinx.application import Sphinx
+33     from sphinx.environment import BuildEnvironment
+34 
+35 logger = logging.getLogger(__name__)
+36 
+37 CONFIG_FILENAME = 'conf.py'
+38 UNSERIALIZABLE_TYPES = (type, types.ModuleType, types.FunctionType)
+39 copyright_year_re = re.compile(r'^((\d{4}-)?)(\d{4})(?=[ ,])')
+40 
+41 ConfigValue = NamedTuple('ConfigValue', [('name', str),
+42                                          ('value', Any),
+43                                          ('rebuild', Union[bool, str])])
+44 
+45 
+46 def is_serializable(obj: Any) -> bool:
+47     """Check if object is serializable or not."""
+48     if isinstance(obj, UNSERIALIZABLE_TYPES):
+49         return False
+50     elif isinstance(obj, dict):
+51         for key, value in obj.items():
+52             if not is_serializable(key) or not is_serializable(value):
+53                 return False
+54     elif isinstance(obj, (list, tuple, set)):
+55         return all(is_serializable(i) for i in obj)
+56 
+57     return True
+58 
+59 
+60 class ENUM:
+61     """represents the config value should be a one of candidates.
+62 
+63     Example:
+64         app.add_config_value('latex_show_urls', 'no', None, ENUM('no', 'footnote', 'inline'))
+65     """
+66     def __init__(self, *candidates: str) -> None:
+67         self.candidates = candidates
+68 
+69     def match(self, value: Union[str, List, Tuple]) -> bool:
+70         if isinstance(value, (list, tuple)):
+71             return all(item in self.candidates for item in value)
+72         else:
+73             return value in self.candidates
+74 
+75 
+76 # RemovedInSphinx40Warning
+77 string_classes = [str]  # type: List
+78 
+79 
+80 class Config:
+81     """Configuration file abstraction.
+82 
+83     The config object makes the values of all config values available as
+84     attributes.
+85 
+86     It is exposed via the :py:attr:`sphinx.application.Application.config` and
+87     :py:attr:`sphinx.environment.Environment.config` attributes. For example,
+88     to get the value of :confval:`language`, use either ``app.config.language``
+89     or ``env.config.language``.
+90     """
+91 
+92     # the values are: (default, what needs to be rebuilt if changed)
+93 
+94     # If you add a value here, don't forget to include it in the
+95     # quickstart.py file template as well as in the docs!
+96 
+97     config_values = {
+98         # general options
+99         'project': ('Python', 'env', []),
+100         'author': ('unknown', 'env', []),
+101         'project_copyright': ('', 'html', [str]),
+102         'copyright': (lambda c: c.project_copyright, 'html', [str]),
+103         'version': ('', 'env', []),
+104         'release': ('', 'env', []),
+105         'today': ('', 'env', []),
+106         # the real default is locale-dependent
+107         'today_fmt': (None, 'env', [str]),
+108 
+109         'language': (None, 'env', [str]),
+110         'locale_dirs': (['locales'], 'env', []),
+111         'figure_language_filename': ('{root}.{language}{ext}', 'env', [str]),
+112 
+113         'master_doc': ('index', 'env', []),
+114         'source_suffix': ({'.rst': 'restructuredtext'}, 'env', Any),
+115         'source_encoding': ('utf-8-sig', 'env', []),
+116         'source_parsers': ({}, 'env', []),
+117         'exclude_patterns': ([], 'env', []),
+118         'default_role': (None, 'env', [str]),
+119         'add_function_parentheses': (True, 'env', []),
+120         'add_module_names': (True, 'env', []),
+121         'trim_footnote_reference_space': (False, 'env', []),
+122         'show_authors': (False, 'env', []),
+123         'pygments_style': (None, 'html', [str]),
+124         'highlight_language': ('default', 'env', []),
+125         'highlight_options': ({}, 'env', []),
+126         'templates_path': ([], 'html', []),
+127         'template_bridge': (None, 'html', [str]),
+128         'keep_warnings': (False, 'env', []),
+129         'suppress_warnings': ([], 'env', []),
+130         'modindex_common_prefix': ([], 'html', []),
+131         'rst_epilog': (None, 'env', [str]),
+132         'rst_prolog': (None, 'env', [str]),
+133         'trim_doctest_flags': (True, 'env', []),
+134         'primary_domain': ('py', 'env', [NoneType]),
+135         'needs_sphinx': (None, None, [str]),
+136         'needs_extensions': ({}, None, []),
+137         'manpages_url': (None, 'env', []),
+138         'nitpicky': (False, None, []),
+139         'nitpick_ignore': ([], None, []),
+140         'numfig': (False, 'env', []),
+141         'numfig_secnum_depth': (1, 'env', []),
+142         'numfig_format': ({}, 'env', []),  # will be initialized in init_numfig_format()
+143 
+144         'math_number_all': (False, 'env', []),
+145         'math_eqref_format': (None, 'env', [str]),
+146         'math_numfig': (True, 'env', []),
+147         'tls_verify': (True, 'env', []),
+148         'tls_cacerts': (None, 'env', []),
+149         'user_agent': (None, 'env', [str]),
+150         'smartquotes': (True, 'env', []),
+151         'smartquotes_action': ('qDe', 'env', []),
+152         'smartquotes_excludes': ({'languages': ['ja'],
+153                                   'builders': ['man', 'text']},
+154                                  'env', []),
+155     }  # type: Dict[str, Tuple]
+156 
+157     def __init__(self, config: Dict[str, Any] = {}, overrides: Dict[str, Any] = {}) -> None:
+158         self.overrides = dict(overrides)
+159         self.values = Config.config_values.copy()
+160         self._raw_config = config
+161         self.setup = config.get('setup', None)  # type: Callable
+162 
+163         if 'extensions' in self.overrides:
+164             if isinstance(self.overrides['extensions'], str):
+165                 config['extensions'] = self.overrides.pop('extensions').split(',')
+166             else:
+167                 config['extensions'] = self.overrides.pop('extensions')
+168         self.extensions = config.get('extensions', [])  # type: List[str]
+169 
+170     @classmethod
+171     def read(cls, confdir: str, overrides: Dict = None, tags: Tags = None) -> "Config":
+172         """Create a Config object from configuration file."""
+173         filename = path.join(confdir, CONFIG_FILENAME)
+174         namespace = eval_config_file(filename, tags)
+175         return cls(namespace, overrides or {})
+176 
+177     def convert_overrides(self, name: str, value: Any) -> Any:
+178         if not isinstance(value, str):
+179             return value
+180         else:
+181             defvalue = self.values[name][0]
+182             if self.values[name][2] == Any:
+183                 return value
+184             elif self.values[name][2] == {bool, str}:
+185                 if value == '0':
+186                     # given falsy string from command line option
+187                     return False
+188                 elif value == '1':
+189                     return True
+190                 else:
+191                     return value
+192             elif type(defvalue) is bool or self.values[name][2] == [bool]:
+193                 if value == '0':
+194                     # given falsy string from command line option
+195                     return False
+196                 else:
+197                     return bool(value)
+198             elif isinstance(defvalue, dict):
+199                 raise ValueError(__('cannot override dictionary config setting %r, '
+200                                     'ignoring (use %r to set individual elements)') %
+201                                  (name, name + '.key=value'))
+202             elif isinstance(defvalue, list):
+203                 return value.split(',')
+204             elif isinstance(defvalue, int):
+205                 try:
+206                     return int(value)
+207                 except ValueError as exc:
+208                     raise ValueError(__('invalid number %r for config value %r, ignoring') %
+209                                      (value, name)) from exc
+210             elif hasattr(defvalue, '__call__'):
+211                 return value
+212             elif defvalue is not None and not isinstance(defvalue, str):
+213                 raise ValueError(__('cannot override config setting %r with unsupported '
+214                                     'type, ignoring') % name)
+215             else:
+216                 return value
+217 
+218     def pre_init_values(self) -> None:
+219         """
+220         Initialize some limited config variables before initialize i18n and loading extensions
+221         """
+222         variables = ['needs_sphinx', 'suppress_warnings', 'language', 'locale_dirs']
+223         for name in variables:
+224             try:
+225                 if name in self.overrides:
+226                     self.__dict__[name] = self.convert_overrides(name, self.overrides[name])
+227                 elif name in self._raw_config:
+228                     self.__dict__[name] = self._raw_config[name]
+229             except ValueError as exc:
+230                 logger.warning("%s", exc)
+231 
+232     def init_values(self) -> None:
+233         config = self._raw_config
+234         for valname, value in self.overrides.items():
+235             try:
+236                 if '.' in valname:
+237                     realvalname, key = valname.split('.', 1)
+238                     config.setdefault(realvalname, {})[key] = value
+239                     continue
+240                 elif valname not in self.values:
+241                     logger.warning(__('unknown config value %r in override, ignoring'),
+242                                    valname)
+243                     continue
+244                 if isinstance(value, str):
+245                     config[valname] = self.convert_overrides(valname, value)
+246                 else:
+247                     config[valname] = value
+248             except ValueError as exc:
+249                 logger.warning("%s", exc)
+250         for name in config:
+251             if name in self.values:
+252                 self.__dict__[name] = config[name]
+253 
+254     def __getattr__(self, name: str) -> Any:
+255         if name.startswith('_'):
+256             raise AttributeError(name)
+257         if name not in self.values:
+258             raise AttributeError(__('No such config value: %s') % name)
+259         default = self.values[name][0]
+260         if hasattr(default, '__call__'):
+261             return default(self)
+262         return default
+263 
+264     def __getitem__(self, name: str) -> str:
+265         return getattr(self, name)
+266 
+267     def __setitem__(self, name: str, value: Any) -> None:
+268         setattr(self, name, value)
+269 
+270     def __delitem__(self, name: str) -> None:
+271         delattr(self, name)
+272 
+273     def __contains__(self, name: str) -> bool:
+274         return name in self.values
+275 
+276     def __iter__(self) -> Generator[ConfigValue, None, None]:
+277         for name, value in self.values.items():
+278             yield ConfigValue(name, getattr(self, name), value[1])
+279 
+280     def add(self, name: str, default: Any, rebuild: Union[bool, str], types: Any) -> None:
+281         if name in self.values:
+282             raise ExtensionError(__('Config value %r already present') % name)
+283         else:
+284             self.values[name] = (default, rebuild, types)
+285 
+286     def filter(self, rebuild: Union[str, List[str]]) -> Iterator[ConfigValue]:
+287         if isinstance(rebuild, str):
+288             rebuild = [rebuild]
+289         return (value for value in self if value.rebuild in rebuild)
+290 
+291     def __getstate__(self) -> Dict:
+292         """Obtains serializable data for pickling."""
+293         # remove potentially pickling-problematic values from config
+294         __dict__ = {}
+295         for key, value in self.__dict__.items():
+296             if key.startswith('_') or not is_serializable(value):
+297                 pass
+298             else:
+299                 __dict__[key] = value
+300 
+301         # create a picklable copy of values list
+302         __dict__['values'] = {}
+303         for key, value in self.values.items():
+304             real_value = getattr(self, key)
+305             if not is_serializable(real_value):
+306                 # omit unserializable value
+307                 real_value = None
+308 
+309             # types column is also omitted
+310             __dict__['values'][key] = (real_value, value[1], None)
+311 
+312         return __dict__
+313 
+314     def __setstate__(self, state: Dict) -> None:
+315         self.__dict__.update(state)
+316 
+317 
+318 def eval_config_file(filename: str, tags: Tags) -> Dict[str, Any]:
+319     """Evaluate a config file."""
+320     namespace = {}  # type: Dict[str, Any]
+321     namespace['__file__'] = filename
+322     namespace['tags'] = tags
+323 
+324     with cd(path.dirname(filename)):
+325         # during executing config file, current dir is changed to ``confdir``.
+326         try:
+327             execfile_(filename, namespace)
+328         except SyntaxError as err:
+329             msg = __("There is a syntax error in your configuration file: %s\n")
+330             raise ConfigError(msg % err) from err
+331         except SystemExit as exc:
+332             msg = __("The configuration file (or one of the modules it imports) "
+333                      "called sys.exit()")
+334             raise ConfigError(msg) from exc
+335         except ConfigError:
+336             # pass through ConfigError from conf.py as is.  It will be shown in console.
+337             raise
+338         except Exception as exc:
+339             msg = __("There is a programmable error in your configuration file:\n\n%s")
+340             raise ConfigError(msg % traceback.format_exc()) from exc
+341 
+342     return namespace
+343 
+344 
+345 def convert_source_suffix(app: "Sphinx", config: Config) -> None:
+346     """This converts old styled source_suffix to new styled one.
+347 
+348     * old style: str or list
+349     * new style: a dict which maps from fileext to filetype
+350     """
+351     source_suffix = config.source_suffix
+352     if isinstance(source_suffix, str):
+353         # if str, considers as default filetype (None)
+354         #
+355         # The default filetype is determined on later step.
+356         # By default, it is considered as restructuredtext.
+357         config.source_suffix = OrderedDict({source_suffix: None})  # type: ignore
+358     elif isinstance(source_suffix, (list, tuple)):
+359         # if list, considers as all of them are default filetype
+360         config.source_suffix = OrderedDict([(s, None) for s in source_suffix])  # type: ignore  # NOQA
+361     elif isinstance(source_suffix, dict):
+362         # if dict, convert it to OrderedDict
+363         config.source_suffix = OrderedDict(config.source_suffix)  # type: ignore
+364     else:
+365         logger.warning(__("The config value `source_suffix' expects "
+366                           "a string, list of strings, or dictionary. "
+367                           "But `%r' is given." % source_suffix))
+368 
+369 
+370 def init_numfig_format(app: "Sphinx", config: Config) -> None:
+371     """Initialize :confval:`numfig_format`."""
+372     numfig_format = {'section': _('Section %s'),
+373                      'figure': _('Fig. %s'),
+374                      'table': _('Table %s'),
+375                      'code-block': _('Listing %s')}
+376 
+377     # override default labels by configuration
+378     numfig_format.update(config.numfig_format)
+379     config.numfig_format = numfig_format  # type: ignore
+380 
+381 
+382 def correct_copyright_year(app: "Sphinx", config: Config) -> None:
+383     """correct values of copyright year that are not coherent with
+384     the SOURCE_DATE_EPOCH environment variable (if set)
+385 
+386     See https://reproducible-builds.org/specs/source-date-epoch/
+387     """
+388     if getenv('SOURCE_DATE_EPOCH') is not None:
+389         for k in ('copyright', 'epub_copyright'):
+390             if k in config:
+391                 replace = r'\g<1>%s' % format_date('%Y')
+392                 config[k] = copyright_year_re.sub(replace, config[k])
+393 
+394 
+395 def check_confval_types(app: "Sphinx", config: Config) -> None:
+396     """check all values for deviation from the default value's type, since
+397     that can result in TypeErrors all over the place NB.
+398     """
+399     for confval in config:
+400         default, rebuild, annotations = config.values[confval.name]
+401 
+402         if hasattr(default, '__call__'):
+403             default = default(config)  # evaluate default value
+404         if default is None and not annotations:
+405             continue  # neither inferrable nor expliclitly annotated types
+406 
+407         if annotations is Any:
+408             # any type of value is accepted
+409             pass
+410         elif isinstance(annotations, ENUM):
+411             if not annotations.match(confval.value):
+412                 msg = __("The config value `{name}` has to be a one of {candidates}, "
+413                          "but `{current}` is given.")
+414                 logger.warning(msg.format(name=confval.name,
+415                                           current=confval.value,
+416                                           candidates=annotations.candidates))
+417         else:
+418             if type(confval.value) is type(default):
+419                 continue
+420             if type(confval.value) in annotations:
+421                 continue
+422 
+423             common_bases = (set(type(confval.value).__bases__ + (type(confval.value),)) &
+424                             set(type(default).__bases__))
+425             common_bases.discard(object)
+426             if common_bases:
+427                 continue  # at least we share a non-trivial base class
+428 
+429             if annotations:
+430                 msg = __("The config value `{name}' has type `{current.__name__}'; "
+431                          "expected {permitted}.")
+432                 wrapped_annotations = ["`{}'".format(c.__name__) for c in annotations]
+433                 if len(wrapped_annotations) > 2:
+434                     permitted = "{}, or {}".format(
+435                         ", ".join(wrapped_annotations[:-1]),
+436                         wrapped_annotations[-1])
+437                 else:
+438                     permitted = " or ".join(wrapped_annotations)
+439                 logger.warning(msg.format(name=confval.name,
+440                                           current=type(confval.value),
+441                                           permitted=permitted))
+442             else:
+443                 msg = __("The config value `{name}' has type `{current.__name__}', "
+444                          "defaults to `{default.__name__}'.")
+445                 logger.warning(msg.format(name=confval.name,
+446                                           current=type(confval.value),
+447                                           default=type(default)))
+448 
+449 
+450 def check_unicode(config: Config) -> None:
+451     """check all string values for non-ASCII characters in bytestrings,
+452     since that can result in UnicodeErrors all over the place
+453     """
+454     warnings.warn('sphinx.config.check_unicode() is deprecated.',
+455                   RemovedInSphinx40Warning, stacklevel=2)
+456 
+457     nonascii_re = re.compile(br'[\x80-\xff]')
+458 
+459     for name, value in config._raw_config.items():
+460         if isinstance(value, bytes) and nonascii_re.search(value):
+461             logger.warning(__('the config value %r is set to a string with non-ASCII '
+462                               'characters; this can lead to Unicode errors occurring. '
+463                               'Please use Unicode strings, e.g. %r.'), name, 'Content')
+464 
+465 
+466 def check_primary_domain(app: "Sphinx", config: Config) -> None:
+467     primary_domain = config.primary_domain
+468     if primary_domain and not app.registry.has_domain(primary_domain):
+469         logger.warning(__('primary_domain %r not found, ignored.'), primary_domain)
+470         config.primary_domain = None  # type: ignore
+471 
+472 
+473 def check_master_doc(app: "Sphinx", env: "BuildEnvironment", added: Set[str],
+474                      changed: Set[str], removed: Set[str]) -> Set[str]:
+475     """Adjust master_doc to 'contents' to support an old project which does not have
+476     no master_doc setting.
+477     """
+478     if (app.config.master_doc == 'index' and
+479             'index' not in app.project.docnames and
+480             'contents' in app.project.docnames):
+481         logger.warning(__('Since v2.0, Sphinx uses "index" as master_doc by default. '
+482                           'Please add "master_doc = \'contents\'" to your conf.py.'))
+483         app.config.master_doc = "contents"  # type: ignore
+484 
+485     return changed
+486 
+487 
+488 def setup(app: "Sphinx") -> Dict[str, Any]:
+489     app.connect('config-inited', convert_source_suffix, priority=800)
+490     app.connect('config-inited', init_numfig_format, priority=800)
+491     app.connect('config-inited', correct_copyright_year, priority=800)
+492     app.connect('config-inited', check_confval_types, priority=800)
+493     app.connect('config-inited', check_primary_domain, priority=800)
+494     app.connect('env-get-outdated', check_master_doc)
+495 
+496     return {
+497         'version': 'builtin',
+498         'parallel_read_safe': True,
+499         'parallel_write_safe': True,
+500     }
+
+</code><intended_behavior>This method should store and handle default options for Pygments, allowing them to be overridden by sourcecode block options.</intended_behavior>]
+2025-11-17 15:21:57.820 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-17 15:21:57.820 | INFO     | Search-only: skipping patch selection
+2025-11-17 15:21:57.900 | INFO     | Task sphinx-doc__sphinx-8674 completed successfully.
+2025-11-17 15:21:57.901 | INFO     | No patch generated. You can try running ACR again.

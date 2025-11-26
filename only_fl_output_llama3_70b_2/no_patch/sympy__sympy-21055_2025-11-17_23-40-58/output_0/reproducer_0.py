@@ -1,0 +1,30 @@
+import sympy as sp
+from sympy import Q
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    sp.var('a, x')
+    J = sp.Integral(sp.sin(x)*sp.exp(-a*x), (x, 0, sp.oo))
+    result = J.doit()
+    refined_result = sp.refine(result, Q.positive(a))
+    assert refined_result != result, "refine() does not understand how to simplify complex arguments"
+    print("Issue is fixed!")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+

@@ -1,0 +1,28 @@
+Here is the `reproducer.py` file that reproduces the issue:
+```
+python
+import sys
+from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import LogisticRegression
+
+def print_stacktrace(e: Exception):
+    import traceback
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    clf = make_pipeline(LogisticRegression())
+    clf.fit([[0], [0]], [0, 1], sample_weight=[1, 1])
+except ValueError as e:
+    print_stacktrace(e)
+    raise AssertionError("Error message is not friendly enough")
+else:
+    sys.exit(0)
+```
+This script creates a pipeline with a logistic regression estimator and tries to fit it with a `sample_weight` parameter. Since the `sample_weight` parameter should be prefixed by the step name with a `__` delimiter, this will raise a `ValueError`. The script catches the exception, prints the stack trace using the provided function, and raises an `AssertionError` if the issue is present. If the issue is fixed, the script exits with code 0.

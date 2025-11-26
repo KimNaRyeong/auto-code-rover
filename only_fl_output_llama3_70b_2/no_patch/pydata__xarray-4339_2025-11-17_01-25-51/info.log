@@ -1,0 +1,3273 @@
+2025-11-17 01:25:51.562 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-17 01:25:52.799 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-17 01:25:52.804 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 01:26:01.144 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 01:26:04.097 | DEBUG    | Extracted a valid json.
+2025-11-17 01:26:04.097 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_method(\"str.get\")", "search_class_in_file(\"DataArray\", \"data_array.py\")", "search_method_in_class(\"get\", \"DataArray\")"],
+    "bug_locations":[]
+}
+2025-11-17 01:26:04.108 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-17 01:26:04.109 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-17 01:26:12.987 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 01:26:15.109 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 01:26:17.124 | DEBUG    | Extracted a valid json.
+2025-11-17 01:26:17.124 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_class(\"DataArray\")", "search_code(\"DataArray.str.get\")"],
+    "bug_locations": []
+}
+2025-11-17 01:26:17.220 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-17 01:26:17.221 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-17 01:26:28.031 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 01:26:33.446 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 01:26:37.851 | DEBUG    | Extracted a valid json.
+2025-11-17 01:26:37.851 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"encode filename\")", "search_code(\"handle non-English characters\")"],
+    "bug_locations":[{"file": "file_uploader.py", "class": "FileUploader", "method": "uploadFile", "intended_behavior": "The method should successfully upload files with non-English filenames by properly encoding the filename to handle special characters."}]
+}
+2025-11-17 01:26:37.867 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-17 01:26:37.868 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-17 01:26:46.248 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 01:26:49.051 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 01:26:50.987 | DEBUG    | Extracted a valid json.
+2025-11-17 01:26:50.988 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"filename\")", "search_code(\"utf-8\")"],
+    "bug_locations": []
+}
+2025-11-17 01:26:51.053 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-17 01:26:51.054 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-17 01:27:06.995 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-17 01:27:12.025 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-17 01:27:17.513 | DEBUG    | Extracted a valid json.
+2025-11-17 01:27:17.513 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "xarray/backends/api.py", "class": "", "method": "", "intended_behavior": "The method should properly handle filenames with non-English characters by encoding them correctly using UTF-8 encoding."}, {"file": "xarray/coding/strings.py", "class": "", "method": "", "intended_behavior": "The method should correctly encode or decode strings containing non-English characters using UTF-8 encoding."}]
+}
+2025-11-17 01:27:17.520 | DEBUG    | Bug location extracted successfully: [<file>xarray/backends/api.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os.path
+2 import warnings
+3 from glob import glob
+4 from io import BytesIO
+5 from numbers import Number
+6 from pathlib import Path
+7 from typing import (
+8     TYPE_CHECKING,
+9     Callable,
+10     Dict,
+11     Hashable,
+12     Iterable,
+13     Mapping,
+14     Tuple,
+15     Union,
+16 )
+17 
+18 import numpy as np
+19 
+20 from .. import backends, coding, conventions
+21 from ..core import indexing
+22 from ..core.combine import (
+23     _infer_concat_order_from_positions,
+24     _nested_combine,
+25     combine_by_coords,
+26 )
+27 from ..core.dataarray import DataArray
+28 from ..core.dataset import Dataset
+29 from ..core.utils import close_on_error, is_grib_path, is_remote_uri
+30 from .common import AbstractDataStore, ArrayWriter
+31 from .locks import _get_scheduler
+32 
+33 if TYPE_CHECKING:
+34     try:
+35         from dask.delayed import Delayed
+36     except ImportError:
+37         Delayed = None
+38 
+39 
+40 DATAARRAY_NAME = "__xarray_dataarray_name__"
+41 DATAARRAY_VARIABLE = "__xarray_dataarray_variable__"
+42 
+43 
+44 def _get_default_engine_remote_uri():
+45     try:
+46         import netCDF4  # noqa: F401
+47 
+48         engine = "netcdf4"
+49     except ImportError:  # pragma: no cover
+50         try:
+51             import pydap  # noqa: F401
+52 
+53             engine = "pydap"
+54         except ImportError:
+55             raise ValueError(
+56                 "netCDF4 or pydap is required for accessing "
+57                 "remote datasets via OPeNDAP"
+58             )
+59     return engine
+60 
+61 
+62 def _get_default_engine_grib():
+63     msgs = []
+64     try:
+65         import Nio  # noqa: F401
+66 
+67         msgs += ["set engine='pynio' to access GRIB files with PyNIO"]
+68     except ImportError:  # pragma: no cover
+69         pass
+70     try:
+71         import cfgrib  # noqa: F401
+72 
+73         msgs += ["set engine='cfgrib' to access GRIB files with cfgrib"]
+74     except ImportError:  # pragma: no cover
+75         pass
+76     if msgs:
+77         raise ValueError(" or\n".join(msgs))
+78     else:
+79         raise ValueError("PyNIO or cfgrib is required for accessing " "GRIB files")
+80 
+81 
+82 def _get_default_engine_gz():
+83     try:
+84         import scipy  # noqa: F401
+85 
+86         engine = "scipy"
+87     except ImportError:  # pragma: no cover
+88         raise ValueError("scipy is required for accessing .gz files")
+89     return engine
+90 
+91 
+92 def _get_default_engine_netcdf():
+93     try:
+94         import netCDF4  # noqa: F401
+95 
+96         engine = "netcdf4"
+97     except ImportError:  # pragma: no cover
+98         try:
+99             import scipy.io.netcdf  # noqa: F401
+100 
+101             engine = "scipy"
+102         except ImportError:
+103             raise ValueError(
+104                 "cannot read or write netCDF files without "
+105                 "netCDF4-python or scipy installed"
+106             )
+107     return engine
+108 
+109 
+110 def _get_engine_from_magic_number(filename_or_obj):
+111     # check byte header to determine file type
+112     if isinstance(filename_or_obj, bytes):
+113         magic_number = filename_or_obj[:8]
+114     else:
+115         if filename_or_obj.tell() != 0:
+116             raise ValueError(
+117                 "file-like object read/write pointer not at zero "
+118                 "please close and reopen, or use a context "
+119                 "manager"
+120             )
+121         magic_number = filename_or_obj.read(8)
+122         filename_or_obj.seek(0)
+123 
+124     if magic_number.startswith(b"CDF"):
+125         engine = "scipy"
+126     elif magic_number.startswith(b"\211HDF\r\n\032\n"):
+127         engine = "h5netcdf"
+128         if isinstance(filename_or_obj, bytes):
+129             raise ValueError(
+130                 "can't open netCDF4/HDF5 as bytes "
+131                 "try passing a path or file-like object"
+132             )
+133     else:
+134         if isinstance(filename_or_obj, bytes) and len(filename_or_obj) > 80:
+135             filename_or_obj = filename_or_obj[:80] + b"..."
+136         raise ValueError(
+137             "{} is not a valid netCDF file "
+138             "did you mean to pass a string for a path instead?".format(filename_or_obj)
+139         )
+140     return engine
+141 
+142 
+143 def _get_default_engine(path, allow_remote=False):
+144     if allow_remote and is_remote_uri(path):
+145         engine = _get_default_engine_remote_uri()
+146     elif is_grib_path(path):
+147         engine = _get_default_engine_grib()
+148     elif path.endswith(".gz"):
+149         engine = _get_default_engine_gz()
+150     else:
+151         engine = _get_default_engine_netcdf()
+152     return engine
+153 
+154 
+155 def _normalize_path(path):
+156     if is_remote_uri(path):
+157         return path
+158     else:
+159         return os.path.abspath(os.path.expanduser(path))
+160 
+161 
+162 def _validate_dataset_names(dataset):
+163     """DataArray.name and Dataset keys must be a string or None"""
+164 
+165     def check_name(name):
+166         if isinstance(name, str):
+167             if not name:
+168                 raise ValueError(
+169                     "Invalid name for DataArray or Dataset key: "
+170                     "string must be length 1 or greater for "
+171                     "serialization to netCDF files"
+172                 )
+173         elif name is not None:
+174             raise TypeError(
+175                 "DataArray.name or Dataset key must be either a "
+176                 "string or None for serialization to netCDF files"
+177             )
+178 
+179     for k in dataset.variables:
+180         check_name(k)
+181 
+182 
+183 def _validate_attrs(dataset):
+184     """`attrs` must have a string key and a value which is either: a number,
+185     a string, an ndarray or a list/tuple of numbers/strings.
+186     """
+187 
+188     def check_attr(name, value):
+189         if isinstance(name, str):
+190             if not name:
+191                 raise ValueError(
+192                     "Invalid name for attr: string must be "
+193                     "length 1 or greater for serialization to "
+194                     "netCDF files"
+195                 )
+196         else:
+197             raise TypeError(
+198                 "Invalid name for attr: {} must be a string for "
+199                 "serialization to netCDF files".format(name)
+200             )
+201 
+202         if not isinstance(value, (str, Number, np.ndarray, np.number, list, tuple)):
+203             raise TypeError(
+204                 "Invalid value for attr: {} must be a number, "
+205                 "a string, an ndarray or a list/tuple of "
+206                 "numbers/strings for serialization to netCDF "
+207                 "files".format(value)
+208             )
+209 
+210     # Check attrs on the dataset itself
+211     for k, v in dataset.attrs.items():
+212         check_attr(k, v)
+213 
+214     # Check attrs on each variable within the dataset
+215     for variable in dataset.variables.values():
+216         for k, v in variable.attrs.items():
+217             check_attr(k, v)
+218 
+219 
+220 def _protect_dataset_variables_inplace(dataset, cache):
+221     for name, variable in dataset.variables.items():
+222         if name not in variable.dims:
+223             # no need to protect IndexVariable objects
+224             data = indexing.CopyOnWriteArray(variable._data)
+225             if cache:
+226                 data = indexing.MemoryCachedArray(data)
+227             variable.data = data
+228 
+229 
+230 def _finalize_store(write, store):
+231     """ Finalize this store by explicitly syncing and closing"""
+232     del write  # ensure writing is done first
+233     store.close()
+234 
+235 
+236 def load_dataset(filename_or_obj, **kwargs):
+237     """Open, load into memory, and close a Dataset from a file or file-like
+238     object.
+239 
+240     This is a thin wrapper around :py:meth:`~xarray.open_dataset`. It differs
+241     from `open_dataset` in that it loads the Dataset into memory, closes the
+242     file, and returns the Dataset. In contrast, `open_dataset` keeps the file
+243     handle open and lazy loads its contents. All parameters are passed directly
+244     to `open_dataset`. See that documentation for further details.
+245 
+246     Returns
+247     -------
+248     dataset : Dataset
+249         The newly created Dataset.
+250 
+251     See Also
+252     --------
+253     open_dataset
+254     """
+255     if "cache" in kwargs:
+256         raise TypeError("cache has no effect in this context")
+257 
+258     with open_dataset(filename_or_obj, **kwargs) as ds:
+259         return ds.load()
+260 
+261 
+262 def load_dataarray(filename_or_obj, **kwargs):
+263     """Open, load into memory, and close a DataArray from a file or file-like
+264     object containing a single data variable.
+265 
+266     This is a thin wrapper around :py:meth:`~xarray.open_dataarray`. It differs
+267     from `open_dataarray` in that it loads the Dataset into memory, closes the
+268     file, and returns the Dataset. In contrast, `open_dataarray` keeps the file
+269     handle open and lazy loads its contents. All parameters are passed directly
+270     to `open_dataarray`. See that documentation for further details.
+271 
+272     Returns
+273     -------
+274     datarray : DataArray
+275         The newly created DataArray.
+276 
+277     See Also
+278     --------
+279     open_dataarray
+280     """
+281     if "cache" in kwargs:
+282         raise TypeError("cache has no effect in this context")
+283 
+284     with open_dataarray(filename_or_obj, **kwargs) as da:
+285         return da.load()
+286 
+287 
+288 def open_dataset(
+289     filename_or_obj,
+290     group=None,
+291     decode_cf=True,
+292     mask_and_scale=None,
+293     decode_times=True,
+294     autoclose=None,
+295     concat_characters=True,
+296     decode_coords=True,
+297     engine=None,
+298     chunks=None,
+299     lock=None,
+300     cache=None,
+301     drop_variables=None,
+302     backend_kwargs=None,
+303     use_cftime=None,
+304     decode_timedelta=None,
+305 ):
+306     """Open and decode a dataset from a file or file-like object.
+307 
+308     Parameters
+309     ----------
+310     filename_or_obj : str, Path, file or xarray.backends.*DataStore
+311         Strings and Path objects are interpreted as a path to a netCDF file
+312         or an OpenDAP URL and opened with python-netCDF4, unless the filename
+313         ends with .gz, in which case the file is gunzipped and opened with
+314         scipy.io.netcdf (only netCDF3 supported). Byte-strings or file-like
+315         objects are opened by scipy.io.netcdf (netCDF3) or h5py (netCDF4/HDF).
+316     group : str, optional
+317         Path to the netCDF4 group in the given file to open (only works for
+318         netCDF4 files).
+319     decode_cf : bool, optional
+320         Whether to decode these variables, assuming they were saved according
+321         to CF conventions.
+322     mask_and_scale : bool, optional
+323         If True, replace array values equal to `_FillValue` with NA and scale
+324         values according to the formula `original_values * scale_factor +
+325         add_offset`, where `_FillValue`, `scale_factor` and `add_offset` are
+326         taken from variable attributes (if they exist).  If the `_FillValue` or
+327         `missing_value` attribute contains multiple values a warning will be
+328         issued and all array values matching one of the multiple values will
+329         be replaced by NA. mask_and_scale defaults to True except for the
+330         pseudonetcdf backend.
+331     decode_times : bool, optional
+332         If True, decode times encoded in the standard NetCDF datetime format
+333         into datetime objects. Otherwise, leave them encoded as numbers.
+334     autoclose : bool, optional
+335         If True, automatically close files to avoid OS Error of too many files
+336         being open.  However, this option doesn't work with streams, e.g.,
+337         BytesIO.
+338     concat_characters : bool, optional
+339         If True, concatenate along the last dimension of character arrays to
+340         form string arrays. Dimensions will only be concatenated over (and
+341         removed) if they have no corresponding variable and if they are only
+342         used as the last dimension of character arrays.
+343     decode_coords : bool, optional
+344         If True, decode the 'coordinates' attribute to identify coordinates in
+345         the resulting dataset.
+346     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib', \
+347         'pseudonetcdf'}, optional
+348         Engine to use when reading files. If not provided, the default engine
+349         is chosen based on available dependencies, with a preference for
+350         'netcdf4'.
+351     chunks : int or dict, optional
+352         If chunks is provided, it used to load the new dataset into dask
+353         arrays. ``chunks={}`` loads the dataset with dask using a single
+354         chunk for all arrays.
+355     lock : False or duck threading.Lock, optional
+356         Resource lock to use when reading data from disk. Only relevant when
+357         using dask or another form of parallelism. By default, appropriate
+358         locks are chosen to safely read and write files with the currently
+359         active dask scheduler.
+360     cache : bool, optional
+361         If True, cache data loaded from the underlying datastore in memory as
+362         NumPy arrays when accessed to avoid reading from the underlying data-
+363         store multiple times. Defaults to True unless you specify the `chunks`
+364         argument to use dask, in which case it defaults to False. Does not
+365         change the behavior of coordinates corresponding to dimensions, which
+366         always load their data from disk into a ``pandas.Index``.
+367     drop_variables: string or iterable, optional
+368         A variable or list of variables to exclude from being parsed from the
+369         dataset. This may be useful to drop variables with problems or
+370         inconsistent values.
+371     backend_kwargs: dictionary, optional
+372         A dictionary of keyword arguments to pass on to the backend. This
+373         may be useful when backend options would improve performance or
+374         allow user control of dataset processing.
+375     use_cftime: bool, optional
+376         Only relevant if encoded dates come from a standard calendar
+377         (e.g. 'gregorian', 'proleptic_gregorian', 'standard', or not
+378         specified).  If None (default), attempt to decode times to
+379         ``np.datetime64[ns]`` objects; if this is not possible, decode times to
+380         ``cftime.datetime`` objects. If True, always decode times to
+381         ``cftime.datetime`` objects, regardless of whether or not they can be
+382         represented using ``np.datetime64[ns]`` objects.  If False, always
+383         decode times to ``np.datetime64[ns]`` objects; if this is not possible
+384         raise an error.
+385     decode_timedelta : bool, optional
+386         If True, decode variables and coordinates with time units in
+387         {'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds'}
+388         into timedelta objects. If False, leave them encoded as numbers.
+389         If None (default), assume the same value of decode_time.
+390 
+391     Returns
+392     -------
+393     dataset : Dataset
+394         The newly created dataset.
+395 
+396     Notes
+397     -----
+398     ``open_dataset`` opens the file with read-only access. When you modify
+399     values of a Dataset, even one linked to files on disk, only the in-memory
+400     copy you are manipulating in xarray is modified: the original file on disk
+401     is never touched.
+402 
+403     See Also
+404     --------
+405     open_mfdataset
+406     """
+407     engines = [
+408         None,
+409         "netcdf4",
+410         "scipy",
+411         "pydap",
+412         "h5netcdf",
+413         "pynio",
+414         "cfgrib",
+415         "pseudonetcdf",
+416     ]
+417     if engine not in engines:
+418         raise ValueError(
+419             "unrecognized engine for open_dataset: {}\n"
+420             "must be one of: {}".format(engine, engines)
+421         )
+422 
+423     if autoclose is not None:
+424         warnings.warn(
+425             "The autoclose argument is no longer used by "
+426             "xarray.open_dataset() and is now ignored; it will be removed in "
+427             "a future version of xarray. If necessary, you can control the "
+428             "maximum number of simultaneous open files with "
+429             "xarray.set_options(file_cache_maxsize=...).",
+430             FutureWarning,
+431             stacklevel=2,
+432         )
+433 
+434     if mask_and_scale is None:
+435         mask_and_scale = not engine == "pseudonetcdf"
+436 
+437     if not decode_cf:
+438         mask_and_scale = False
+439         decode_times = False
+440         concat_characters = False
+441         decode_coords = False
+442         decode_timedelta = False
+443 
+444     if cache is None:
+445         cache = chunks is None
+446 
+447     if backend_kwargs is None:
+448         backend_kwargs = {}
+449 
+450     def maybe_decode_store(store, lock=False):
+451         ds = conventions.decode_cf(
+452             store,
+453             mask_and_scale=mask_and_scale,
+454             decode_times=decode_times,
+455             concat_characters=concat_characters,
+456             decode_coords=decode_coords,
+457             drop_variables=drop_variables,
+458             use_cftime=use_cftime,
+459             decode_timedelta=decode_timedelta,
+460         )
+461 
+462         _protect_dataset_variables_inplace(ds, cache)
+463 
+464         if chunks is not None:
+465             from dask.base import tokenize
+466 
+467             # if passed an actual file path, augment the token with
+468             # the file modification time
+469             if isinstance(filename_or_obj, str) and not is_remote_uri(filename_or_obj):
+470                 mtime = os.path.getmtime(filename_or_obj)
+471             else:
+472                 mtime = None
+473             token = tokenize(
+474                 filename_or_obj,
+475                 mtime,
+476                 group,
+477                 decode_cf,
+478                 mask_and_scale,
+479                 decode_times,
+480                 concat_characters,
+481                 decode_coords,
+482                 engine,
+483                 chunks,
+484                 drop_variables,
+485                 use_cftime,
+486                 decode_timedelta,
+487             )
+488             name_prefix = "open_dataset-%s" % token
+489             ds2 = ds.chunk(chunks, name_prefix=name_prefix, token=token)
+490             ds2._file_obj = ds._file_obj
+491         else:
+492             ds2 = ds
+493 
+494         return ds2
+495 
+496     if isinstance(filename_or_obj, Path):
+497         filename_or_obj = str(filename_or_obj)
+498 
+499     if isinstance(filename_or_obj, AbstractDataStore):
+500         store = filename_or_obj
+501 
+502     elif isinstance(filename_or_obj, str):
+503         filename_or_obj = _normalize_path(filename_or_obj)
+504 
+505         if engine is None:
+506             engine = _get_default_engine(filename_or_obj, allow_remote=True)
+507         if engine == "netcdf4":
+508             store = backends.NetCDF4DataStore.open(
+509                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+510             )
+511         elif engine == "scipy":
+512             store = backends.ScipyDataStore(filename_or_obj, **backend_kwargs)
+513         elif engine == "pydap":
+514             store = backends.PydapDataStore.open(filename_or_obj, **backend_kwargs)
+515         elif engine == "h5netcdf":
+516             store = backends.H5NetCDFStore.open(
+517                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+518             )
+519         elif engine == "pynio":
+520             store = backends.NioDataStore(filename_or_obj, lock=lock, **backend_kwargs)
+521         elif engine == "pseudonetcdf":
+522             store = backends.PseudoNetCDFDataStore.open(
+523                 filename_or_obj, lock=lock, **backend_kwargs
+524             )
+525         elif engine == "cfgrib":
+526             store = backends.CfGribDataStore(
+527                 filename_or_obj, lock=lock, **backend_kwargs
+528             )
+529 
+530     else:
+531         if engine not in [None, "scipy", "h5netcdf"]:
+532             raise ValueError(
+533                 "can only read bytes or file-like objects "
+534                 "with engine='scipy' or 'h5netcdf'"
+535             )
+536         engine = _get_engine_from_magic_number(filename_or_obj)
+537         if engine == "scipy":
+538             store = backends.ScipyDataStore(filename_or_obj, **backend_kwargs)
+539         elif engine == "h5netcdf":
+540             store = backends.H5NetCDFStore.open(
+541                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+542             )
+543 
+544     with close_on_error(store):
+545         ds = maybe_decode_store(store)
+546 
+547     # Ensure source filename always stored in dataset object (GH issue #2550)
+548     if "source" not in ds.encoding:
+549         if isinstance(filename_or_obj, str):
+550             ds.encoding["source"] = filename_or_obj
+551 
+552     return ds
+553 
+554 
+555 def open_dataarray(
+556     filename_or_obj,
+557     group=None,
+558     decode_cf=True,
+559     mask_and_scale=None,
+560     decode_times=True,
+561     autoclose=None,
+562     concat_characters=True,
+563     decode_coords=True,
+564     engine=None,
+565     chunks=None,
+566     lock=None,
+567     cache=None,
+568     drop_variables=None,
+569     backend_kwargs=None,
+570     use_cftime=None,
+571     decode_timedelta=None,
+572 ):
+573     """Open an DataArray from a file or file-like object containing a single
+574     data variable.
+575 
+576     This is designed to read netCDF files with only one data variable. If
+577     multiple variables are present then a ValueError is raised.
+578 
+579     Parameters
+580     ----------
+581     filename_or_obj : str, Path, file or xarray.backends.*DataStore
+582         Strings and Paths are interpreted as a path to a netCDF file or an
+583         OpenDAP URL and opened with python-netCDF4, unless the filename ends
+584         with .gz, in which case the file is gunzipped and opened with
+585         scipy.io.netcdf (only netCDF3 supported). Byte-strings or file-like
+586         objects are opened by scipy.io.netcdf (netCDF3) or h5py (netCDF4/HDF).
+587     group : str, optional
+588         Path to the netCDF4 group in the given file to open (only works for
+589         netCDF4 files).
+590     decode_cf : bool, optional
+591         Whether to decode these variables, assuming they were saved according
+592         to CF conventions.
+593     mask_and_scale : bool, optional
+594         If True, replace array values equal to `_FillValue` with NA and scale
+595         values according to the formula `original_values * scale_factor +
+596         add_offset`, where `_FillValue`, `scale_factor` and `add_offset` are
+597         taken from variable attributes (if they exist).  If the `_FillValue` or
+598         `missing_value` attribute contains multiple values a warning will be
+599         issued and all array values matching one of the multiple values will
+600         be replaced by NA. mask_and_scale defaults to True except for the
+601         pseudonetcdf backend.
+602     decode_times : bool, optional
+603         If True, decode times encoded in the standard NetCDF datetime format
+604         into datetime objects. Otherwise, leave them encoded as numbers.
+605     concat_characters : bool, optional
+606         If True, concatenate along the last dimension of character arrays to
+607         form string arrays. Dimensions will only be concatenated over (and
+608         removed) if they have no corresponding variable and if they are only
+609         used as the last dimension of character arrays.
+610     decode_coords : bool, optional
+611         If True, decode the 'coordinates' attribute to identify coordinates in
+612         the resulting dataset.
+613     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib'}, \
+614         optional
+615         Engine to use when reading files. If not provided, the default engine
+616         is chosen based on available dependencies, with a preference for
+617         'netcdf4'.
+618     chunks : int or dict, optional
+619         If chunks is provided, it used to load the new dataset into dask
+620         arrays.
+621     lock : False or duck threading.Lock, optional
+622         Resource lock to use when reading data from disk. Only relevant when
+623         using dask or another form of parallelism. By default, appropriate
+624         locks are chosen to safely read and write files with the currently
+625         active dask scheduler.
+626     cache : bool, optional
+627         If True, cache data loaded from the underlying datastore in memory as
+628         NumPy arrays when accessed to avoid reading from the underlying data-
+629         store multiple times. Defaults to True unless you specify the `chunks`
+630         argument to use dask, in which case it defaults to False. Does not
+631         change the behavior of coordinates corresponding to dimensions, which
+632         always load their data from disk into a ``pandas.Index``.
+633     drop_variables: string or iterable, optional
+634         A variable or list of variables to exclude from being parsed from the
+635         dataset. This may be useful to drop variables with problems or
+636         inconsistent values.
+637     backend_kwargs: dictionary, optional
+638         A dictionary of keyword arguments to pass on to the backend. This
+639         may be useful when backend options would improve performance or
+640         allow user control of dataset processing.
+641     use_cftime: bool, optional
+642         Only relevant if encoded dates come from a standard calendar
+643         (e.g. 'gregorian', 'proleptic_gregorian', 'standard', or not
+644         specified).  If None (default), attempt to decode times to
+645         ``np.datetime64[ns]`` objects; if this is not possible, decode times to
+646         ``cftime.datetime`` objects. If True, always decode times to
+647         ``cftime.datetime`` objects, regardless of whether or not they can be
+648         represented using ``np.datetime64[ns]`` objects.  If False, always
+649         decode times to ``np.datetime64[ns]`` objects; if this is not possible
+650         raise an error.
+651     decode_timedelta : bool, optional
+652         If True, decode variables and coordinates with time units in
+653         {'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds'}
+654         into timedelta objects. If False, leave them encoded as numbers.
+655         If None (default), assume the same value of decode_time.
+656 
+657     Notes
+658     -----
+659     This is designed to be fully compatible with `DataArray.to_netcdf`. Saving
+660     using `DataArray.to_netcdf` and then loading with this function will
+661     produce an identical result.
+662 
+663     All parameters are passed directly to `xarray.open_dataset`. See that
+664     documentation for further details.
+665 
+666     See also
+667     --------
+668     open_dataset
+669     """
+670 
+671     dataset = open_dataset(
+672         filename_or_obj,
+673         group=group,
+674         decode_cf=decode_cf,
+675         mask_and_scale=mask_and_scale,
+676         decode_times=decode_times,
+677         autoclose=autoclose,
+678         concat_characters=concat_characters,
+679         decode_coords=decode_coords,
+680         engine=engine,
+681         chunks=chunks,
+682         lock=lock,
+683         cache=cache,
+684         drop_variables=drop_variables,
+685         backend_kwargs=backend_kwargs,
+686         use_cftime=use_cftime,
+687         decode_timedelta=decode_timedelta,
+688     )
+689 
+690     if len(dataset.data_vars) != 1:
+691         raise ValueError(
+692             "Given file dataset contains more than one data "
+693             "variable. Please read with xarray.open_dataset and "
+694             "then select the variable you want."
+695         )
+696     else:
+697         (data_array,) = dataset.data_vars.values()
+698 
+699     data_array._file_obj = dataset._file_obj
+700 
+701     # Reset names if they were changed during saving
+702     # to ensure that we can 'roundtrip' perfectly
+703     if DATAARRAY_NAME in dataset.attrs:
+704         data_array.name = dataset.attrs[DATAARRAY_NAME]
+705         del dataset.attrs[DATAARRAY_NAME]
+706 
+707     if data_array.name == DATAARRAY_VARIABLE:
+708         data_array.name = None
+709 
+710     return data_array
+711 
+712 
+713 class _MultiFileCloser:
+714     __slots__ = ("file_objs",)
+715 
+716     def __init__(self, file_objs):
+717         self.file_objs = file_objs
+718 
+719     def close(self):
+720         for f in self.file_objs:
+721             f.close()
+722 
+723 
+724 def open_mfdataset(
+725     paths,
+726     chunks=None,
+727     concat_dim=None,
+728     compat="no_conflicts",
+729     preprocess=None,
+730     engine=None,
+731     lock=None,
+732     data_vars="all",
+733     coords="different",
+734     combine="by_coords",
+735     autoclose=None,
+736     parallel=False,
+737     join="outer",
+738     attrs_file=None,
+739     **kwargs,
+740 ):
+741     """Open multiple files as a single dataset.
+742 
+743     If combine='by_coords' then the function ``combine_by_coords`` is used to combine
+744     the datasets into one before returning the result, and if combine='nested' then
+745     ``combine_nested`` is used. The filepaths must be structured according to which
+746     combining function is used, the details of which are given in the documentation for
+747     ``combine_by_coords`` and ``combine_nested``. By default ``combine='by_coords'``
+748     will be used. Requires dask to be installed. See documentation for
+749     details on dask [1]_. Global attributes from the ``attrs_file`` are used
+750     for the combined dataset.
+751 
+752     Parameters
+753     ----------
+754     paths : str or sequence
+755         Either a string glob in the form ``"path/to/my/files/*.nc"`` or an explicit list of
+756         files to open. Paths can be given as strings or as pathlib Paths. If
+757         concatenation along more than one dimension is desired, then ``paths`` must be a
+758         nested list-of-lists (see ``combine_nested`` for details). (A string glob will
+759         be expanded to a 1-dimensional list.)
+760     chunks : int or dict, optional
+761         Dictionary with keys given by dimension names and values given by chunk sizes.
+762         In general, these should divide the dimensions of each dataset. If int, chunk
+763         each dimension by ``chunks``. By default, chunks will be chosen to load entire
+764         input files into memory at once. This has a major impact on performance: please
+765         see the full documentation for more details [2]_.
+766     concat_dim : str, or list of str, DataArray, Index or None, optional
+767         Dimensions to concatenate files along.  You only need to provide this argument
+768         if ``combine='by_coords'``, and if any of the dimensions along which you want to
+769         concatenate is not a dimension in the original datasets, e.g., if you want to
+770         stack a collection of 2D arrays along a third dimension. Set
+771         ``concat_dim=[..., None, ...]`` explicitly to disable concatenation along a
+772         particular dimension. Default is None, which for a 1D list of filepaths is
+773         equivalent to opening the files separately and then merging them with
+774         ``xarray.merge``.
+775     combine : {'by_coords', 'nested'}, optional
+776         Whether ``xarray.combine_by_coords`` or ``xarray.combine_nested`` is used to
+777         combine all the data. Default is to use ``xarray.combine_by_coords``.
+778     compat : {'identical', 'equals', 'broadcast_equals',
+779               'no_conflicts', 'override'}, optional
+780         String indicating how to compare variables of the same name for
+781         potential conflicts when merging:
+782 
+783          * 'broadcast_equals': all values must be equal when variables are
+784            broadcast against each other to ensure common dimensions.
+785          * 'equals': all values and dimensions must be the same.
+786          * 'identical': all values, dimensions and attributes must be the
+787            same.
+788          * 'no_conflicts': only values which are not null in both datasets
+789            must be equal. The returned dataset then contains the combination
+790            of all non-null values.
+791          * 'override': skip comparing and pick variable from first dataset
+792 
+793     preprocess : callable, optional
+794         If provided, call this function on each dataset prior to concatenation.
+795         You can find the file-name from which each dataset was loaded in
+796         ``ds.encoding['source']``.
+797     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib'}, \
+798         optional
+799         Engine to use when reading files. If not provided, the default engine
+800         is chosen based on available dependencies, with a preference for
+801         'netcdf4'.
+802     lock : False or duck threading.Lock, optional
+803         Resource lock to use when reading data from disk. Only relevant when
+804         using dask or another form of parallelism. By default, appropriate
+805         locks are chosen to safely read and write files with the currently
+806         active dask scheduler.
+807     data_vars : {'minimal', 'different', 'all' or list of str}, optional
+808         These data variables will be concatenated together:
+809           * 'minimal': Only data variables in which the dimension already
+810             appears are included.
+811           * 'different': Data variables which are not equal (ignoring
+812             attributes) across all datasets are also concatenated (as well as
+813             all for which dimension already appears). Beware: this option may
+814             load the data payload of data variables into memory if they are not
+815             already loaded.
+816           * 'all': All data variables will be concatenated.
+817           * list of str: The listed data variables will be concatenated, in
+818             addition to the 'minimal' data variables.
+819     coords : {'minimal', 'different', 'all' or list of str}, optional
+820         These coordinate variables will be concatenated together:
+821          * 'minimal': Only coordinates in which the dimension already appears
+822            are included.
+823          * 'different': Coordinates which are not equal (ignoring attributes)
+824            across all datasets are also concatenated (as well as all for which
+825            dimension already appears). Beware: this option may load the data
+826            payload of coordinate variables into memory if they are not already
+827            loaded.
+828          * 'all': All coordinate variables will be concatenated, except
+829            those corresponding to other dimensions.
+830          * list of str: The listed coordinate variables will be concatenated,
+831            in addition the 'minimal' coordinates.
+832     parallel : bool, optional
+833         If True, the open and preprocess steps of this function will be
+834         performed in parallel using ``dask.delayed``. Default is False.
+835     join : {'outer', 'inner', 'left', 'right', 'exact, 'override'}, optional
+836         String indicating how to combine differing indexes
+837         (excluding concat_dim) in objects
+838 
+839         - 'outer': use the union of object indexes
+840         - 'inner': use the intersection of object indexes
+841         - 'left': use indexes from the first object with each dimension
+842         - 'right': use indexes from the last object with each dimension
+843         - 'exact': instead of aligning, raise `ValueError` when indexes to be
+844           aligned are not equal
+845         - 'override': if indexes are of same size, rewrite indexes to be
+846           those of the first object with that dimension. Indexes for the same
+847           dimension must have the same size in all objects.
+848     attrs_file : str or pathlib.Path, optional
+849         Path of the file used to read global attributes from.
+850         By default global attributes are read from the first file provided,
+851         with wildcard matches sorted by filename.
+852     **kwargs : optional
+853         Additional arguments passed on to :py:func:`xarray.open_dataset`.
+854 
+855     Returns
+856     -------
+857     xarray.Dataset
+858 
+859     Notes
+860     -----
+861     ``open_mfdataset`` opens files with read-only access. When you modify values
+862     of a Dataset, even one linked to files on disk, only the in-memory copy you
+863     are manipulating in xarray is modified: the original file on disk is never
+864     touched.
+865 
+866     See Also
+867     --------
+868     combine_by_coords
+869     combine_nested
+870     open_dataset
+871 
+872     References
+873     ----------
+874 
+875     .. [1] http://xarray.pydata.org/en/stable/dask.html
+876     .. [2] http://xarray.pydata.org/en/stable/dask.html#chunking-and-performance
+877     """
+878     if isinstance(paths, str):
+879         if is_remote_uri(paths):
+880             raise ValueError(
+881                 "cannot do wild-card matching for paths that are remote URLs: "
+882                 "{!r}. Instead, supply paths as an explicit list of strings.".format(
+883                     paths
+884                 )
+885             )
+886         paths = sorted(glob(paths))
+887     else:
+888         paths = [str(p) if isinstance(p, Path) else p for p in paths]
+889 
+890     if not paths:
+891         raise OSError("no files to open")
+892 
+893     # If combine='by_coords' then this is unnecessary, but quick.
+894     # If combine='nested' then this creates a flat list which is easier to
+895     # iterate over, while saving the originally-supplied structure as "ids"
+896     if combine == "nested":
+897         if isinstance(concat_dim, (str, DataArray)) or concat_dim is None:
+898             concat_dim = [concat_dim]
+899     combined_ids_paths = _infer_concat_order_from_positions(paths)
+900     ids, paths = (list(combined_ids_paths.keys()), list(combined_ids_paths.values()))
+901 
+902     open_kwargs = dict(
+903         engine=engine, chunks=chunks or {}, lock=lock, autoclose=autoclose, **kwargs
+904     )
+905 
+906     if parallel:
+907         import dask
+908 
+909         # wrap the open_dataset, getattr, and preprocess with delayed
+910         open_ = dask.delayed(open_dataset)
+911         getattr_ = dask.delayed(getattr)
+912         if preprocess is not None:
+913             preprocess = dask.delayed(preprocess)
+914     else:
+915         open_ = open_dataset
+916         getattr_ = getattr
+917 
+918     datasets = [open_(p, **open_kwargs) for p in paths]
+919     file_objs = [getattr_(ds, "_file_obj") for ds in datasets]
+920     if preprocess is not None:
+921         datasets = [preprocess(ds) for ds in datasets]
+922 
+923     if parallel:
+924         # calling compute here will return the datasets/file_objs lists,
+925         # the underlying datasets will still be stored as dask arrays
+926         datasets, file_objs = dask.compute(datasets, file_objs)
+927 
+928     # Combine all datasets, closing them in case of a ValueError
+929     try:
+930         if combine == "nested":
+931             # Combined nested list by successive concat and merge operations
+932             # along each dimension, using structure given by "ids"
+933             combined = _nested_combine(
+934                 datasets,
+935                 concat_dims=concat_dim,
+936                 compat=compat,
+937                 data_vars=data_vars,
+938                 coords=coords,
+939                 ids=ids,
+940                 join=join,
+941                 combine_attrs="drop",
+942             )
+943         elif combine == "by_coords":
+944             # Redo ordering from coordinates, ignoring how they were ordered
+945             # previously
+946             combined = combine_by_coords(
+947                 datasets,
+948                 compat=compat,
+949                 data_vars=data_vars,
+950                 coords=coords,
+951                 join=join,
+952                 combine_attrs="drop",
+953             )
+954         else:
+955             raise ValueError(
+956                 "{} is an invalid option for the keyword argument"
+957                 " ``combine``".format(combine)
+958             )
+959     except ValueError:
+960         for ds in datasets:
+961             ds.close()
+962         raise
+963 
+964     combined._file_obj = _MultiFileCloser(file_objs)
+965 
+966     # read global attributes from the attrs_file or from the first dataset
+967     if attrs_file is not None:
+968         if isinstance(attrs_file, Path):
+969             attrs_file = str(attrs_file)
+970         combined.attrs = datasets[paths.index(attrs_file)].attrs
+971     else:
+972         combined.attrs = datasets[0].attrs
+973 
+974     return combined
+975 
+976 
+977 WRITEABLE_STORES: Dict[str, Callable] = {
+978     "netcdf4": backends.NetCDF4DataStore.open,
+979     "scipy": backends.ScipyDataStore,
+980     "h5netcdf": backends.H5NetCDFStore.open,
+981 }
+982 
+983 
+984 def to_netcdf(
+985     dataset: Dataset,
+986     path_or_file=None,
+987     mode: str = "w",
+988     format: str = None,
+989     group: str = None,
+990     engine: str = None,
+991     encoding: Mapping = None,
+992     unlimited_dims: Iterable[Hashable] = None,
+993     compute: bool = True,
+994     multifile: bool = False,
+995     invalid_netcdf: bool = False,
+996 ) -> Union[Tuple[ArrayWriter, AbstractDataStore], bytes, "Delayed", None]:
+997     """This function creates an appropriate datastore for writing a dataset to
+998     disk as a netCDF file
+999 
+1000     See `Dataset.to_netcdf` for full API docs.
+1001 
+1002     The ``multifile`` argument is only for the private use of save_mfdataset.
+1003     """
+1004     if isinstance(path_or_file, Path):
+1005         path_or_file = str(path_or_file)
+1006 
+1007     if encoding is None:
+1008         encoding = {}
+1009 
+1010     if path_or_file is None:
+1011         if engine is None:
+1012             engine = "scipy"
+1013         elif engine != "scipy":
+1014             raise ValueError(
+1015                 "invalid engine for creating bytes with "
+1016                 "to_netcdf: %r. Only the default engine "
+1017                 "or engine='scipy' is supported" % engine
+1018             )
+1019         if not compute:
+1020             raise NotImplementedError(
+1021                 "to_netcdf() with compute=False is not yet implemented when "
+1022                 "returning bytes"
+1023             )
+1024     elif isinstance(path_or_file, str):
+1025         if engine is None:
+1026             engine = _get_default_engine(path_or_file)
+1027         path_or_file = _normalize_path(path_or_file)
+1028     else:  # file-like object
+1029         engine = "scipy"
+1030 
+1031     # validate Dataset keys, DataArray names, and attr keys/values
+1032     _validate_dataset_names(dataset)
+1033     _validate_attrs(dataset)
+1034 
+1035     try:
+1036         store_open = WRITEABLE_STORES[engine]
+1037     except KeyError:
+1038         raise ValueError("unrecognized engine for to_netcdf: %r" % engine)
+1039 
+1040     if format is not None:
+1041         format = format.upper()
+1042 
+1043     # handle scheduler specific logic
+1044     scheduler = _get_scheduler()
+1045     have_chunks = any(v.chunks for v in dataset.variables.values())
+1046 
+1047     autoclose = have_chunks and scheduler in ["distributed", "multiprocessing"]
+1048     if autoclose and engine == "scipy":
+1049         raise NotImplementedError(
+1050             "Writing netCDF files with the %s backend "
+1051             "is not currently supported with dask's %s "
+1052             "scheduler" % (engine, scheduler)
+1053         )
+1054 
+1055     target = path_or_file if path_or_file is not None else BytesIO()
+1056     kwargs = dict(autoclose=True) if autoclose else {}
+1057     if invalid_netcdf:
+1058         if engine == "h5netcdf":
+1059             kwargs["invalid_netcdf"] = invalid_netcdf
+1060         else:
+1061             raise ValueError(
+1062                 "unrecognized option 'invalid_netcdf' for engine %s" % engine
+1063             )
+1064     store = store_open(target, mode, format, group, **kwargs)
+1065 
+1066     if unlimited_dims is None:
+1067         unlimited_dims = dataset.encoding.get("unlimited_dims", None)
+1068     if unlimited_dims is not None:
+1069         if isinstance(unlimited_dims, str) or not isinstance(unlimited_dims, Iterable):
+1070             unlimited_dims = [unlimited_dims]
+1071         else:
+1072             unlimited_dims = list(unlimited_dims)
+1073 
+1074     writer = ArrayWriter()
+1075 
+1076     # TODO: figure out how to refactor this logic (here and in save_mfdataset)
+1077     # to avoid this mess of conditionals
+1078     try:
+1079         # TODO: allow this work (setting up the file for writing array data)
+1080         # to be parallelized with dask
+1081         dump_to_store(
+1082             dataset, store, writer, encoding=encoding, unlimited_dims=unlimited_dims
+1083         )
+1084         if autoclose:
+1085             store.close()
+1086 
+1087         if multifile:
+1088             return writer, store
+1089 
+1090         writes = writer.sync(compute=compute)
+1091 
+1092         if path_or_file is None:
+1093             store.sync()
+1094             return target.getvalue()
+1095     finally:
+1096         if not multifile and compute:
+1097             store.close()
+1098 
+1099     if not compute:
+1100         import dask
+1101 
+1102         return dask.delayed(_finalize_store)(writes, store)
+1103     return None
+1104 
+1105 
+1106 def dump_to_store(
+1107     dataset, store, writer=None, encoder=None, encoding=None, unlimited_dims=None
+1108 ):
+1109     """Store dataset contents to a backends.*DataStore object."""
+1110     if writer is None:
+1111         writer = ArrayWriter()
+1112 
+1113     if encoding is None:
+1114         encoding = {}
+1115 
+1116     variables, attrs = conventions.encode_dataset_coordinates(dataset)
+1117 
+1118     check_encoding = set()
+1119     for k, enc in encoding.items():
+1120         # no need to shallow copy the variable again; that already happened
+1121         # in encode_dataset_coordinates
+1122         variables[k].encoding = enc
+1123         check_encoding.add(k)
+1124 
+1125     if encoder:
+1126         variables, attrs = encoder(variables, attrs)
+1127 
+1128     store.store(variables, attrs, check_encoding, writer, unlimited_dims=unlimited_dims)
+1129 
+1130 
+1131 def save_mfdataset(
+1132     datasets, paths, mode="w", format=None, groups=None, engine=None, compute=True
+1133 ):
+1134     """Write multiple datasets to disk as netCDF files simultaneously.
+1135 
+1136     This function is intended for use with datasets consisting of dask.array
+1137     objects, in which case it can write the multiple datasets to disk
+1138     simultaneously using a shared thread pool.
+1139 
+1140     When not using dask, it is no different than calling ``to_netcdf``
+1141     repeatedly.
+1142 
+1143     Parameters
+1144     ----------
+1145     datasets : list of xarray.Dataset
+1146         List of datasets to save.
+1147     paths : list of str or list of Paths
+1148         List of paths to which to save each corresponding dataset.
+1149     mode : {'w', 'a'}, optional
+1150         Write ('w') or append ('a') mode. If mode='w', any existing file at
+1151         these locations will be overwritten.
+1152     format : {'NETCDF4', 'NETCDF4_CLASSIC', 'NETCDF3_64BIT',
+1153               'NETCDF3_CLASSIC'}, optional
+1154 
+1155         File format for the resulting netCDF file:
+1156 
+1157         * NETCDF4: Data is stored in an HDF5 file, using netCDF4 API
+1158           features.
+1159         * NETCDF4_CLASSIC: Data is stored in an HDF5 file, using only
+1160           netCDF 3 compatible API features.
+1161         * NETCDF3_64BIT: 64-bit offset version of the netCDF 3 file format,
+1162           which fully supports 2+ GB files, but is only compatible with
+1163           clients linked against netCDF version 3.6.0 or later.
+1164         * NETCDF3_CLASSIC: The classic netCDF 3 file format. It does not
+1165           handle 2+ GB files very well.
+1166 
+1167         All formats are supported by the netCDF4-python library.
+1168         scipy.io.netcdf only supports the last two formats.
+1169 
+1170         The default format is NETCDF4 if you are saving a file to disk and
+1171         have the netCDF4-python library available. Otherwise, xarray falls
+1172         back to using scipy to write netCDF files and defaults to the
+1173         NETCDF3_64BIT format (scipy does not support netCDF4).
+1174     groups : list of str, optional
+1175         Paths to the netCDF4 group in each corresponding file to which to save
+1176         datasets (only works for format='NETCDF4'). The groups will be created
+1177         if necessary.
+1178     engine : {'netcdf4', 'scipy', 'h5netcdf'}, optional
+1179         Engine to use when writing netCDF files. If not provided, the
+1180         default engine is chosen based on available dependencies, with a
+1181         preference for 'netcdf4' if writing to a file on disk.
+1182         See `Dataset.to_netcdf` for additional information.
+1183     compute: boolean
+1184         If true compute immediately, otherwise return a
+1185         ``dask.delayed.Delayed`` object that can be computed later.
+1186 
+1187     Examples
+1188     --------
+1189 
+1190     Save a dataset into one netCDF per year of data:
+1191 
+1192     >>> years, datasets = zip(*ds.groupby("time.year"))
+1193     >>> paths = ["%s.nc" % y for y in years]
+1194     >>> xr.save_mfdataset(datasets, paths)
+1195     """
+1196     if mode == "w" and len(set(paths)) < len(paths):
+1197         raise ValueError(
+1198             "cannot use mode='w' when writing multiple " "datasets to the same path"
+1199         )
+1200 
+1201     for obj in datasets:
+1202         if not isinstance(obj, Dataset):
+1203             raise TypeError(
+1204                 "save_mfdataset only supports writing Dataset "
+1205                 "objects, received type %s" % type(obj)
+1206             )
+1207 
+1208     if groups is None:
+1209         groups = [None] * len(datasets)
+1210 
+1211     if len({len(datasets), len(paths), len(groups)}) > 1:
+1212         raise ValueError(
+1213             "must supply lists of the same length for the "
+1214             "datasets, paths and groups arguments to "
+1215             "save_mfdataset"
+1216         )
+1217 
+1218     writers, stores = zip(
+1219         *[
+1220             to_netcdf(
+1221                 ds, path, mode, format, group, engine, compute=compute, multifile=True
+1222             )
+1223             for ds, path, group in zip(datasets, paths, groups)
+1224         ]
+1225     )
+1226 
+1227     try:
+1228         writes = [w.sync(compute=compute) for w in writers]
+1229     finally:
+1230         if compute:
+1231             for store in stores:
+1232                 store.close()
+1233 
+1234     if not compute:
+1235         import dask
+1236 
+1237         return dask.delayed(
+1238             [dask.delayed(_finalize_store)(w, s) for w, s in zip(writes, stores)]
+1239         )
+1240 
+1241 
+1242 def _validate_datatypes_for_zarr_append(dataset):
+1243     """DataArray.name and Dataset keys must be a string or None"""
+1244 
+1245     def check_dtype(var):
+1246         if (
+1247             not np.issubdtype(var.dtype, np.number)
+1248             and not np.issubdtype(var.dtype, np.datetime64)
+1249             and not np.issubdtype(var.dtype, np.bool_)
+1250             and not coding.strings.is_unicode_dtype(var.dtype)
+1251             and not var.dtype == object
+1252         ):
+1253             # and not re.match('^bytes[1-9]+$', var.dtype.name)):
+1254             raise ValueError(
+1255                 "Invalid dtype for data variable: {} "
+1256                 "dtype must be a subtype of number, "
+1257                 "datetime, bool, a fixed sized string, "
+1258                 "a fixed size unicode string or an "
+1259                 "object".format(var)
+1260             )
+1261 
+1262     for k in dataset.data_vars.values():
+1263         check_dtype(k)
+1264 
+1265 
+1266 def _validate_append_dim_and_encoding(
+1267     ds_to_append, store, append_dim, encoding, **open_kwargs
+1268 ):
+1269     try:
+1270         ds = backends.zarr.open_zarr(store, **open_kwargs)
+1271     except ValueError:  # store empty
+1272         return
+1273     if append_dim:
+1274         if append_dim not in ds.dims:
+1275             raise ValueError(
+1276                 f"append_dim={append_dim!r} does not match any existing "
+1277                 f"dataset dimensions {ds.dims}"
+1278             )
+1279     for var_name in ds_to_append:
+1280         if var_name in ds:
+1281             if ds_to_append[var_name].dims != ds[var_name].dims:
+1282                 raise ValueError(
+1283                     f"variable {var_name!r} already exists with different "
+1284                     f"dimension names {ds[var_name].dims} != "
+1285                     f"{ds_to_append[var_name].dims}, but changing variable "
+1286                     "dimensions is not supported by to_zarr()."
+1287                 )
+1288             existing_sizes = {
+1289                 k: v for k, v in ds[var_name].sizes.items() if k != append_dim
+1290             }
+1291             new_sizes = {
+1292                 k: v for k, v in ds_to_append[var_name].sizes.items() if k != append_dim
+1293             }
+1294             if existing_sizes != new_sizes:
+1295                 raise ValueError(
+1296                     f"variable {var_name!r} already exists with different "
+1297                     "dimension sizes: {existing_sizes} != {new_sizes}. "
+1298                     "to_zarr() only supports changing dimension sizes when "
+1299                     f"explicitly appending, but append_dim={append_dim!r}."
+1300                 )
+1301             if var_name in encoding.keys():
+1302                 raise ValueError(
+1303                     f"variable {var_name!r} already exists, but encoding was provided"
+1304                 )
+1305 
+1306 
+1307 def to_zarr(
+1308     dataset,
+1309     store=None,
+1310     mode=None,
+1311     synchronizer=None,
+1312     group=None,
+1313     encoding=None,
+1314     compute=True,
+1315     consolidated=False,
+1316     append_dim=None,
+1317 ):
+1318     """This function creates an appropriate datastore for writing a dataset to
+1319     a zarr ztore
+1320 
+1321     See `Dataset.to_zarr` for full API docs.
+1322     """
+1323     if isinstance(store, Path):
+1324         store = str(store)
+1325     if encoding is None:
+1326         encoding = {}
+1327 
+1328     # validate Dataset keys, DataArray names, and attr keys/values
+1329     _validate_dataset_names(dataset)
+1330     _validate_attrs(dataset)
+1331 
+1332     if mode == "a":
+1333         _validate_datatypes_for_zarr_append(dataset)
+1334         _validate_append_dim_and_encoding(
+1335             dataset,
+1336             store,
+1337             append_dim,
+1338             group=group,
+1339             consolidated=consolidated,
+1340             encoding=encoding,
+1341         )
+1342 
+1343     zstore = backends.ZarrStore.open_group(
+1344         store=store,
+1345         mode=mode,
+1346         synchronizer=synchronizer,
+1347         group=group,
+1348         consolidate_on_close=consolidated,
+1349     )
+1350     zstore.append_dim = append_dim
+1351     writer = ArrayWriter()
+1352     # TODO: figure out how to properly handle unlimited_dims
+1353     dump_to_store(dataset, zstore, writer, encoding=encoding)
+1354     writes = writer.sync(compute=compute)
+1355 
+1356     if compute:
+1357         _finalize_store(writes, zstore)
+1358     else:
+1359         import dask
+1360 
+1361         return dask.delayed(_finalize_store)(writes, zstore)
+1362 
+1363     return zstore
+
+</code><intended_behavior>The method should properly handle filenames with non-English characters by encoding them correctly using UTF-8 encoding.</intended_behavior>, <file>xarray/coding/strings.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Coders for strings."""
+2 from functools import partial
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.pycompat import dask_array_type
+8 from ..core.variable import Variable
+9 from .variables import (
+10     VariableCoder,
+11     lazy_elemwise_func,
+12     pop_to,
+13     safe_setitem,
+14     unpack_for_decoding,
+15     unpack_for_encoding,
+16 )
+17 
+18 
+19 def create_vlen_dtype(element_type):
+20     # based on h5py.special_dtype
+21     return np.dtype("O", metadata={"element_type": element_type})
+22 
+23 
+24 def check_vlen_dtype(dtype):
+25     if dtype.kind != "O" or dtype.metadata is None:
+26         return None
+27     else:
+28         return dtype.metadata.get("element_type")
+29 
+30 
+31 def is_unicode_dtype(dtype):
+32     return dtype.kind == "U" or check_vlen_dtype(dtype) == str
+33 
+34 
+35 def is_bytes_dtype(dtype):
+36     return dtype.kind == "S" or check_vlen_dtype(dtype) == bytes
+37 
+38 
+39 class EncodedStringCoder(VariableCoder):
+40     """Transforms between unicode strings and fixed-width UTF-8 bytes."""
+41 
+42     def __init__(self, allows_unicode=True):
+43         self.allows_unicode = allows_unicode
+44 
+45     def encode(self, variable, name=None):
+46         dims, data, attrs, encoding = unpack_for_encoding(variable)
+47 
+48         contains_unicode = is_unicode_dtype(data.dtype)
+49         encode_as_char = encoding.get("dtype") == "S1"
+50 
+51         if encode_as_char:
+52             del encoding["dtype"]  # no longer relevant
+53 
+54         if contains_unicode and (encode_as_char or not self.allows_unicode):
+55             if "_FillValue" in attrs:
+56                 raise NotImplementedError(
+57                     "variable {!r} has a _FillValue specified, but "
+58                     "_FillValue is not yet supported on unicode strings: "
+59                     "https://github.com/pydata/xarray/issues/1647".format(name)
+60                 )
+61 
+62             string_encoding = encoding.pop("_Encoding", "utf-8")
+63             safe_setitem(attrs, "_Encoding", string_encoding, name=name)
+64             # TODO: figure out how to handle this in a lazy way with dask
+65             data = encode_string_array(data, string_encoding)
+66 
+67         return Variable(dims, data, attrs, encoding)
+68 
+69     def decode(self, variable, name=None):
+70         dims, data, attrs, encoding = unpack_for_decoding(variable)
+71 
+72         if "_Encoding" in attrs:
+73             string_encoding = pop_to(attrs, encoding, "_Encoding")
+74             func = partial(decode_bytes_array, encoding=string_encoding)
+75             data = lazy_elemwise_func(data, func, np.dtype(object))
+76 
+77         return Variable(dims, data, attrs, encoding)
+78 
+79 
+80 def decode_bytes_array(bytes_array, encoding="utf-8"):
+81     # This is faster than using np.char.decode() or np.vectorize()
+82     bytes_array = np.asarray(bytes_array)
+83     decoded = [x.decode(encoding) for x in bytes_array.ravel()]
+84     return np.array(decoded, dtype=object).reshape(bytes_array.shape)
+85 
+86 
+87 def encode_string_array(string_array, encoding="utf-8"):
+88     string_array = np.asarray(string_array)
+89     encoded = [x.encode(encoding) for x in string_array.ravel()]
+90     return np.array(encoded, dtype=bytes).reshape(string_array.shape)
+91 
+92 
+93 def ensure_fixed_length_bytes(var):
+94     """Ensure that a variable with vlen bytes is converted to fixed width."""
+95     dims, data, attrs, encoding = unpack_for_encoding(var)
+96     if check_vlen_dtype(data.dtype) == bytes:
+97         # TODO: figure out how to handle this with dask
+98         data = np.asarray(data, dtype=np.string_)
+99     return Variable(dims, data, attrs, encoding)
+100 
+101 
+102 class CharacterArrayCoder(VariableCoder):
+103     """Transforms between arrays containing bytes and character arrays."""
+104 
+105     def encode(self, variable, name=None):
+106         variable = ensure_fixed_length_bytes(variable)
+107 
+108         dims, data, attrs, encoding = unpack_for_encoding(variable)
+109         if data.dtype.kind == "S" and encoding.get("dtype") is not str:
+110             data = bytes_to_char(data)
+111             if "char_dim_name" in encoding.keys():
+112                 char_dim_name = encoding.pop("char_dim_name")
+113             else:
+114                 char_dim_name = "string%s" % data.shape[-1]
+115             dims = dims + (char_dim_name,)
+116         return Variable(dims, data, attrs, encoding)
+117 
+118     def decode(self, variable, name=None):
+119         dims, data, attrs, encoding = unpack_for_decoding(variable)
+120 
+121         if data.dtype == "S1" and dims:
+122             encoding["char_dim_name"] = dims[-1]
+123             dims = dims[:-1]
+124             data = char_to_bytes(data)
+125         return Variable(dims, data, attrs, encoding)
+126 
+127 
+128 def bytes_to_char(arr):
+129     """Convert numpy/dask arrays from fixed width bytes to characters."""
+130     if arr.dtype.kind != "S":
+131         raise ValueError("argument must have a fixed-width bytes dtype")
+132 
+133     if isinstance(arr, dask_array_type):
+134         import dask.array as da
+135 
+136         return da.map_blocks(
+137             _numpy_bytes_to_char,
+138             arr,
+139             dtype="S1",
+140             chunks=arr.chunks + ((arr.dtype.itemsize,)),
+141             new_axis=[arr.ndim],
+142         )
+143     else:
+144         return _numpy_bytes_to_char(arr)
+145 
+146 
+147 def _numpy_bytes_to_char(arr):
+148     """Like netCDF4.stringtochar, but faster and more flexible.
+149     """
+150     # ensure the array is contiguous
+151     arr = np.array(arr, copy=False, order="C", dtype=np.string_)
+152     return arr.reshape(arr.shape + (1,)).view("S1")
+153 
+154 
+155 def char_to_bytes(arr):
+156     """Convert numpy/dask arrays from characters to fixed width bytes."""
+157     if arr.dtype != "S1":
+158         raise ValueError("argument must have dtype='S1'")
+159 
+160     if not arr.ndim:
+161         # no dimension to concatenate along
+162         return arr
+163 
+164     size = arr.shape[-1]
+165 
+166     if not size:
+167         # can't make an S0 dtype
+168         return np.zeros(arr.shape[:-1], dtype=np.string_)
+169 
+170     if isinstance(arr, dask_array_type):
+171         import dask.array as da
+172 
+173         if len(arr.chunks[-1]) > 1:
+174             raise ValueError(
+175                 "cannot stacked dask character array with "
+176                 "multiple chunks in the last dimension: {}".format(arr)
+177             )
+178 
+179         dtype = np.dtype("S" + str(arr.shape[-1]))
+180         return da.map_blocks(
+181             _numpy_char_to_bytes,
+182             arr,
+183             dtype=dtype,
+184             chunks=arr.chunks[:-1],
+185             drop_axis=[arr.ndim - 1],
+186         )
+187     else:
+188         return StackedBytesArray(arr)
+189 
+190 
+191 def _numpy_char_to_bytes(arr):
+192     """Like netCDF4.chartostring, but faster and more flexible.
+193     """
+194     # based on: http://stackoverflow.com/a/10984878/809705
+195     arr = np.array(arr, copy=False, order="C")
+196     dtype = "S" + str(arr.shape[-1])
+197     return arr.view(dtype).reshape(arr.shape[:-1])
+198 
+199 
+200 class StackedBytesArray(indexing.ExplicitlyIndexedNDArrayMixin):
+201     """Wrapper around array-like objects to create a new indexable object where
+202     values, when accessed, are automatically stacked along the last dimension.
+203 
+204     >>> StackedBytesArray(np.array(["a", "b", "c"]))[:]
+205     array('abc',
+206           dtype='|S3')
+207     """
+208 
+209     def __init__(self, array):
+210         """
+211         Parameters
+212         ----------
+213         array : array-like
+214             Original array of values to wrap.
+215         """
+216         if array.dtype != "S1":
+217             raise ValueError(
+218                 "can only use StackedBytesArray if argument has dtype='S1'"
+219             )
+220         self.array = indexing.as_indexable(array)
+221 
+222     @property
+223     def dtype(self):
+224         return np.dtype("S" + str(self.array.shape[-1]))
+225 
+226     @property
+227     def shape(self):
+228         return self.array.shape[:-1]
+229 
+230     def __repr__(self):
+231         return "{}({!r})".format(type(self).__name__, self.array)
+232 
+233     def __getitem__(self, key):
+234         # require slicing the last dimension completely
+235         key = type(key)(indexing.expanded_indexer(key.tuple, self.array.ndim))
+236         if key.tuple[-1] != slice(None):
+237             raise IndexError("too many indices")
+238         return _numpy_char_to_bytes(self.array[key])
+
+</code><intended_behavior>The method should correctly encode or decode strings containing non-English characters using UTF-8 encoding.</intended_behavior>]
+2025-11-17 01:27:17.521 | INFO     | Search completed. Bug locations: [<file>xarray/backends/api.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import os.path
+2 import warnings
+3 from glob import glob
+4 from io import BytesIO
+5 from numbers import Number
+6 from pathlib import Path
+7 from typing import (
+8     TYPE_CHECKING,
+9     Callable,
+10     Dict,
+11     Hashable,
+12     Iterable,
+13     Mapping,
+14     Tuple,
+15     Union,
+16 )
+17 
+18 import numpy as np
+19 
+20 from .. import backends, coding, conventions
+21 from ..core import indexing
+22 from ..core.combine import (
+23     _infer_concat_order_from_positions,
+24     _nested_combine,
+25     combine_by_coords,
+26 )
+27 from ..core.dataarray import DataArray
+28 from ..core.dataset import Dataset
+29 from ..core.utils import close_on_error, is_grib_path, is_remote_uri
+30 from .common import AbstractDataStore, ArrayWriter
+31 from .locks import _get_scheduler
+32 
+33 if TYPE_CHECKING:
+34     try:
+35         from dask.delayed import Delayed
+36     except ImportError:
+37         Delayed = None
+38 
+39 
+40 DATAARRAY_NAME = "__xarray_dataarray_name__"
+41 DATAARRAY_VARIABLE = "__xarray_dataarray_variable__"
+42 
+43 
+44 def _get_default_engine_remote_uri():
+45     try:
+46         import netCDF4  # noqa: F401
+47 
+48         engine = "netcdf4"
+49     except ImportError:  # pragma: no cover
+50         try:
+51             import pydap  # noqa: F401
+52 
+53             engine = "pydap"
+54         except ImportError:
+55             raise ValueError(
+56                 "netCDF4 or pydap is required for accessing "
+57                 "remote datasets via OPeNDAP"
+58             )
+59     return engine
+60 
+61 
+62 def _get_default_engine_grib():
+63     msgs = []
+64     try:
+65         import Nio  # noqa: F401
+66 
+67         msgs += ["set engine='pynio' to access GRIB files with PyNIO"]
+68     except ImportError:  # pragma: no cover
+69         pass
+70     try:
+71         import cfgrib  # noqa: F401
+72 
+73         msgs += ["set engine='cfgrib' to access GRIB files with cfgrib"]
+74     except ImportError:  # pragma: no cover
+75         pass
+76     if msgs:
+77         raise ValueError(" or\n".join(msgs))
+78     else:
+79         raise ValueError("PyNIO or cfgrib is required for accessing " "GRIB files")
+80 
+81 
+82 def _get_default_engine_gz():
+83     try:
+84         import scipy  # noqa: F401
+85 
+86         engine = "scipy"
+87     except ImportError:  # pragma: no cover
+88         raise ValueError("scipy is required for accessing .gz files")
+89     return engine
+90 
+91 
+92 def _get_default_engine_netcdf():
+93     try:
+94         import netCDF4  # noqa: F401
+95 
+96         engine = "netcdf4"
+97     except ImportError:  # pragma: no cover
+98         try:
+99             import scipy.io.netcdf  # noqa: F401
+100 
+101             engine = "scipy"
+102         except ImportError:
+103             raise ValueError(
+104                 "cannot read or write netCDF files without "
+105                 "netCDF4-python or scipy installed"
+106             )
+107     return engine
+108 
+109 
+110 def _get_engine_from_magic_number(filename_or_obj):
+111     # check byte header to determine file type
+112     if isinstance(filename_or_obj, bytes):
+113         magic_number = filename_or_obj[:8]
+114     else:
+115         if filename_or_obj.tell() != 0:
+116             raise ValueError(
+117                 "file-like object read/write pointer not at zero "
+118                 "please close and reopen, or use a context "
+119                 "manager"
+120             )
+121         magic_number = filename_or_obj.read(8)
+122         filename_or_obj.seek(0)
+123 
+124     if magic_number.startswith(b"CDF"):
+125         engine = "scipy"
+126     elif magic_number.startswith(b"\211HDF\r\n\032\n"):
+127         engine = "h5netcdf"
+128         if isinstance(filename_or_obj, bytes):
+129             raise ValueError(
+130                 "can't open netCDF4/HDF5 as bytes "
+131                 "try passing a path or file-like object"
+132             )
+133     else:
+134         if isinstance(filename_or_obj, bytes) and len(filename_or_obj) > 80:
+135             filename_or_obj = filename_or_obj[:80] + b"..."
+136         raise ValueError(
+137             "{} is not a valid netCDF file "
+138             "did you mean to pass a string for a path instead?".format(filename_or_obj)
+139         )
+140     return engine
+141 
+142 
+143 def _get_default_engine(path, allow_remote=False):
+144     if allow_remote and is_remote_uri(path):
+145         engine = _get_default_engine_remote_uri()
+146     elif is_grib_path(path):
+147         engine = _get_default_engine_grib()
+148     elif path.endswith(".gz"):
+149         engine = _get_default_engine_gz()
+150     else:
+151         engine = _get_default_engine_netcdf()
+152     return engine
+153 
+154 
+155 def _normalize_path(path):
+156     if is_remote_uri(path):
+157         return path
+158     else:
+159         return os.path.abspath(os.path.expanduser(path))
+160 
+161 
+162 def _validate_dataset_names(dataset):
+163     """DataArray.name and Dataset keys must be a string or None"""
+164 
+165     def check_name(name):
+166         if isinstance(name, str):
+167             if not name:
+168                 raise ValueError(
+169                     "Invalid name for DataArray or Dataset key: "
+170                     "string must be length 1 or greater for "
+171                     "serialization to netCDF files"
+172                 )
+173         elif name is not None:
+174             raise TypeError(
+175                 "DataArray.name or Dataset key must be either a "
+176                 "string or None for serialization to netCDF files"
+177             )
+178 
+179     for k in dataset.variables:
+180         check_name(k)
+181 
+182 
+183 def _validate_attrs(dataset):
+184     """`attrs` must have a string key and a value which is either: a number,
+185     a string, an ndarray or a list/tuple of numbers/strings.
+186     """
+187 
+188     def check_attr(name, value):
+189         if isinstance(name, str):
+190             if not name:
+191                 raise ValueError(
+192                     "Invalid name for attr: string must be "
+193                     "length 1 or greater for serialization to "
+194                     "netCDF files"
+195                 )
+196         else:
+197             raise TypeError(
+198                 "Invalid name for attr: {} must be a string for "
+199                 "serialization to netCDF files".format(name)
+200             )
+201 
+202         if not isinstance(value, (str, Number, np.ndarray, np.number, list, tuple)):
+203             raise TypeError(
+204                 "Invalid value for attr: {} must be a number, "
+205                 "a string, an ndarray or a list/tuple of "
+206                 "numbers/strings for serialization to netCDF "
+207                 "files".format(value)
+208             )
+209 
+210     # Check attrs on the dataset itself
+211     for k, v in dataset.attrs.items():
+212         check_attr(k, v)
+213 
+214     # Check attrs on each variable within the dataset
+215     for variable in dataset.variables.values():
+216         for k, v in variable.attrs.items():
+217             check_attr(k, v)
+218 
+219 
+220 def _protect_dataset_variables_inplace(dataset, cache):
+221     for name, variable in dataset.variables.items():
+222         if name not in variable.dims:
+223             # no need to protect IndexVariable objects
+224             data = indexing.CopyOnWriteArray(variable._data)
+225             if cache:
+226                 data = indexing.MemoryCachedArray(data)
+227             variable.data = data
+228 
+229 
+230 def _finalize_store(write, store):
+231     """ Finalize this store by explicitly syncing and closing"""
+232     del write  # ensure writing is done first
+233     store.close()
+234 
+235 
+236 def load_dataset(filename_or_obj, **kwargs):
+237     """Open, load into memory, and close a Dataset from a file or file-like
+238     object.
+239 
+240     This is a thin wrapper around :py:meth:`~xarray.open_dataset`. It differs
+241     from `open_dataset` in that it loads the Dataset into memory, closes the
+242     file, and returns the Dataset. In contrast, `open_dataset` keeps the file
+243     handle open and lazy loads its contents. All parameters are passed directly
+244     to `open_dataset`. See that documentation for further details.
+245 
+246     Returns
+247     -------
+248     dataset : Dataset
+249         The newly created Dataset.
+250 
+251     See Also
+252     --------
+253     open_dataset
+254     """
+255     if "cache" in kwargs:
+256         raise TypeError("cache has no effect in this context")
+257 
+258     with open_dataset(filename_or_obj, **kwargs) as ds:
+259         return ds.load()
+260 
+261 
+262 def load_dataarray(filename_or_obj, **kwargs):
+263     """Open, load into memory, and close a DataArray from a file or file-like
+264     object containing a single data variable.
+265 
+266     This is a thin wrapper around :py:meth:`~xarray.open_dataarray`. It differs
+267     from `open_dataarray` in that it loads the Dataset into memory, closes the
+268     file, and returns the Dataset. In contrast, `open_dataarray` keeps the file
+269     handle open and lazy loads its contents. All parameters are passed directly
+270     to `open_dataarray`. See that documentation for further details.
+271 
+272     Returns
+273     -------
+274     datarray : DataArray
+275         The newly created DataArray.
+276 
+277     See Also
+278     --------
+279     open_dataarray
+280     """
+281     if "cache" in kwargs:
+282         raise TypeError("cache has no effect in this context")
+283 
+284     with open_dataarray(filename_or_obj, **kwargs) as da:
+285         return da.load()
+286 
+287 
+288 def open_dataset(
+289     filename_or_obj,
+290     group=None,
+291     decode_cf=True,
+292     mask_and_scale=None,
+293     decode_times=True,
+294     autoclose=None,
+295     concat_characters=True,
+296     decode_coords=True,
+297     engine=None,
+298     chunks=None,
+299     lock=None,
+300     cache=None,
+301     drop_variables=None,
+302     backend_kwargs=None,
+303     use_cftime=None,
+304     decode_timedelta=None,
+305 ):
+306     """Open and decode a dataset from a file or file-like object.
+307 
+308     Parameters
+309     ----------
+310     filename_or_obj : str, Path, file or xarray.backends.*DataStore
+311         Strings and Path objects are interpreted as a path to a netCDF file
+312         or an OpenDAP URL and opened with python-netCDF4, unless the filename
+313         ends with .gz, in which case the file is gunzipped and opened with
+314         scipy.io.netcdf (only netCDF3 supported). Byte-strings or file-like
+315         objects are opened by scipy.io.netcdf (netCDF3) or h5py (netCDF4/HDF).
+316     group : str, optional
+317         Path to the netCDF4 group in the given file to open (only works for
+318         netCDF4 files).
+319     decode_cf : bool, optional
+320         Whether to decode these variables, assuming they were saved according
+321         to CF conventions.
+322     mask_and_scale : bool, optional
+323         If True, replace array values equal to `_FillValue` with NA and scale
+324         values according to the formula `original_values * scale_factor +
+325         add_offset`, where `_FillValue`, `scale_factor` and `add_offset` are
+326         taken from variable attributes (if they exist).  If the `_FillValue` or
+327         `missing_value` attribute contains multiple values a warning will be
+328         issued and all array values matching one of the multiple values will
+329         be replaced by NA. mask_and_scale defaults to True except for the
+330         pseudonetcdf backend.
+331     decode_times : bool, optional
+332         If True, decode times encoded in the standard NetCDF datetime format
+333         into datetime objects. Otherwise, leave them encoded as numbers.
+334     autoclose : bool, optional
+335         If True, automatically close files to avoid OS Error of too many files
+336         being open.  However, this option doesn't work with streams, e.g.,
+337         BytesIO.
+338     concat_characters : bool, optional
+339         If True, concatenate along the last dimension of character arrays to
+340         form string arrays. Dimensions will only be concatenated over (and
+341         removed) if they have no corresponding variable and if they are only
+342         used as the last dimension of character arrays.
+343     decode_coords : bool, optional
+344         If True, decode the 'coordinates' attribute to identify coordinates in
+345         the resulting dataset.
+346     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib', \
+347         'pseudonetcdf'}, optional
+348         Engine to use when reading files. If not provided, the default engine
+349         is chosen based on available dependencies, with a preference for
+350         'netcdf4'.
+351     chunks : int or dict, optional
+352         If chunks is provided, it used to load the new dataset into dask
+353         arrays. ``chunks={}`` loads the dataset with dask using a single
+354         chunk for all arrays.
+355     lock : False or duck threading.Lock, optional
+356         Resource lock to use when reading data from disk. Only relevant when
+357         using dask or another form of parallelism. By default, appropriate
+358         locks are chosen to safely read and write files with the currently
+359         active dask scheduler.
+360     cache : bool, optional
+361         If True, cache data loaded from the underlying datastore in memory as
+362         NumPy arrays when accessed to avoid reading from the underlying data-
+363         store multiple times. Defaults to True unless you specify the `chunks`
+364         argument to use dask, in which case it defaults to False. Does not
+365         change the behavior of coordinates corresponding to dimensions, which
+366         always load their data from disk into a ``pandas.Index``.
+367     drop_variables: string or iterable, optional
+368         A variable or list of variables to exclude from being parsed from the
+369         dataset. This may be useful to drop variables with problems or
+370         inconsistent values.
+371     backend_kwargs: dictionary, optional
+372         A dictionary of keyword arguments to pass on to the backend. This
+373         may be useful when backend options would improve performance or
+374         allow user control of dataset processing.
+375     use_cftime: bool, optional
+376         Only relevant if encoded dates come from a standard calendar
+377         (e.g. 'gregorian', 'proleptic_gregorian', 'standard', or not
+378         specified).  If None (default), attempt to decode times to
+379         ``np.datetime64[ns]`` objects; if this is not possible, decode times to
+380         ``cftime.datetime`` objects. If True, always decode times to
+381         ``cftime.datetime`` objects, regardless of whether or not they can be
+382         represented using ``np.datetime64[ns]`` objects.  If False, always
+383         decode times to ``np.datetime64[ns]`` objects; if this is not possible
+384         raise an error.
+385     decode_timedelta : bool, optional
+386         If True, decode variables and coordinates with time units in
+387         {'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds'}
+388         into timedelta objects. If False, leave them encoded as numbers.
+389         If None (default), assume the same value of decode_time.
+390 
+391     Returns
+392     -------
+393     dataset : Dataset
+394         The newly created dataset.
+395 
+396     Notes
+397     -----
+398     ``open_dataset`` opens the file with read-only access. When you modify
+399     values of a Dataset, even one linked to files on disk, only the in-memory
+400     copy you are manipulating in xarray is modified: the original file on disk
+401     is never touched.
+402 
+403     See Also
+404     --------
+405     open_mfdataset
+406     """
+407     engines = [
+408         None,
+409         "netcdf4",
+410         "scipy",
+411         "pydap",
+412         "h5netcdf",
+413         "pynio",
+414         "cfgrib",
+415         "pseudonetcdf",
+416     ]
+417     if engine not in engines:
+418         raise ValueError(
+419             "unrecognized engine for open_dataset: {}\n"
+420             "must be one of: {}".format(engine, engines)
+421         )
+422 
+423     if autoclose is not None:
+424         warnings.warn(
+425             "The autoclose argument is no longer used by "
+426             "xarray.open_dataset() and is now ignored; it will be removed in "
+427             "a future version of xarray. If necessary, you can control the "
+428             "maximum number of simultaneous open files with "
+429             "xarray.set_options(file_cache_maxsize=...).",
+430             FutureWarning,
+431             stacklevel=2,
+432         )
+433 
+434     if mask_and_scale is None:
+435         mask_and_scale = not engine == "pseudonetcdf"
+436 
+437     if not decode_cf:
+438         mask_and_scale = False
+439         decode_times = False
+440         concat_characters = False
+441         decode_coords = False
+442         decode_timedelta = False
+443 
+444     if cache is None:
+445         cache = chunks is None
+446 
+447     if backend_kwargs is None:
+448         backend_kwargs = {}
+449 
+450     def maybe_decode_store(store, lock=False):
+451         ds = conventions.decode_cf(
+452             store,
+453             mask_and_scale=mask_and_scale,
+454             decode_times=decode_times,
+455             concat_characters=concat_characters,
+456             decode_coords=decode_coords,
+457             drop_variables=drop_variables,
+458             use_cftime=use_cftime,
+459             decode_timedelta=decode_timedelta,
+460         )
+461 
+462         _protect_dataset_variables_inplace(ds, cache)
+463 
+464         if chunks is not None:
+465             from dask.base import tokenize
+466 
+467             # if passed an actual file path, augment the token with
+468             # the file modification time
+469             if isinstance(filename_or_obj, str) and not is_remote_uri(filename_or_obj):
+470                 mtime = os.path.getmtime(filename_or_obj)
+471             else:
+472                 mtime = None
+473             token = tokenize(
+474                 filename_or_obj,
+475                 mtime,
+476                 group,
+477                 decode_cf,
+478                 mask_and_scale,
+479                 decode_times,
+480                 concat_characters,
+481                 decode_coords,
+482                 engine,
+483                 chunks,
+484                 drop_variables,
+485                 use_cftime,
+486                 decode_timedelta,
+487             )
+488             name_prefix = "open_dataset-%s" % token
+489             ds2 = ds.chunk(chunks, name_prefix=name_prefix, token=token)
+490             ds2._file_obj = ds._file_obj
+491         else:
+492             ds2 = ds
+493 
+494         return ds2
+495 
+496     if isinstance(filename_or_obj, Path):
+497         filename_or_obj = str(filename_or_obj)
+498 
+499     if isinstance(filename_or_obj, AbstractDataStore):
+500         store = filename_or_obj
+501 
+502     elif isinstance(filename_or_obj, str):
+503         filename_or_obj = _normalize_path(filename_or_obj)
+504 
+505         if engine is None:
+506             engine = _get_default_engine(filename_or_obj, allow_remote=True)
+507         if engine == "netcdf4":
+508             store = backends.NetCDF4DataStore.open(
+509                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+510             )
+511         elif engine == "scipy":
+512             store = backends.ScipyDataStore(filename_or_obj, **backend_kwargs)
+513         elif engine == "pydap":
+514             store = backends.PydapDataStore.open(filename_or_obj, **backend_kwargs)
+515         elif engine == "h5netcdf":
+516             store = backends.H5NetCDFStore.open(
+517                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+518             )
+519         elif engine == "pynio":
+520             store = backends.NioDataStore(filename_or_obj, lock=lock, **backend_kwargs)
+521         elif engine == "pseudonetcdf":
+522             store = backends.PseudoNetCDFDataStore.open(
+523                 filename_or_obj, lock=lock, **backend_kwargs
+524             )
+525         elif engine == "cfgrib":
+526             store = backends.CfGribDataStore(
+527                 filename_or_obj, lock=lock, **backend_kwargs
+528             )
+529 
+530     else:
+531         if engine not in [None, "scipy", "h5netcdf"]:
+532             raise ValueError(
+533                 "can only read bytes or file-like objects "
+534                 "with engine='scipy' or 'h5netcdf'"
+535             )
+536         engine = _get_engine_from_magic_number(filename_or_obj)
+537         if engine == "scipy":
+538             store = backends.ScipyDataStore(filename_or_obj, **backend_kwargs)
+539         elif engine == "h5netcdf":
+540             store = backends.H5NetCDFStore.open(
+541                 filename_or_obj, group=group, lock=lock, **backend_kwargs
+542             )
+543 
+544     with close_on_error(store):
+545         ds = maybe_decode_store(store)
+546 
+547     # Ensure source filename always stored in dataset object (GH issue #2550)
+548     if "source" not in ds.encoding:
+549         if isinstance(filename_or_obj, str):
+550             ds.encoding["source"] = filename_or_obj
+551 
+552     return ds
+553 
+554 
+555 def open_dataarray(
+556     filename_or_obj,
+557     group=None,
+558     decode_cf=True,
+559     mask_and_scale=None,
+560     decode_times=True,
+561     autoclose=None,
+562     concat_characters=True,
+563     decode_coords=True,
+564     engine=None,
+565     chunks=None,
+566     lock=None,
+567     cache=None,
+568     drop_variables=None,
+569     backend_kwargs=None,
+570     use_cftime=None,
+571     decode_timedelta=None,
+572 ):
+573     """Open an DataArray from a file or file-like object containing a single
+574     data variable.
+575 
+576     This is designed to read netCDF files with only one data variable. If
+577     multiple variables are present then a ValueError is raised.
+578 
+579     Parameters
+580     ----------
+581     filename_or_obj : str, Path, file or xarray.backends.*DataStore
+582         Strings and Paths are interpreted as a path to a netCDF file or an
+583         OpenDAP URL and opened with python-netCDF4, unless the filename ends
+584         with .gz, in which case the file is gunzipped and opened with
+585         scipy.io.netcdf (only netCDF3 supported). Byte-strings or file-like
+586         objects are opened by scipy.io.netcdf (netCDF3) or h5py (netCDF4/HDF).
+587     group : str, optional
+588         Path to the netCDF4 group in the given file to open (only works for
+589         netCDF4 files).
+590     decode_cf : bool, optional
+591         Whether to decode these variables, assuming they were saved according
+592         to CF conventions.
+593     mask_and_scale : bool, optional
+594         If True, replace array values equal to `_FillValue` with NA and scale
+595         values according to the formula `original_values * scale_factor +
+596         add_offset`, where `_FillValue`, `scale_factor` and `add_offset` are
+597         taken from variable attributes (if they exist).  If the `_FillValue` or
+598         `missing_value` attribute contains multiple values a warning will be
+599         issued and all array values matching one of the multiple values will
+600         be replaced by NA. mask_and_scale defaults to True except for the
+601         pseudonetcdf backend.
+602     decode_times : bool, optional
+603         If True, decode times encoded in the standard NetCDF datetime format
+604         into datetime objects. Otherwise, leave them encoded as numbers.
+605     concat_characters : bool, optional
+606         If True, concatenate along the last dimension of character arrays to
+607         form string arrays. Dimensions will only be concatenated over (and
+608         removed) if they have no corresponding variable and if they are only
+609         used as the last dimension of character arrays.
+610     decode_coords : bool, optional
+611         If True, decode the 'coordinates' attribute to identify coordinates in
+612         the resulting dataset.
+613     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib'}, \
+614         optional
+615         Engine to use when reading files. If not provided, the default engine
+616         is chosen based on available dependencies, with a preference for
+617         'netcdf4'.
+618     chunks : int or dict, optional
+619         If chunks is provided, it used to load the new dataset into dask
+620         arrays.
+621     lock : False or duck threading.Lock, optional
+622         Resource lock to use when reading data from disk. Only relevant when
+623         using dask or another form of parallelism. By default, appropriate
+624         locks are chosen to safely read and write files with the currently
+625         active dask scheduler.
+626     cache : bool, optional
+627         If True, cache data loaded from the underlying datastore in memory as
+628         NumPy arrays when accessed to avoid reading from the underlying data-
+629         store multiple times. Defaults to True unless you specify the `chunks`
+630         argument to use dask, in which case it defaults to False. Does not
+631         change the behavior of coordinates corresponding to dimensions, which
+632         always load their data from disk into a ``pandas.Index``.
+633     drop_variables: string or iterable, optional
+634         A variable or list of variables to exclude from being parsed from the
+635         dataset. This may be useful to drop variables with problems or
+636         inconsistent values.
+637     backend_kwargs: dictionary, optional
+638         A dictionary of keyword arguments to pass on to the backend. This
+639         may be useful when backend options would improve performance or
+640         allow user control of dataset processing.
+641     use_cftime: bool, optional
+642         Only relevant if encoded dates come from a standard calendar
+643         (e.g. 'gregorian', 'proleptic_gregorian', 'standard', or not
+644         specified).  If None (default), attempt to decode times to
+645         ``np.datetime64[ns]`` objects; if this is not possible, decode times to
+646         ``cftime.datetime`` objects. If True, always decode times to
+647         ``cftime.datetime`` objects, regardless of whether or not they can be
+648         represented using ``np.datetime64[ns]`` objects.  If False, always
+649         decode times to ``np.datetime64[ns]`` objects; if this is not possible
+650         raise an error.
+651     decode_timedelta : bool, optional
+652         If True, decode variables and coordinates with time units in
+653         {'days', 'hours', 'minutes', 'seconds', 'milliseconds', 'microseconds'}
+654         into timedelta objects. If False, leave them encoded as numbers.
+655         If None (default), assume the same value of decode_time.
+656 
+657     Notes
+658     -----
+659     This is designed to be fully compatible with `DataArray.to_netcdf`. Saving
+660     using `DataArray.to_netcdf` and then loading with this function will
+661     produce an identical result.
+662 
+663     All parameters are passed directly to `xarray.open_dataset`. See that
+664     documentation for further details.
+665 
+666     See also
+667     --------
+668     open_dataset
+669     """
+670 
+671     dataset = open_dataset(
+672         filename_or_obj,
+673         group=group,
+674         decode_cf=decode_cf,
+675         mask_and_scale=mask_and_scale,
+676         decode_times=decode_times,
+677         autoclose=autoclose,
+678         concat_characters=concat_characters,
+679         decode_coords=decode_coords,
+680         engine=engine,
+681         chunks=chunks,
+682         lock=lock,
+683         cache=cache,
+684         drop_variables=drop_variables,
+685         backend_kwargs=backend_kwargs,
+686         use_cftime=use_cftime,
+687         decode_timedelta=decode_timedelta,
+688     )
+689 
+690     if len(dataset.data_vars) != 1:
+691         raise ValueError(
+692             "Given file dataset contains more than one data "
+693             "variable. Please read with xarray.open_dataset and "
+694             "then select the variable you want."
+695         )
+696     else:
+697         (data_array,) = dataset.data_vars.values()
+698 
+699     data_array._file_obj = dataset._file_obj
+700 
+701     # Reset names if they were changed during saving
+702     # to ensure that we can 'roundtrip' perfectly
+703     if DATAARRAY_NAME in dataset.attrs:
+704         data_array.name = dataset.attrs[DATAARRAY_NAME]
+705         del dataset.attrs[DATAARRAY_NAME]
+706 
+707     if data_array.name == DATAARRAY_VARIABLE:
+708         data_array.name = None
+709 
+710     return data_array
+711 
+712 
+713 class _MultiFileCloser:
+714     __slots__ = ("file_objs",)
+715 
+716     def __init__(self, file_objs):
+717         self.file_objs = file_objs
+718 
+719     def close(self):
+720         for f in self.file_objs:
+721             f.close()
+722 
+723 
+724 def open_mfdataset(
+725     paths,
+726     chunks=None,
+727     concat_dim=None,
+728     compat="no_conflicts",
+729     preprocess=None,
+730     engine=None,
+731     lock=None,
+732     data_vars="all",
+733     coords="different",
+734     combine="by_coords",
+735     autoclose=None,
+736     parallel=False,
+737     join="outer",
+738     attrs_file=None,
+739     **kwargs,
+740 ):
+741     """Open multiple files as a single dataset.
+742 
+743     If combine='by_coords' then the function ``combine_by_coords`` is used to combine
+744     the datasets into one before returning the result, and if combine='nested' then
+745     ``combine_nested`` is used. The filepaths must be structured according to which
+746     combining function is used, the details of which are given in the documentation for
+747     ``combine_by_coords`` and ``combine_nested``. By default ``combine='by_coords'``
+748     will be used. Requires dask to be installed. See documentation for
+749     details on dask [1]_. Global attributes from the ``attrs_file`` are used
+750     for the combined dataset.
+751 
+752     Parameters
+753     ----------
+754     paths : str or sequence
+755         Either a string glob in the form ``"path/to/my/files/*.nc"`` or an explicit list of
+756         files to open. Paths can be given as strings or as pathlib Paths. If
+757         concatenation along more than one dimension is desired, then ``paths`` must be a
+758         nested list-of-lists (see ``combine_nested`` for details). (A string glob will
+759         be expanded to a 1-dimensional list.)
+760     chunks : int or dict, optional
+761         Dictionary with keys given by dimension names and values given by chunk sizes.
+762         In general, these should divide the dimensions of each dataset. If int, chunk
+763         each dimension by ``chunks``. By default, chunks will be chosen to load entire
+764         input files into memory at once. This has a major impact on performance: please
+765         see the full documentation for more details [2]_.
+766     concat_dim : str, or list of str, DataArray, Index or None, optional
+767         Dimensions to concatenate files along.  You only need to provide this argument
+768         if ``combine='by_coords'``, and if any of the dimensions along which you want to
+769         concatenate is not a dimension in the original datasets, e.g., if you want to
+770         stack a collection of 2D arrays along a third dimension. Set
+771         ``concat_dim=[..., None, ...]`` explicitly to disable concatenation along a
+772         particular dimension. Default is None, which for a 1D list of filepaths is
+773         equivalent to opening the files separately and then merging them with
+774         ``xarray.merge``.
+775     combine : {'by_coords', 'nested'}, optional
+776         Whether ``xarray.combine_by_coords`` or ``xarray.combine_nested`` is used to
+777         combine all the data. Default is to use ``xarray.combine_by_coords``.
+778     compat : {'identical', 'equals', 'broadcast_equals',
+779               'no_conflicts', 'override'}, optional
+780         String indicating how to compare variables of the same name for
+781         potential conflicts when merging:
+782 
+783          * 'broadcast_equals': all values must be equal when variables are
+784            broadcast against each other to ensure common dimensions.
+785          * 'equals': all values and dimensions must be the same.
+786          * 'identical': all values, dimensions and attributes must be the
+787            same.
+788          * 'no_conflicts': only values which are not null in both datasets
+789            must be equal. The returned dataset then contains the combination
+790            of all non-null values.
+791          * 'override': skip comparing and pick variable from first dataset
+792 
+793     preprocess : callable, optional
+794         If provided, call this function on each dataset prior to concatenation.
+795         You can find the file-name from which each dataset was loaded in
+796         ``ds.encoding['source']``.
+797     engine : {'netcdf4', 'scipy', 'pydap', 'h5netcdf', 'pynio', 'cfgrib'}, \
+798         optional
+799         Engine to use when reading files. If not provided, the default engine
+800         is chosen based on available dependencies, with a preference for
+801         'netcdf4'.
+802     lock : False or duck threading.Lock, optional
+803         Resource lock to use when reading data from disk. Only relevant when
+804         using dask or another form of parallelism. By default, appropriate
+805         locks are chosen to safely read and write files with the currently
+806         active dask scheduler.
+807     data_vars : {'minimal', 'different', 'all' or list of str}, optional
+808         These data variables will be concatenated together:
+809           * 'minimal': Only data variables in which the dimension already
+810             appears are included.
+811           * 'different': Data variables which are not equal (ignoring
+812             attributes) across all datasets are also concatenated (as well as
+813             all for which dimension already appears). Beware: this option may
+814             load the data payload of data variables into memory if they are not
+815             already loaded.
+816           * 'all': All data variables will be concatenated.
+817           * list of str: The listed data variables will be concatenated, in
+818             addition to the 'minimal' data variables.
+819     coords : {'minimal', 'different', 'all' or list of str}, optional
+820         These coordinate variables will be concatenated together:
+821          * 'minimal': Only coordinates in which the dimension already appears
+822            are included.
+823          * 'different': Coordinates which are not equal (ignoring attributes)
+824            across all datasets are also concatenated (as well as all for which
+825            dimension already appears). Beware: this option may load the data
+826            payload of coordinate variables into memory if they are not already
+827            loaded.
+828          * 'all': All coordinate variables will be concatenated, except
+829            those corresponding to other dimensions.
+830          * list of str: The listed coordinate variables will be concatenated,
+831            in addition the 'minimal' coordinates.
+832     parallel : bool, optional
+833         If True, the open and preprocess steps of this function will be
+834         performed in parallel using ``dask.delayed``. Default is False.
+835     join : {'outer', 'inner', 'left', 'right', 'exact, 'override'}, optional
+836         String indicating how to combine differing indexes
+837         (excluding concat_dim) in objects
+838 
+839         - 'outer': use the union of object indexes
+840         - 'inner': use the intersection of object indexes
+841         - 'left': use indexes from the first object with each dimension
+842         - 'right': use indexes from the last object with each dimension
+843         - 'exact': instead of aligning, raise `ValueError` when indexes to be
+844           aligned are not equal
+845         - 'override': if indexes are of same size, rewrite indexes to be
+846           those of the first object with that dimension. Indexes for the same
+847           dimension must have the same size in all objects.
+848     attrs_file : str or pathlib.Path, optional
+849         Path of the file used to read global attributes from.
+850         By default global attributes are read from the first file provided,
+851         with wildcard matches sorted by filename.
+852     **kwargs : optional
+853         Additional arguments passed on to :py:func:`xarray.open_dataset`.
+854 
+855     Returns
+856     -------
+857     xarray.Dataset
+858 
+859     Notes
+860     -----
+861     ``open_mfdataset`` opens files with read-only access. When you modify values
+862     of a Dataset, even one linked to files on disk, only the in-memory copy you
+863     are manipulating in xarray is modified: the original file on disk is never
+864     touched.
+865 
+866     See Also
+867     --------
+868     combine_by_coords
+869     combine_nested
+870     open_dataset
+871 
+872     References
+873     ----------
+874 
+875     .. [1] http://xarray.pydata.org/en/stable/dask.html
+876     .. [2] http://xarray.pydata.org/en/stable/dask.html#chunking-and-performance
+877     """
+878     if isinstance(paths, str):
+879         if is_remote_uri(paths):
+880             raise ValueError(
+881                 "cannot do wild-card matching for paths that are remote URLs: "
+882                 "{!r}. Instead, supply paths as an explicit list of strings.".format(
+883                     paths
+884                 )
+885             )
+886         paths = sorted(glob(paths))
+887     else:
+888         paths = [str(p) if isinstance(p, Path) else p for p in paths]
+889 
+890     if not paths:
+891         raise OSError("no files to open")
+892 
+893     # If combine='by_coords' then this is unnecessary, but quick.
+894     # If combine='nested' then this creates a flat list which is easier to
+895     # iterate over, while saving the originally-supplied structure as "ids"
+896     if combine == "nested":
+897         if isinstance(concat_dim, (str, DataArray)) or concat_dim is None:
+898             concat_dim = [concat_dim]
+899     combined_ids_paths = _infer_concat_order_from_positions(paths)
+900     ids, paths = (list(combined_ids_paths.keys()), list(combined_ids_paths.values()))
+901 
+902     open_kwargs = dict(
+903         engine=engine, chunks=chunks or {}, lock=lock, autoclose=autoclose, **kwargs
+904     )
+905 
+906     if parallel:
+907         import dask
+908 
+909         # wrap the open_dataset, getattr, and preprocess with delayed
+910         open_ = dask.delayed(open_dataset)
+911         getattr_ = dask.delayed(getattr)
+912         if preprocess is not None:
+913             preprocess = dask.delayed(preprocess)
+914     else:
+915         open_ = open_dataset
+916         getattr_ = getattr
+917 
+918     datasets = [open_(p, **open_kwargs) for p in paths]
+919     file_objs = [getattr_(ds, "_file_obj") for ds in datasets]
+920     if preprocess is not None:
+921         datasets = [preprocess(ds) for ds in datasets]
+922 
+923     if parallel:
+924         # calling compute here will return the datasets/file_objs lists,
+925         # the underlying datasets will still be stored as dask arrays
+926         datasets, file_objs = dask.compute(datasets, file_objs)
+927 
+928     # Combine all datasets, closing them in case of a ValueError
+929     try:
+930         if combine == "nested":
+931             # Combined nested list by successive concat and merge operations
+932             # along each dimension, using structure given by "ids"
+933             combined = _nested_combine(
+934                 datasets,
+935                 concat_dims=concat_dim,
+936                 compat=compat,
+937                 data_vars=data_vars,
+938                 coords=coords,
+939                 ids=ids,
+940                 join=join,
+941                 combine_attrs="drop",
+942             )
+943         elif combine == "by_coords":
+944             # Redo ordering from coordinates, ignoring how they were ordered
+945             # previously
+946             combined = combine_by_coords(
+947                 datasets,
+948                 compat=compat,
+949                 data_vars=data_vars,
+950                 coords=coords,
+951                 join=join,
+952                 combine_attrs="drop",
+953             )
+954         else:
+955             raise ValueError(
+956                 "{} is an invalid option for the keyword argument"
+957                 " ``combine``".format(combine)
+958             )
+959     except ValueError:
+960         for ds in datasets:
+961             ds.close()
+962         raise
+963 
+964     combined._file_obj = _MultiFileCloser(file_objs)
+965 
+966     # read global attributes from the attrs_file or from the first dataset
+967     if attrs_file is not None:
+968         if isinstance(attrs_file, Path):
+969             attrs_file = str(attrs_file)
+970         combined.attrs = datasets[paths.index(attrs_file)].attrs
+971     else:
+972         combined.attrs = datasets[0].attrs
+973 
+974     return combined
+975 
+976 
+977 WRITEABLE_STORES: Dict[str, Callable] = {
+978     "netcdf4": backends.NetCDF4DataStore.open,
+979     "scipy": backends.ScipyDataStore,
+980     "h5netcdf": backends.H5NetCDFStore.open,
+981 }
+982 
+983 
+984 def to_netcdf(
+985     dataset: Dataset,
+986     path_or_file=None,
+987     mode: str = "w",
+988     format: str = None,
+989     group: str = None,
+990     engine: str = None,
+991     encoding: Mapping = None,
+992     unlimited_dims: Iterable[Hashable] = None,
+993     compute: bool = True,
+994     multifile: bool = False,
+995     invalid_netcdf: bool = False,
+996 ) -> Union[Tuple[ArrayWriter, AbstractDataStore], bytes, "Delayed", None]:
+997     """This function creates an appropriate datastore for writing a dataset to
+998     disk as a netCDF file
+999 
+1000     See `Dataset.to_netcdf` for full API docs.
+1001 
+1002     The ``multifile`` argument is only for the private use of save_mfdataset.
+1003     """
+1004     if isinstance(path_or_file, Path):
+1005         path_or_file = str(path_or_file)
+1006 
+1007     if encoding is None:
+1008         encoding = {}
+1009 
+1010     if path_or_file is None:
+1011         if engine is None:
+1012             engine = "scipy"
+1013         elif engine != "scipy":
+1014             raise ValueError(
+1015                 "invalid engine for creating bytes with "
+1016                 "to_netcdf: %r. Only the default engine "
+1017                 "or engine='scipy' is supported" % engine
+1018             )
+1019         if not compute:
+1020             raise NotImplementedError(
+1021                 "to_netcdf() with compute=False is not yet implemented when "
+1022                 "returning bytes"
+1023             )
+1024     elif isinstance(path_or_file, str):
+1025         if engine is None:
+1026             engine = _get_default_engine(path_or_file)
+1027         path_or_file = _normalize_path(path_or_file)
+1028     else:  # file-like object
+1029         engine = "scipy"
+1030 
+1031     # validate Dataset keys, DataArray names, and attr keys/values
+1032     _validate_dataset_names(dataset)
+1033     _validate_attrs(dataset)
+1034 
+1035     try:
+1036         store_open = WRITEABLE_STORES[engine]
+1037     except KeyError:
+1038         raise ValueError("unrecognized engine for to_netcdf: %r" % engine)
+1039 
+1040     if format is not None:
+1041         format = format.upper()
+1042 
+1043     # handle scheduler specific logic
+1044     scheduler = _get_scheduler()
+1045     have_chunks = any(v.chunks for v in dataset.variables.values())
+1046 
+1047     autoclose = have_chunks and scheduler in ["distributed", "multiprocessing"]
+1048     if autoclose and engine == "scipy":
+1049         raise NotImplementedError(
+1050             "Writing netCDF files with the %s backend "
+1051             "is not currently supported with dask's %s "
+1052             "scheduler" % (engine, scheduler)
+1053         )
+1054 
+1055     target = path_or_file if path_or_file is not None else BytesIO()
+1056     kwargs = dict(autoclose=True) if autoclose else {}
+1057     if invalid_netcdf:
+1058         if engine == "h5netcdf":
+1059             kwargs["invalid_netcdf"] = invalid_netcdf
+1060         else:
+1061             raise ValueError(
+1062                 "unrecognized option 'invalid_netcdf' for engine %s" % engine
+1063             )
+1064     store = store_open(target, mode, format, group, **kwargs)
+1065 
+1066     if unlimited_dims is None:
+1067         unlimited_dims = dataset.encoding.get("unlimited_dims", None)
+1068     if unlimited_dims is not None:
+1069         if isinstance(unlimited_dims, str) or not isinstance(unlimited_dims, Iterable):
+1070             unlimited_dims = [unlimited_dims]
+1071         else:
+1072             unlimited_dims = list(unlimited_dims)
+1073 
+1074     writer = ArrayWriter()
+1075 
+1076     # TODO: figure out how to refactor this logic (here and in save_mfdataset)
+1077     # to avoid this mess of conditionals
+1078     try:
+1079         # TODO: allow this work (setting up the file for writing array data)
+1080         # to be parallelized with dask
+1081         dump_to_store(
+1082             dataset, store, writer, encoding=encoding, unlimited_dims=unlimited_dims
+1083         )
+1084         if autoclose:
+1085             store.close()
+1086 
+1087         if multifile:
+1088             return writer, store
+1089 
+1090         writes = writer.sync(compute=compute)
+1091 
+1092         if path_or_file is None:
+1093             store.sync()
+1094             return target.getvalue()
+1095     finally:
+1096         if not multifile and compute:
+1097             store.close()
+1098 
+1099     if not compute:
+1100         import dask
+1101 
+1102         return dask.delayed(_finalize_store)(writes, store)
+1103     return None
+1104 
+1105 
+1106 def dump_to_store(
+1107     dataset, store, writer=None, encoder=None, encoding=None, unlimited_dims=None
+1108 ):
+1109     """Store dataset contents to a backends.*DataStore object."""
+1110     if writer is None:
+1111         writer = ArrayWriter()
+1112 
+1113     if encoding is None:
+1114         encoding = {}
+1115 
+1116     variables, attrs = conventions.encode_dataset_coordinates(dataset)
+1117 
+1118     check_encoding = set()
+1119     for k, enc in encoding.items():
+1120         # no need to shallow copy the variable again; that already happened
+1121         # in encode_dataset_coordinates
+1122         variables[k].encoding = enc
+1123         check_encoding.add(k)
+1124 
+1125     if encoder:
+1126         variables, attrs = encoder(variables, attrs)
+1127 
+1128     store.store(variables, attrs, check_encoding, writer, unlimited_dims=unlimited_dims)
+1129 
+1130 
+1131 def save_mfdataset(
+1132     datasets, paths, mode="w", format=None, groups=None, engine=None, compute=True
+1133 ):
+1134     """Write multiple datasets to disk as netCDF files simultaneously.
+1135 
+1136     This function is intended for use with datasets consisting of dask.array
+1137     objects, in which case it can write the multiple datasets to disk
+1138     simultaneously using a shared thread pool.
+1139 
+1140     When not using dask, it is no different than calling ``to_netcdf``
+1141     repeatedly.
+1142 
+1143     Parameters
+1144     ----------
+1145     datasets : list of xarray.Dataset
+1146         List of datasets to save.
+1147     paths : list of str or list of Paths
+1148         List of paths to which to save each corresponding dataset.
+1149     mode : {'w', 'a'}, optional
+1150         Write ('w') or append ('a') mode. If mode='w', any existing file at
+1151         these locations will be overwritten.
+1152     format : {'NETCDF4', 'NETCDF4_CLASSIC', 'NETCDF3_64BIT',
+1153               'NETCDF3_CLASSIC'}, optional
+1154 
+1155         File format for the resulting netCDF file:
+1156 
+1157         * NETCDF4: Data is stored in an HDF5 file, using netCDF4 API
+1158           features.
+1159         * NETCDF4_CLASSIC: Data is stored in an HDF5 file, using only
+1160           netCDF 3 compatible API features.
+1161         * NETCDF3_64BIT: 64-bit offset version of the netCDF 3 file format,
+1162           which fully supports 2+ GB files, but is only compatible with
+1163           clients linked against netCDF version 3.6.0 or later.
+1164         * NETCDF3_CLASSIC: The classic netCDF 3 file format. It does not
+1165           handle 2+ GB files very well.
+1166 
+1167         All formats are supported by the netCDF4-python library.
+1168         scipy.io.netcdf only supports the last two formats.
+1169 
+1170         The default format is NETCDF4 if you are saving a file to disk and
+1171         have the netCDF4-python library available. Otherwise, xarray falls
+1172         back to using scipy to write netCDF files and defaults to the
+1173         NETCDF3_64BIT format (scipy does not support netCDF4).
+1174     groups : list of str, optional
+1175         Paths to the netCDF4 group in each corresponding file to which to save
+1176         datasets (only works for format='NETCDF4'). The groups will be created
+1177         if necessary.
+1178     engine : {'netcdf4', 'scipy', 'h5netcdf'}, optional
+1179         Engine to use when writing netCDF files. If not provided, the
+1180         default engine is chosen based on available dependencies, with a
+1181         preference for 'netcdf4' if writing to a file on disk.
+1182         See `Dataset.to_netcdf` for additional information.
+1183     compute: boolean
+1184         If true compute immediately, otherwise return a
+1185         ``dask.delayed.Delayed`` object that can be computed later.
+1186 
+1187     Examples
+1188     --------
+1189 
+1190     Save a dataset into one netCDF per year of data:
+1191 
+1192     >>> years, datasets = zip(*ds.groupby("time.year"))
+1193     >>> paths = ["%s.nc" % y for y in years]
+1194     >>> xr.save_mfdataset(datasets, paths)
+1195     """
+1196     if mode == "w" and len(set(paths)) < len(paths):
+1197         raise ValueError(
+1198             "cannot use mode='w' when writing multiple " "datasets to the same path"
+1199         )
+1200 
+1201     for obj in datasets:
+1202         if not isinstance(obj, Dataset):
+1203             raise TypeError(
+1204                 "save_mfdataset only supports writing Dataset "
+1205                 "objects, received type %s" % type(obj)
+1206             )
+1207 
+1208     if groups is None:
+1209         groups = [None] * len(datasets)
+1210 
+1211     if len({len(datasets), len(paths), len(groups)}) > 1:
+1212         raise ValueError(
+1213             "must supply lists of the same length for the "
+1214             "datasets, paths and groups arguments to "
+1215             "save_mfdataset"
+1216         )
+1217 
+1218     writers, stores = zip(
+1219         *[
+1220             to_netcdf(
+1221                 ds, path, mode, format, group, engine, compute=compute, multifile=True
+1222             )
+1223             for ds, path, group in zip(datasets, paths, groups)
+1224         ]
+1225     )
+1226 
+1227     try:
+1228         writes = [w.sync(compute=compute) for w in writers]
+1229     finally:
+1230         if compute:
+1231             for store in stores:
+1232                 store.close()
+1233 
+1234     if not compute:
+1235         import dask
+1236 
+1237         return dask.delayed(
+1238             [dask.delayed(_finalize_store)(w, s) for w, s in zip(writes, stores)]
+1239         )
+1240 
+1241 
+1242 def _validate_datatypes_for_zarr_append(dataset):
+1243     """DataArray.name and Dataset keys must be a string or None"""
+1244 
+1245     def check_dtype(var):
+1246         if (
+1247             not np.issubdtype(var.dtype, np.number)
+1248             and not np.issubdtype(var.dtype, np.datetime64)
+1249             and not np.issubdtype(var.dtype, np.bool_)
+1250             and not coding.strings.is_unicode_dtype(var.dtype)
+1251             and not var.dtype == object
+1252         ):
+1253             # and not re.match('^bytes[1-9]+$', var.dtype.name)):
+1254             raise ValueError(
+1255                 "Invalid dtype for data variable: {} "
+1256                 "dtype must be a subtype of number, "
+1257                 "datetime, bool, a fixed sized string, "
+1258                 "a fixed size unicode string or an "
+1259                 "object".format(var)
+1260             )
+1261 
+1262     for k in dataset.data_vars.values():
+1263         check_dtype(k)
+1264 
+1265 
+1266 def _validate_append_dim_and_encoding(
+1267     ds_to_append, store, append_dim, encoding, **open_kwargs
+1268 ):
+1269     try:
+1270         ds = backends.zarr.open_zarr(store, **open_kwargs)
+1271     except ValueError:  # store empty
+1272         return
+1273     if append_dim:
+1274         if append_dim not in ds.dims:
+1275             raise ValueError(
+1276                 f"append_dim={append_dim!r} does not match any existing "
+1277                 f"dataset dimensions {ds.dims}"
+1278             )
+1279     for var_name in ds_to_append:
+1280         if var_name in ds:
+1281             if ds_to_append[var_name].dims != ds[var_name].dims:
+1282                 raise ValueError(
+1283                     f"variable {var_name!r} already exists with different "
+1284                     f"dimension names {ds[var_name].dims} != "
+1285                     f"{ds_to_append[var_name].dims}, but changing variable "
+1286                     "dimensions is not supported by to_zarr()."
+1287                 )
+1288             existing_sizes = {
+1289                 k: v for k, v in ds[var_name].sizes.items() if k != append_dim
+1290             }
+1291             new_sizes = {
+1292                 k: v for k, v in ds_to_append[var_name].sizes.items() if k != append_dim
+1293             }
+1294             if existing_sizes != new_sizes:
+1295                 raise ValueError(
+1296                     f"variable {var_name!r} already exists with different "
+1297                     "dimension sizes: {existing_sizes} != {new_sizes}. "
+1298                     "to_zarr() only supports changing dimension sizes when "
+1299                     f"explicitly appending, but append_dim={append_dim!r}."
+1300                 )
+1301             if var_name in encoding.keys():
+1302                 raise ValueError(
+1303                     f"variable {var_name!r} already exists, but encoding was provided"
+1304                 )
+1305 
+1306 
+1307 def to_zarr(
+1308     dataset,
+1309     store=None,
+1310     mode=None,
+1311     synchronizer=None,
+1312     group=None,
+1313     encoding=None,
+1314     compute=True,
+1315     consolidated=False,
+1316     append_dim=None,
+1317 ):
+1318     """This function creates an appropriate datastore for writing a dataset to
+1319     a zarr ztore
+1320 
+1321     See `Dataset.to_zarr` for full API docs.
+1322     """
+1323     if isinstance(store, Path):
+1324         store = str(store)
+1325     if encoding is None:
+1326         encoding = {}
+1327 
+1328     # validate Dataset keys, DataArray names, and attr keys/values
+1329     _validate_dataset_names(dataset)
+1330     _validate_attrs(dataset)
+1331 
+1332     if mode == "a":
+1333         _validate_datatypes_for_zarr_append(dataset)
+1334         _validate_append_dim_and_encoding(
+1335             dataset,
+1336             store,
+1337             append_dim,
+1338             group=group,
+1339             consolidated=consolidated,
+1340             encoding=encoding,
+1341         )
+1342 
+1343     zstore = backends.ZarrStore.open_group(
+1344         store=store,
+1345         mode=mode,
+1346         synchronizer=synchronizer,
+1347         group=group,
+1348         consolidate_on_close=consolidated,
+1349     )
+1350     zstore.append_dim = append_dim
+1351     writer = ArrayWriter()
+1352     # TODO: figure out how to properly handle unlimited_dims
+1353     dump_to_store(dataset, zstore, writer, encoding=encoding)
+1354     writes = writer.sync(compute=compute)
+1355 
+1356     if compute:
+1357         _finalize_store(writes, zstore)
+1358     else:
+1359         import dask
+1360 
+1361         return dask.delayed(_finalize_store)(writes, zstore)
+1362 
+1363     return zstore
+
+</code><intended_behavior>The method should properly handle filenames with non-English characters by encoding them correctly using UTF-8 encoding.</intended_behavior>, <file>xarray/coding/strings.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Coders for strings."""
+2 from functools import partial
+3 
+4 import numpy as np
+5 
+6 from ..core import indexing
+7 from ..core.pycompat import dask_array_type
+8 from ..core.variable import Variable
+9 from .variables import (
+10     VariableCoder,
+11     lazy_elemwise_func,
+12     pop_to,
+13     safe_setitem,
+14     unpack_for_decoding,
+15     unpack_for_encoding,
+16 )
+17 
+18 
+19 def create_vlen_dtype(element_type):
+20     # based on h5py.special_dtype
+21     return np.dtype("O", metadata={"element_type": element_type})
+22 
+23 
+24 def check_vlen_dtype(dtype):
+25     if dtype.kind != "O" or dtype.metadata is None:
+26         return None
+27     else:
+28         return dtype.metadata.get("element_type")
+29 
+30 
+31 def is_unicode_dtype(dtype):
+32     return dtype.kind == "U" or check_vlen_dtype(dtype) == str
+33 
+34 
+35 def is_bytes_dtype(dtype):
+36     return dtype.kind == "S" or check_vlen_dtype(dtype) == bytes
+37 
+38 
+39 class EncodedStringCoder(VariableCoder):
+40     """Transforms between unicode strings and fixed-width UTF-8 bytes."""
+41 
+42     def __init__(self, allows_unicode=True):
+43         self.allows_unicode = allows_unicode
+44 
+45     def encode(self, variable, name=None):
+46         dims, data, attrs, encoding = unpack_for_encoding(variable)
+47 
+48         contains_unicode = is_unicode_dtype(data.dtype)
+49         encode_as_char = encoding.get("dtype") == "S1"
+50 
+51         if encode_as_char:
+52             del encoding["dtype"]  # no longer relevant
+53 
+54         if contains_unicode and (encode_as_char or not self.allows_unicode):
+55             if "_FillValue" in attrs:
+56                 raise NotImplementedError(
+57                     "variable {!r} has a _FillValue specified, but "
+58                     "_FillValue is not yet supported on unicode strings: "
+59                     "https://github.com/pydata/xarray/issues/1647".format(name)
+60                 )
+61 
+62             string_encoding = encoding.pop("_Encoding", "utf-8")
+63             safe_setitem(attrs, "_Encoding", string_encoding, name=name)
+64             # TODO: figure out how to handle this in a lazy way with dask
+65             data = encode_string_array(data, string_encoding)
+66 
+67         return Variable(dims, data, attrs, encoding)
+68 
+69     def decode(self, variable, name=None):
+70         dims, data, attrs, encoding = unpack_for_decoding(variable)
+71 
+72         if "_Encoding" in attrs:
+73             string_encoding = pop_to(attrs, encoding, "_Encoding")
+74             func = partial(decode_bytes_array, encoding=string_encoding)
+75             data = lazy_elemwise_func(data, func, np.dtype(object))
+76 
+77         return Variable(dims, data, attrs, encoding)
+78 
+79 
+80 def decode_bytes_array(bytes_array, encoding="utf-8"):
+81     # This is faster than using np.char.decode() or np.vectorize()
+82     bytes_array = np.asarray(bytes_array)
+83     decoded = [x.decode(encoding) for x in bytes_array.ravel()]
+84     return np.array(decoded, dtype=object).reshape(bytes_array.shape)
+85 
+86 
+87 def encode_string_array(string_array, encoding="utf-8"):
+88     string_array = np.asarray(string_array)
+89     encoded = [x.encode(encoding) for x in string_array.ravel()]
+90     return np.array(encoded, dtype=bytes).reshape(string_array.shape)
+91 
+92 
+93 def ensure_fixed_length_bytes(var):
+94     """Ensure that a variable with vlen bytes is converted to fixed width."""
+95     dims, data, attrs, encoding = unpack_for_encoding(var)
+96     if check_vlen_dtype(data.dtype) == bytes:
+97         # TODO: figure out how to handle this with dask
+98         data = np.asarray(data, dtype=np.string_)
+99     return Variable(dims, data, attrs, encoding)
+100 
+101 
+102 class CharacterArrayCoder(VariableCoder):
+103     """Transforms between arrays containing bytes and character arrays."""
+104 
+105     def encode(self, variable, name=None):
+106         variable = ensure_fixed_length_bytes(variable)
+107 
+108         dims, data, attrs, encoding = unpack_for_encoding(variable)
+109         if data.dtype.kind == "S" and encoding.get("dtype") is not str:
+110             data = bytes_to_char(data)
+111             if "char_dim_name" in encoding.keys():
+112                 char_dim_name = encoding.pop("char_dim_name")
+113             else:
+114                 char_dim_name = "string%s" % data.shape[-1]
+115             dims = dims + (char_dim_name,)
+116         return Variable(dims, data, attrs, encoding)
+117 
+118     def decode(self, variable, name=None):
+119         dims, data, attrs, encoding = unpack_for_decoding(variable)
+120 
+121         if data.dtype == "S1" and dims:
+122             encoding["char_dim_name"] = dims[-1]
+123             dims = dims[:-1]
+124             data = char_to_bytes(data)
+125         return Variable(dims, data, attrs, encoding)
+126 
+127 
+128 def bytes_to_char(arr):
+129     """Convert numpy/dask arrays from fixed width bytes to characters."""
+130     if arr.dtype.kind != "S":
+131         raise ValueError("argument must have a fixed-width bytes dtype")
+132 
+133     if isinstance(arr, dask_array_type):
+134         import dask.array as da
+135 
+136         return da.map_blocks(
+137             _numpy_bytes_to_char,
+138             arr,
+139             dtype="S1",
+140             chunks=arr.chunks + ((arr.dtype.itemsize,)),
+141             new_axis=[arr.ndim],
+142         )
+143     else:
+144         return _numpy_bytes_to_char(arr)
+145 
+146 
+147 def _numpy_bytes_to_char(arr):
+148     """Like netCDF4.stringtochar, but faster and more flexible.
+149     """
+150     # ensure the array is contiguous
+151     arr = np.array(arr, copy=False, order="C", dtype=np.string_)
+152     return arr.reshape(arr.shape + (1,)).view("S1")
+153 
+154 
+155 def char_to_bytes(arr):
+156     """Convert numpy/dask arrays from characters to fixed width bytes."""
+157     if arr.dtype != "S1":
+158         raise ValueError("argument must have dtype='S1'")
+159 
+160     if not arr.ndim:
+161         # no dimension to concatenate along
+162         return arr
+163 
+164     size = arr.shape[-1]
+165 
+166     if not size:
+167         # can't make an S0 dtype
+168         return np.zeros(arr.shape[:-1], dtype=np.string_)
+169 
+170     if isinstance(arr, dask_array_type):
+171         import dask.array as da
+172 
+173         if len(arr.chunks[-1]) > 1:
+174             raise ValueError(
+175                 "cannot stacked dask character array with "
+176                 "multiple chunks in the last dimension: {}".format(arr)
+177             )
+178 
+179         dtype = np.dtype("S" + str(arr.shape[-1]))
+180         return da.map_blocks(
+181             _numpy_char_to_bytes,
+182             arr,
+183             dtype=dtype,
+184             chunks=arr.chunks[:-1],
+185             drop_axis=[arr.ndim - 1],
+186         )
+187     else:
+188         return StackedBytesArray(arr)
+189 
+190 
+191 def _numpy_char_to_bytes(arr):
+192     """Like netCDF4.chartostring, but faster and more flexible.
+193     """
+194     # based on: http://stackoverflow.com/a/10984878/809705
+195     arr = np.array(arr, copy=False, order="C")
+196     dtype = "S" + str(arr.shape[-1])
+197     return arr.view(dtype).reshape(arr.shape[:-1])
+198 
+199 
+200 class StackedBytesArray(indexing.ExplicitlyIndexedNDArrayMixin):
+201     """Wrapper around array-like objects to create a new indexable object where
+202     values, when accessed, are automatically stacked along the last dimension.
+203 
+204     >>> StackedBytesArray(np.array(["a", "b", "c"]))[:]
+205     array('abc',
+206           dtype='|S3')
+207     """
+208 
+209     def __init__(self, array):
+210         """
+211         Parameters
+212         ----------
+213         array : array-like
+214             Original array of values to wrap.
+215         """
+216         if array.dtype != "S1":
+217             raise ValueError(
+218                 "can only use StackedBytesArray if argument has dtype='S1'"
+219             )
+220         self.array = indexing.as_indexable(array)
+221 
+222     @property
+223     def dtype(self):
+224         return np.dtype("S" + str(self.array.shape[-1]))
+225 
+226     @property
+227     def shape(self):
+228         return self.array.shape[:-1]
+229 
+230     def __repr__(self):
+231         return "{}({!r})".format(type(self).__name__, self.array)
+232 
+233     def __getitem__(self, key):
+234         # require slicing the last dimension completely
+235         key = type(key)(indexing.expanded_indexer(key.tuple, self.array.ndim))
+236         if key.tuple[-1] != slice(None):
+237             raise IndexError("too many indices")
+238         return _numpy_char_to_bytes(self.array[key])
+
+</code><intended_behavior>The method should correctly encode or decode strings containing non-English characters using UTF-8 encoding.</intended_behavior>]
+2025-11-17 01:27:17.521 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-17 01:27:17.521 | INFO     | Search-only: skipping patch selection
+2025-11-17 01:27:17.595 | INFO     | Task pydata__xarray-4339 completed successfully.
+2025-11-17 01:27:17.596 | INFO     | No patch generated. You can try running ACR again.

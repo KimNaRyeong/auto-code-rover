@@ -1,0 +1,1134 @@
+2025-11-14 18:17:17.791 | INFO     | Starting overall retry 0 with model llama3:70b
+2025-11-14 18:17:26.064 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2025-11-14 18:17:26.068 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-14 18:17:37.691 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-14 18:17:42.772 | DEBUG    | Extracted a valid json.
+2025-11-14 18:17:42.772 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"Printer\")",
+        "search_method_in_class(\"print\", \"Printer\")",
+        "search_code(\"Wolfram Mathematica\")",
+        "search_method(\"print_matrix\")",
+        "search_method(\"print_array\")",
+        "search_code_in_file(\"matrix\", \"printer.py\")",
+        "search_code_in_file(\"array\", \"printer.py\")"
+    ],
+    "bug_locations": []
+}
+2025-11-14 18:17:42.835 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2025-11-14 18:17:42.836 | DEBUG    | <Agent search> Analyzing search results.
+2025-11-14 18:18:10.692 | DEBUG    | <Agent search> Selecting APIs to call.
+2025-11-14 18:18:19.179 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2025-11-14 18:18:25.709 | DEBUG    | Extracted a valid json.
+2025-11-14 18:18:25.709 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "sympy/printing/mathematica.py", "class": "", "method": "mathematica_code", "intended_behavior": "This method should be able to convert matrices and arrays to Wolfram Mathematica code."}, {"file": "sympy/printing/codeprinter.py", "class": "CodePrinter", "method": "_print_Assignment", "intended_behavior": "This method should be able to print assignments for each element in an array, using matrix indices, and it should handle matrices and arrays correctly."}]
+}
+2025-11-14 18:18:25.715 | DEBUG    | Bug location extracted successfully: [<file>sympy/printing/mathematica.py</file>
+<class>None</class>
+<method>mathematica_code</method>
+<code>
+193 def mathematica_code(expr, **settings):
+194     r"""Converts an expr to a string of the Wolfram Mathematica code
+195 
+196     Examples
+197     ========
+198 
+199     >>> from sympy import mathematica_code as mcode, symbols, sin
+200     >>> x = symbols('x')
+201     >>> mcode(sin(x).series(x).removeO())
+202     '(1/120)*x^5 - 1/6*x^3 + x'
+203     """
+204     return MCodePrinter(settings).doprint(expr)
+
+</code><intended_behavior>This method should be able to convert matrices and arrays to Wolfram Mathematica code.</intended_behavior>, <file>sympy/printing/codeprinter.py</file>
+<class>CodePrinter</class>
+<method>_print_Assignment</method>
+<code>
+294     def _print_Assignment(self, expr):
+295         from sympy.functions.elementary.piecewise import Piecewise
+296         from sympy.matrices.expressions.matexpr import MatrixSymbol
+297         from sympy.tensor.indexed import IndexedBase
+298         lhs = expr.lhs
+299         rhs = expr.rhs
+300         # We special case assignments that take multiple lines
+301         if isinstance(expr.rhs, Piecewise):
+302             # Here we modify Piecewise so each expression is now
+303             # an Assignment, and then continue on the print.
+304             expressions = []
+305             conditions = []
+306             for (e, c) in rhs.args:
+307                 expressions.append(Assignment(lhs, e))
+308                 conditions.append(c)
+309             temp = Piecewise(*zip(expressions, conditions))
+310             return self._print(temp)
+311         elif isinstance(lhs, MatrixSymbol):
+312             # Here we form an Assignment for each element in the array,
+313             # printing each one.
+314             lines = []
+315             for (i, j) in self._traverse_matrix_indices(lhs):
+316                 temp = Assignment(lhs[i, j], rhs[i, j])
+317                 code0 = self._print(temp)
+318                 lines.append(code0)
+319             return "\n".join(lines)
+320         elif self._settings.get("contract", False) and (lhs.has(IndexedBase) or
+321                 rhs.has(IndexedBase)):
+322             # Here we check if there is looping to be done, and if so
+323             # print the required loops.
+324             return self._doprint_loops(rhs, lhs)
+325         else:
+326             lhs_code = self._print(lhs)
+327             rhs_code = self._print(rhs)
+328             return self._get_statement("%s = %s" % (lhs_code, rhs_code))
+
+</code><intended_behavior>This method should be able to print assignments for each element in an array, using matrix indices, and it should handle matrices and arrays correctly.</intended_behavior>, <file>sympy/printing/codeprinter.py</file>
+<class>CodePrinter</class>
+<method>None</method>
+<code>
+38 class CodePrinter(StrPrinter):
+39     """
+40     The base class for code-printing subclasses.
+41     """
+42 
+43     _operators = {
+44         'and': '&&',
+45         'or': '||',
+46         'not': '!',
+47     }
+48 
+49     _default_settings = {
+50         'order': None,
+51         'full_prec': 'auto',
+52         'error_on_reserved': False,
+53         'reserved_word_suffix': '_',
+54         'human': True,
+55         'inline': False,
+56         'allow_unknown_functions': False,
+57     }
+58 
+59     def __init__(self, settings=None):
+60 
+61         super(CodePrinter, self).__init__(settings=settings)
+62         if not hasattr(self, 'reserved_words'):
+63             self.reserved_words = set()
+64 
+65     def doprint(self, expr, assign_to=None):
+66         """
+67         Print the expression as code.
+68 
+69         Parameters
+70         ----------
+71         expr : Expression
+72             The expression to be printed.
+73 
+74         assign_to : Symbol, MatrixSymbol, or string (optional)
+75             If provided, the printed code will set the expression to a
+76             variable with name ``assign_to``.
+77         """
+78         from sympy.matrices.expressions.matexpr import MatrixSymbol
+79 
+80         if isinstance(assign_to, string_types):
+81             if expr.is_Matrix:
+82                 assign_to = MatrixSymbol(assign_to, *expr.shape)
+83             else:
+84                 assign_to = Symbol(assign_to)
+85         elif not isinstance(assign_to, (Basic, type(None))):
+86             raise TypeError("{0} cannot assign to object of type {1}".format(
+87                     type(self).__name__, type(assign_to)))
+88 
+89         if assign_to:
+90             expr = Assignment(assign_to, expr)
+91         else:
+92             # _sympify is not enough b/c it errors on iterables
+93             expr = sympify(expr)
+94 
+95         # keep a set of expressions that are not strictly translatable to Code
+96         # and number constants that must be declared and initialized
+97         self._not_supported = set()
+98         self._number_symbols = set()
+99 
+100         lines = self._print(expr).splitlines()
+101 
+102         # format the output
+103         if self._settings["human"]:
+104             frontlines = []
+105             if self._not_supported:
+106                 frontlines.append(self._get_comment(
+107                         "Not supported in {0}:".format(self.language)))
+108                 for expr in sorted(self._not_supported, key=str):
+109                     frontlines.append(self._get_comment(type(expr).__name__))
+110             for name, value in sorted(self._number_symbols, key=str):
+111                 frontlines.append(self._declare_number_const(name, value))
+112             lines = frontlines + lines
+113             lines = self._format_code(lines)
+114             result = "\n".join(lines)
+115         else:
+116             lines = self._format_code(lines)
+117             num_syms = set([(k, self._print(v)) for k, v in self._number_symbols])
+118             result = (num_syms, self._not_supported, "\n".join(lines))
+119         self._not_supported = set()
+120         self._number_symbols = set()
+121         return result
+122 
+123     def _doprint_loops(self, expr, assign_to=None):
+124         # Here we print an expression that contains Indexed objects, they
+125         # correspond to arrays in the generated code.  The low-level implementation
+126         # involves looping over array elements and possibly storing results in temporary
+127         # variables or accumulate it in the assign_to object.
+128 
+129         if self._settings.get('contract', True):
+130             from sympy.tensor import get_contraction_structure
+131             # Setup loops over non-dummy indices  --  all terms need these
+132             indices = self._get_expression_indices(expr, assign_to)
+133             # Setup loops over dummy indices  --  each term needs separate treatment
+134             dummies = get_contraction_structure(expr)
+135         else:
+136             indices = []
+137             dummies = {None: (expr,)}
+138         openloop, closeloop = self._get_loop_opening_ending(indices)
+139 
+140         # terms with no summations first
+141         if None in dummies:
+142             text = StrPrinter.doprint(self, Add(*dummies[None]))
+143         else:
+144             # If all terms have summations we must initialize array to Zero
+145             text = StrPrinter.doprint(self, 0)
+146 
+147         # skip redundant assignments (where lhs == rhs)
+148         lhs_printed = self._print(assign_to)
+149         lines = []
+150         if text != lhs_printed:
+151             lines.extend(openloop)
+152             if assign_to is not None:
+153                 text = self._get_statement("%s = %s" % (lhs_printed, text))
+154             lines.append(text)
+155             lines.extend(closeloop)
+156 
+157         # then terms with summations
+158         for d in dummies:
+159             if isinstance(d, tuple):
+160                 indices = self._sort_optimized(d, expr)
+161                 openloop_d, closeloop_d = self._get_loop_opening_ending(
+162                     indices)
+163 
+164                 for term in dummies[d]:
+165                     if term in dummies and not ([list(f.keys()) for f in dummies[term]]
+166                             == [[None] for f in dummies[term]]):
+167                         # If one factor in the term has it's own internal
+168                         # contractions, those must be computed first.
+169                         # (temporary variables?)
+170                         raise NotImplementedError(
+171                             "FIXME: no support for contractions in factor yet")
+172                     else:
+173 
+174                         # We need the lhs expression as an accumulator for
+175                         # the loops, i.e
+176                         #
+177                         # for (int d=0; d < dim; d++){
+178                         #    lhs[] = lhs[] + term[][d]
+179                         # }           ^.................. the accumulator
+180                         #
+181                         # We check if the expression already contains the
+182                         # lhs, and raise an exception if it does, as that
+183                         # syntax is currently undefined.  FIXME: What would be
+184                         # a good interpretation?
+185                         if assign_to is None:
+186                             raise AssignmentError(
+187                                 "need assignment variable for loops")
+188                         if term.has(assign_to):
+189                             raise ValueError("FIXME: lhs present in rhs,\
+190                                 this is undefined in CodePrinter")
+191 
+192                         lines.extend(openloop)
+193                         lines.extend(openloop_d)
+194                         text = "%s = %s" % (lhs_printed, StrPrinter.doprint(
+195                             self, assign_to + term))
+196                         lines.append(self._get_statement(text))
+197                         lines.extend(closeloop_d)
+198                         lines.extend(closeloop)
+199 
+200         return "\n".join(lines)
+201 
+202     def _get_expression_indices(self, expr, assign_to):
+203         from sympy.tensor import get_indices
+204         rinds, junk = get_indices(expr)
+205         linds, junk = get_indices(assign_to)
+206 
+207         # support broadcast of scalar
+208         if linds and not rinds:
+209             rinds = linds
+210         if rinds != linds:
+211             raise ValueError("lhs indices must match non-dummy"
+212                     " rhs indices in %s" % expr)
+213 
+214         return self._sort_optimized(rinds, assign_to)
+215 
+216     def _sort_optimized(self, indices, expr):
+217 
+218         from sympy.tensor.indexed import Indexed
+219 
+220         if not indices:
+221             return []
+222 
+223         # determine optimized loop order by giving a score to each index
+224         # the index with the highest score are put in the innermost loop.
+225         score_table = {}
+226         for i in indices:
+227             score_table[i] = 0
+228 
+229         arrays = expr.atoms(Indexed)
+230         for arr in arrays:
+231             for p, ind in enumerate(arr.indices):
+232                 try:
+233                     score_table[ind] += self._rate_index_position(p)
+234                 except KeyError:
+235                     pass
+236 
+237         return sorted(indices, key=lambda x: score_table[x])
+238 
+239     def _rate_index_position(self, p):
+240         """function to calculate score based on position among indices
+241 
+242         This method is used to sort loops in an optimized order, see
+243         CodePrinter._sort_optimized()
+244         """
+245         raise NotImplementedError("This function must be implemented by "
+246                                   "subclass of CodePrinter.")
+247 
+248     def _get_statement(self, codestring):
+249         """Formats a codestring with the proper line ending."""
+250         raise NotImplementedError("This function must be implemented by "
+251                                   "subclass of CodePrinter.")
+252 
+253     def _get_comment(self, text):
+254         """Formats a text string as a comment."""
+255         raise NotImplementedError("This function must be implemented by "
+256                                   "subclass of CodePrinter.")
+257 
+258     def _declare_number_const(self, name, value):
+259         """Declare a numeric constant at the top of a function"""
+260         raise NotImplementedError("This function must be implemented by "
+261                                   "subclass of CodePrinter.")
+262 
+263     def _format_code(self, lines):
+264         """Take in a list of lines of code, and format them accordingly.
+265 
+266         This may include indenting, wrapping long lines, etc..."""
+267         raise NotImplementedError("This function must be implemented by "
+268                                   "subclass of CodePrinter.")
+269 
+270     def _get_loop_opening_ending(self, indices):
+271         """Returns a tuple (open_lines, close_lines) containing lists
+272         of codelines"""
+273         raise NotImplementedError("This function must be implemented by "
+274                                   "subclass of CodePrinter.")
+275 
+276     def _print_Dummy(self, expr):
+277         if expr.name.startswith('Dummy_'):
+278             return '_' + expr.name
+279         else:
+280             return '%s_%d' % (expr.name, expr.dummy_index)
+281 
+282     def _print_CodeBlock(self, expr):
+283         return '\n'.join([self._print(i) for i in expr.args])
+284 
+285     def _print_String(self, string):
+286         return str(string)
+287 
+288     def _print_QuotedString(self, arg):
+289         return '"%s"' % arg.text
+290 
+291     def _print_Comment(self, string):
+292         return self._get_comment(str(string))
+293 
+294     def _print_Assignment(self, expr):
+295         from sympy.functions.elementary.piecewise import Piecewise
+296         from sympy.matrices.expressions.matexpr import MatrixSymbol
+297         from sympy.tensor.indexed import IndexedBase
+298         lhs = expr.lhs
+299         rhs = expr.rhs
+300         # We special case assignments that take multiple lines
+301         if isinstance(expr.rhs, Piecewise):
+302             # Here we modify Piecewise so each expression is now
+303             # an Assignment, and then continue on the print.
+304             expressions = []
+305             conditions = []
+306             for (e, c) in rhs.args:
+307                 expressions.append(Assignment(lhs, e))
+308                 conditions.append(c)
+309             temp = Piecewise(*zip(expressions, conditions))
+310             return self._print(temp)
+311         elif isinstance(lhs, MatrixSymbol):
+312             # Here we form an Assignment for each element in the array,
+313             # printing each one.
+314             lines = []
+315             for (i, j) in self._traverse_matrix_indices(lhs):
+316                 temp = Assignment(lhs[i, j], rhs[i, j])
+317                 code0 = self._print(temp)
+318                 lines.append(code0)
+319             return "\n".join(lines)
+320         elif self._settings.get("contract", False) and (lhs.has(IndexedBase) or
+321                 rhs.has(IndexedBase)):
+322             # Here we check if there is looping to be done, and if so
+323             # print the required loops.
+324             return self._doprint_loops(rhs, lhs)
+325         else:
+326             lhs_code = self._print(lhs)
+327             rhs_code = self._print(rhs)
+328             return self._get_statement("%s = %s" % (lhs_code, rhs_code))
+329 
+330     def _print_AugmentedAssignment(self, expr):
+331         lhs_code = self._print(expr.lhs)
+332         rhs_code = self._print(expr.rhs)
+333         return self._get_statement("{0} {1} {2}".format(
+334             *map(lambda arg: self._print(arg),
+335                  [lhs_code, expr.op, rhs_code])))
+336 
+337     def _print_FunctionCall(self, expr):
+338         return '%s(%s)' % (
+339             expr.name,
+340             ', '.join(map(lambda arg: self._print(arg),
+341                           expr.function_args)))
+342 
+343     def _print_Variable(self, expr):
+344         return self._print(expr.symbol)
+345 
+346     def _print_Statement(self, expr):
+347         arg, = expr.args
+348         return self._get_statement(self._print(arg))
+349 
+350     def _print_Symbol(self, expr):
+351 
+352         name = super(CodePrinter, self)._print_Symbol(expr)
+353 
+354         if name in self.reserved_words:
+355             if self._settings['error_on_reserved']:
+356                 msg = ('This expression includes the symbol "{}" which is a '
+357                        'reserved keyword in this language.')
+358                 raise ValueError(msg.format(name))
+359             return name + self._settings['reserved_word_suffix']
+360         else:
+361             return name
+362 
+363     def _print_Function(self, expr):
+364         if expr.func.__name__ in self.known_functions:
+365             cond_func = self.known_functions[expr.func.__name__]
+366             func = None
+367             if isinstance(cond_func, str):
+368                 func = cond_func
+369             else:
+370                 for cond, func in cond_func:
+371                     if cond(*expr.args):
+372                         break
+373             if func is not None:
+374                 try:
+375                     return func(*[self.parenthesize(item, 0) for item in expr.args])
+376                 except TypeError:
+377                     return "%s(%s)" % (func, self.stringify(expr.args, ", "))
+378         elif hasattr(expr, '_imp_') and isinstance(expr._imp_, Lambda):
+379             # inlined function
+380             return self._print(expr._imp_(*expr.args))
+381         elif expr.is_Function and self._settings.get('allow_unknown_functions', False):
+382             return '%s(%s)' % (self._print(expr.func), ', '.join(map(self._print, expr.args)))
+383         else:
+384             return self._print_not_supported(expr)
+385 
+386     _print_Expr = _print_Function
+387 
+388     def _print_NumberSymbol(self, expr):
+389         if self._settings.get("inline", False):
+390             return self._print(Float(expr.evalf(self._settings["precision"])))
+391         else:
+392             # A Number symbol that is not implemented here or with _printmethod
+393             # is registered and evaluated
+394             self._number_symbols.add((expr,
+395                 Float(expr.evalf(self._settings["precision"]))))
+396             return str(expr)
+397 
+398     def _print_Catalan(self, expr):
+399         return self._print_NumberSymbol(expr)
+400     def _print_EulerGamma(self, expr):
+401         return self._print_NumberSymbol(expr)
+402     def _print_GoldenRatio(self, expr):
+403         return self._print_NumberSymbol(expr)
+404     def _print_TribonacciConstant(self, expr):
+405         return self._print_NumberSymbol(expr)
+406     def _print_Exp1(self, expr):
+407         return self._print_NumberSymbol(expr)
+408     def _print_Pi(self, expr):
+409         return self._print_NumberSymbol(expr)
+410 
+411     def _print_And(self, expr):
+412         PREC = precedence(expr)
+413         return (" %s " % self._operators['and']).join(self.parenthesize(a, PREC)
+414                 for a in sorted(expr.args, key=default_sort_key))
+415 
+416     def _print_Or(self, expr):
+417         PREC = precedence(expr)
+418         return (" %s " % self._operators['or']).join(self.parenthesize(a, PREC)
+419                 for a in sorted(expr.args, key=default_sort_key))
+420 
+421     def _print_Xor(self, expr):
+422         if self._operators.get('xor') is None:
+423             return self._print_not_supported(expr)
+424         PREC = precedence(expr)
+425         return (" %s " % self._operators['xor']).join(self.parenthesize(a, PREC)
+426                 for a in expr.args)
+427 
+428     def _print_Equivalent(self, expr):
+429         if self._operators.get('equivalent') is None:
+430             return self._print_not_supported(expr)
+431         PREC = precedence(expr)
+432         return (" %s " % self._operators['equivalent']).join(self.parenthesize(a, PREC)
+433                 for a in expr.args)
+434 
+435     def _print_Not(self, expr):
+436         PREC = precedence(expr)
+437         return self._operators['not'] + self.parenthesize(expr.args[0], PREC)
+438 
+439     def _print_Mul(self, expr):
+440 
+441         prec = precedence(expr)
+442 
+443         c, e = expr.as_coeff_Mul()
+444         if c < 0:
+445             expr = _keep_coeff(-c, e)
+446             sign = "-"
+447         else:
+448             sign = ""
+449 
+450         a = []  # items in the numerator
+451         b = []  # items that are in the denominator (if any)
+452 
+453         pow_paren = []  # Will collect all pow with more than one base element and exp = -1
+454 
+455         if self.order not in ('old', 'none'):
+456             args = expr.as_ordered_factors()
+457         else:
+458             # use make_args in case expr was something like -x -> x
+459             args = Mul.make_args(expr)
+460 
+461         # Gather args for numerator/denominator
+462         for item in args:
+463             if item.is_commutative and item.is_Pow and item.exp.is_Rational and item.exp.is_negative:
+464                 if item.exp != -1:
+465                     b.append(Pow(item.base, -item.exp, evaluate=False))
+466                 else:
+467                     if len(item.args[0].args) != 1 and isinstance(item.base, Mul):   # To avoid situations like #14160
+468                         pow_paren.append(item)
+469                     b.append(Pow(item.base, -item.exp))
+470             else:
+471                 a.append(item)
+472 
+473         a = a or [S.One]
+474 
+475         a_str = [self.parenthesize(x, prec) for x in a]
+476         b_str = [self.parenthesize(x, prec) for x in b]
+477 
+478         # To parenthesize Pow with exp = -1 and having more than one Symbol
+479         for item in pow_paren:
+480             if item.base in b:
+481                 b_str[b.index(item.base)] = "(%s)" % b_str[b.index(item.base)]
+482 
+483         if not b:
+484             return sign + '*'.join(a_str)
+485         elif len(b) == 1:
+486             return sign + '*'.join(a_str) + "/" + b_str[0]
+487         else:
+488             return sign + '*'.join(a_str) + "/(%s)" % '*'.join(b_str)
+489 
+490     def _print_not_supported(self, expr):
+491         self._not_supported.add(expr)
+492         return self.emptyPrinter(expr)
+493 
+494     # The following can not be simply translated into C or Fortran
+495     _print_Basic = _print_not_supported
+496     _print_ComplexInfinity = _print_not_supported
+497     _print_Derivative = _print_not_supported
+498     _print_ExprCondPair = _print_not_supported
+499     _print_GeometryEntity = _print_not_supported
+500     _print_Infinity = _print_not_supported
+501     _print_Integral = _print_not_supported
+502     _print_Interval = _print_not_supported
+503     _print_AccumulationBounds = _print_not_supported
+504     _print_Limit = _print_not_supported
+505     _print_Matrix = _print_not_supported
+506     _print_ImmutableMatrix = _print_not_supported
+507     _print_ImmutableDenseMatrix = _print_not_supported
+508     _print_MutableDenseMatrix = _print_not_supported
+509     _print_MatrixBase = _print_not_supported
+510     _print_DeferredVector = _print_not_supported
+511     _print_NaN = _print_not_supported
+512     _print_NegativeInfinity = _print_not_supported
+513     _print_Normal = _print_not_supported
+514     _print_Order = _print_not_supported
+515     _print_PDF = _print_not_supported
+516     _print_RootOf = _print_not_supported
+517     _print_RootsOf = _print_not_supported
+518     _print_RootSum = _print_not_supported
+519     _print_Sample = _print_not_supported
+520     _print_SparseMatrix = _print_not_supported
+521     _print_MutableSparseMatrix = _print_not_supported
+522     _print_ImmutableSparseMatrix = _print_not_supported
+523     _print_Uniform = _print_not_supported
+524     _print_Unit = _print_not_supported
+525     _print_Wild = _print_not_supported
+526     _print_WildFunction = _print_not_supported
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-11-14 18:18:25.715 | INFO     | Search completed. Bug locations: [<file>sympy/printing/mathematica.py</file>
+<class>None</class>
+<method>mathematica_code</method>
+<code>
+193 def mathematica_code(expr, **settings):
+194     r"""Converts an expr to a string of the Wolfram Mathematica code
+195 
+196     Examples
+197     ========
+198 
+199     >>> from sympy import mathematica_code as mcode, symbols, sin
+200     >>> x = symbols('x')
+201     >>> mcode(sin(x).series(x).removeO())
+202     '(1/120)*x^5 - 1/6*x^3 + x'
+203     """
+204     return MCodePrinter(settings).doprint(expr)
+
+</code><intended_behavior>This method should be able to convert matrices and arrays to Wolfram Mathematica code.</intended_behavior>, <file>sympy/printing/codeprinter.py</file>
+<class>CodePrinter</class>
+<method>_print_Assignment</method>
+<code>
+294     def _print_Assignment(self, expr):
+295         from sympy.functions.elementary.piecewise import Piecewise
+296         from sympy.matrices.expressions.matexpr import MatrixSymbol
+297         from sympy.tensor.indexed import IndexedBase
+298         lhs = expr.lhs
+299         rhs = expr.rhs
+300         # We special case assignments that take multiple lines
+301         if isinstance(expr.rhs, Piecewise):
+302             # Here we modify Piecewise so each expression is now
+303             # an Assignment, and then continue on the print.
+304             expressions = []
+305             conditions = []
+306             for (e, c) in rhs.args:
+307                 expressions.append(Assignment(lhs, e))
+308                 conditions.append(c)
+309             temp = Piecewise(*zip(expressions, conditions))
+310             return self._print(temp)
+311         elif isinstance(lhs, MatrixSymbol):
+312             # Here we form an Assignment for each element in the array,
+313             # printing each one.
+314             lines = []
+315             for (i, j) in self._traverse_matrix_indices(lhs):
+316                 temp = Assignment(lhs[i, j], rhs[i, j])
+317                 code0 = self._print(temp)
+318                 lines.append(code0)
+319             return "\n".join(lines)
+320         elif self._settings.get("contract", False) and (lhs.has(IndexedBase) or
+321                 rhs.has(IndexedBase)):
+322             # Here we check if there is looping to be done, and if so
+323             # print the required loops.
+324             return self._doprint_loops(rhs, lhs)
+325         else:
+326             lhs_code = self._print(lhs)
+327             rhs_code = self._print(rhs)
+328             return self._get_statement("%s = %s" % (lhs_code, rhs_code))
+
+</code><intended_behavior>This method should be able to print assignments for each element in an array, using matrix indices, and it should handle matrices and arrays correctly.</intended_behavior>, <file>sympy/printing/codeprinter.py</file>
+<class>CodePrinter</class>
+<method>None</method>
+<code>
+38 class CodePrinter(StrPrinter):
+39     """
+40     The base class for code-printing subclasses.
+41     """
+42 
+43     _operators = {
+44         'and': '&&',
+45         'or': '||',
+46         'not': '!',
+47     }
+48 
+49     _default_settings = {
+50         'order': None,
+51         'full_prec': 'auto',
+52         'error_on_reserved': False,
+53         'reserved_word_suffix': '_',
+54         'human': True,
+55         'inline': False,
+56         'allow_unknown_functions': False,
+57     }
+58 
+59     def __init__(self, settings=None):
+60 
+61         super(CodePrinter, self).__init__(settings=settings)
+62         if not hasattr(self, 'reserved_words'):
+63             self.reserved_words = set()
+64 
+65     def doprint(self, expr, assign_to=None):
+66         """
+67         Print the expression as code.
+68 
+69         Parameters
+70         ----------
+71         expr : Expression
+72             The expression to be printed.
+73 
+74         assign_to : Symbol, MatrixSymbol, or string (optional)
+75             If provided, the printed code will set the expression to a
+76             variable with name ``assign_to``.
+77         """
+78         from sympy.matrices.expressions.matexpr import MatrixSymbol
+79 
+80         if isinstance(assign_to, string_types):
+81             if expr.is_Matrix:
+82                 assign_to = MatrixSymbol(assign_to, *expr.shape)
+83             else:
+84                 assign_to = Symbol(assign_to)
+85         elif not isinstance(assign_to, (Basic, type(None))):
+86             raise TypeError("{0} cannot assign to object of type {1}".format(
+87                     type(self).__name__, type(assign_to)))
+88 
+89         if assign_to:
+90             expr = Assignment(assign_to, expr)
+91         else:
+92             # _sympify is not enough b/c it errors on iterables
+93             expr = sympify(expr)
+94 
+95         # keep a set of expressions that are not strictly translatable to Code
+96         # and number constants that must be declared and initialized
+97         self._not_supported = set()
+98         self._number_symbols = set()
+99 
+100         lines = self._print(expr).splitlines()
+101 
+102         # format the output
+103         if self._settings["human"]:
+104             frontlines = []
+105             if self._not_supported:
+106                 frontlines.append(self._get_comment(
+107                         "Not supported in {0}:".format(self.language)))
+108                 for expr in sorted(self._not_supported, key=str):
+109                     frontlines.append(self._get_comment(type(expr).__name__))
+110             for name, value in sorted(self._number_symbols, key=str):
+111                 frontlines.append(self._declare_number_const(name, value))
+112             lines = frontlines + lines
+113             lines = self._format_code(lines)
+114             result = "\n".join(lines)
+115         else:
+116             lines = self._format_code(lines)
+117             num_syms = set([(k, self._print(v)) for k, v in self._number_symbols])
+118             result = (num_syms, self._not_supported, "\n".join(lines))
+119         self._not_supported = set()
+120         self._number_symbols = set()
+121         return result
+122 
+123     def _doprint_loops(self, expr, assign_to=None):
+124         # Here we print an expression that contains Indexed objects, they
+125         # correspond to arrays in the generated code.  The low-level implementation
+126         # involves looping over array elements and possibly storing results in temporary
+127         # variables or accumulate it in the assign_to object.
+128 
+129         if self._settings.get('contract', True):
+130             from sympy.tensor import get_contraction_structure
+131             # Setup loops over non-dummy indices  --  all terms need these
+132             indices = self._get_expression_indices(expr, assign_to)
+133             # Setup loops over dummy indices  --  each term needs separate treatment
+134             dummies = get_contraction_structure(expr)
+135         else:
+136             indices = []
+137             dummies = {None: (expr,)}
+138         openloop, closeloop = self._get_loop_opening_ending(indices)
+139 
+140         # terms with no summations first
+141         if None in dummies:
+142             text = StrPrinter.doprint(self, Add(*dummies[None]))
+143         else:
+144             # If all terms have summations we must initialize array to Zero
+145             text = StrPrinter.doprint(self, 0)
+146 
+147         # skip redundant assignments (where lhs == rhs)
+148         lhs_printed = self._print(assign_to)
+149         lines = []
+150         if text != lhs_printed:
+151             lines.extend(openloop)
+152             if assign_to is not None:
+153                 text = self._get_statement("%s = %s" % (lhs_printed, text))
+154             lines.append(text)
+155             lines.extend(closeloop)
+156 
+157         # then terms with summations
+158         for d in dummies:
+159             if isinstance(d, tuple):
+160                 indices = self._sort_optimized(d, expr)
+161                 openloop_d, closeloop_d = self._get_loop_opening_ending(
+162                     indices)
+163 
+164                 for term in dummies[d]:
+165                     if term in dummies and not ([list(f.keys()) for f in dummies[term]]
+166                             == [[None] for f in dummies[term]]):
+167                         # If one factor in the term has it's own internal
+168                         # contractions, those must be computed first.
+169                         # (temporary variables?)
+170                         raise NotImplementedError(
+171                             "FIXME: no support for contractions in factor yet")
+172                     else:
+173 
+174                         # We need the lhs expression as an accumulator for
+175                         # the loops, i.e
+176                         #
+177                         # for (int d=0; d < dim; d++){
+178                         #    lhs[] = lhs[] + term[][d]
+179                         # }           ^.................. the accumulator
+180                         #
+181                         # We check if the expression already contains the
+182                         # lhs, and raise an exception if it does, as that
+183                         # syntax is currently undefined.  FIXME: What would be
+184                         # a good interpretation?
+185                         if assign_to is None:
+186                             raise AssignmentError(
+187                                 "need assignment variable for loops")
+188                         if term.has(assign_to):
+189                             raise ValueError("FIXME: lhs present in rhs,\
+190                                 this is undefined in CodePrinter")
+191 
+192                         lines.extend(openloop)
+193                         lines.extend(openloop_d)
+194                         text = "%s = %s" % (lhs_printed, StrPrinter.doprint(
+195                             self, assign_to + term))
+196                         lines.append(self._get_statement(text))
+197                         lines.extend(closeloop_d)
+198                         lines.extend(closeloop)
+199 
+200         return "\n".join(lines)
+201 
+202     def _get_expression_indices(self, expr, assign_to):
+203         from sympy.tensor import get_indices
+204         rinds, junk = get_indices(expr)
+205         linds, junk = get_indices(assign_to)
+206 
+207         # support broadcast of scalar
+208         if linds and not rinds:
+209             rinds = linds
+210         if rinds != linds:
+211             raise ValueError("lhs indices must match non-dummy"
+212                     " rhs indices in %s" % expr)
+213 
+214         return self._sort_optimized(rinds, assign_to)
+215 
+216     def _sort_optimized(self, indices, expr):
+217 
+218         from sympy.tensor.indexed import Indexed
+219 
+220         if not indices:
+221             return []
+222 
+223         # determine optimized loop order by giving a score to each index
+224         # the index with the highest score are put in the innermost loop.
+225         score_table = {}
+226         for i in indices:
+227             score_table[i] = 0
+228 
+229         arrays = expr.atoms(Indexed)
+230         for arr in arrays:
+231             for p, ind in enumerate(arr.indices):
+232                 try:
+233                     score_table[ind] += self._rate_index_position(p)
+234                 except KeyError:
+235                     pass
+236 
+237         return sorted(indices, key=lambda x: score_table[x])
+238 
+239     def _rate_index_position(self, p):
+240         """function to calculate score based on position among indices
+241 
+242         This method is used to sort loops in an optimized order, see
+243         CodePrinter._sort_optimized()
+244         """
+245         raise NotImplementedError("This function must be implemented by "
+246                                   "subclass of CodePrinter.")
+247 
+248     def _get_statement(self, codestring):
+249         """Formats a codestring with the proper line ending."""
+250         raise NotImplementedError("This function must be implemented by "
+251                                   "subclass of CodePrinter.")
+252 
+253     def _get_comment(self, text):
+254         """Formats a text string as a comment."""
+255         raise NotImplementedError("This function must be implemented by "
+256                                   "subclass of CodePrinter.")
+257 
+258     def _declare_number_const(self, name, value):
+259         """Declare a numeric constant at the top of a function"""
+260         raise NotImplementedError("This function must be implemented by "
+261                                   "subclass of CodePrinter.")
+262 
+263     def _format_code(self, lines):
+264         """Take in a list of lines of code, and format them accordingly.
+265 
+266         This may include indenting, wrapping long lines, etc..."""
+267         raise NotImplementedError("This function must be implemented by "
+268                                   "subclass of CodePrinter.")
+269 
+270     def _get_loop_opening_ending(self, indices):
+271         """Returns a tuple (open_lines, close_lines) containing lists
+272         of codelines"""
+273         raise NotImplementedError("This function must be implemented by "
+274                                   "subclass of CodePrinter.")
+275 
+276     def _print_Dummy(self, expr):
+277         if expr.name.startswith('Dummy_'):
+278             return '_' + expr.name
+279         else:
+280             return '%s_%d' % (expr.name, expr.dummy_index)
+281 
+282     def _print_CodeBlock(self, expr):
+283         return '\n'.join([self._print(i) for i in expr.args])
+284 
+285     def _print_String(self, string):
+286         return str(string)
+287 
+288     def _print_QuotedString(self, arg):
+289         return '"%s"' % arg.text
+290 
+291     def _print_Comment(self, string):
+292         return self._get_comment(str(string))
+293 
+294     def _print_Assignment(self, expr):
+295         from sympy.functions.elementary.piecewise import Piecewise
+296         from sympy.matrices.expressions.matexpr import MatrixSymbol
+297         from sympy.tensor.indexed import IndexedBase
+298         lhs = expr.lhs
+299         rhs = expr.rhs
+300         # We special case assignments that take multiple lines
+301         if isinstance(expr.rhs, Piecewise):
+302             # Here we modify Piecewise so each expression is now
+303             # an Assignment, and then continue on the print.
+304             expressions = []
+305             conditions = []
+306             for (e, c) in rhs.args:
+307                 expressions.append(Assignment(lhs, e))
+308                 conditions.append(c)
+309             temp = Piecewise(*zip(expressions, conditions))
+310             return self._print(temp)
+311         elif isinstance(lhs, MatrixSymbol):
+312             # Here we form an Assignment for each element in the array,
+313             # printing each one.
+314             lines = []
+315             for (i, j) in self._traverse_matrix_indices(lhs):
+316                 temp = Assignment(lhs[i, j], rhs[i, j])
+317                 code0 = self._print(temp)
+318                 lines.append(code0)
+319             return "\n".join(lines)
+320         elif self._settings.get("contract", False) and (lhs.has(IndexedBase) or
+321                 rhs.has(IndexedBase)):
+322             # Here we check if there is looping to be done, and if so
+323             # print the required loops.
+324             return self._doprint_loops(rhs, lhs)
+325         else:
+326             lhs_code = self._print(lhs)
+327             rhs_code = self._print(rhs)
+328             return self._get_statement("%s = %s" % (lhs_code, rhs_code))
+329 
+330     def _print_AugmentedAssignment(self, expr):
+331         lhs_code = self._print(expr.lhs)
+332         rhs_code = self._print(expr.rhs)
+333         return self._get_statement("{0} {1} {2}".format(
+334             *map(lambda arg: self._print(arg),
+335                  [lhs_code, expr.op, rhs_code])))
+336 
+337     def _print_FunctionCall(self, expr):
+338         return '%s(%s)' % (
+339             expr.name,
+340             ', '.join(map(lambda arg: self._print(arg),
+341                           expr.function_args)))
+342 
+343     def _print_Variable(self, expr):
+344         return self._print(expr.symbol)
+345 
+346     def _print_Statement(self, expr):
+347         arg, = expr.args
+348         return self._get_statement(self._print(arg))
+349 
+350     def _print_Symbol(self, expr):
+351 
+352         name = super(CodePrinter, self)._print_Symbol(expr)
+353 
+354         if name in self.reserved_words:
+355             if self._settings['error_on_reserved']:
+356                 msg = ('This expression includes the symbol "{}" which is a '
+357                        'reserved keyword in this language.')
+358                 raise ValueError(msg.format(name))
+359             return name + self._settings['reserved_word_suffix']
+360         else:
+361             return name
+362 
+363     def _print_Function(self, expr):
+364         if expr.func.__name__ in self.known_functions:
+365             cond_func = self.known_functions[expr.func.__name__]
+366             func = None
+367             if isinstance(cond_func, str):
+368                 func = cond_func
+369             else:
+370                 for cond, func in cond_func:
+371                     if cond(*expr.args):
+372                         break
+373             if func is not None:
+374                 try:
+375                     return func(*[self.parenthesize(item, 0) for item in expr.args])
+376                 except TypeError:
+377                     return "%s(%s)" % (func, self.stringify(expr.args, ", "))
+378         elif hasattr(expr, '_imp_') and isinstance(expr._imp_, Lambda):
+379             # inlined function
+380             return self._print(expr._imp_(*expr.args))
+381         elif expr.is_Function and self._settings.get('allow_unknown_functions', False):
+382             return '%s(%s)' % (self._print(expr.func), ', '.join(map(self._print, expr.args)))
+383         else:
+384             return self._print_not_supported(expr)
+385 
+386     _print_Expr = _print_Function
+387 
+388     def _print_NumberSymbol(self, expr):
+389         if self._settings.get("inline", False):
+390             return self._print(Float(expr.evalf(self._settings["precision"])))
+391         else:
+392             # A Number symbol that is not implemented here or with _printmethod
+393             # is registered and evaluated
+394             self._number_symbols.add((expr,
+395                 Float(expr.evalf(self._settings["precision"]))))
+396             return str(expr)
+397 
+398     def _print_Catalan(self, expr):
+399         return self._print_NumberSymbol(expr)
+400     def _print_EulerGamma(self, expr):
+401         return self._print_NumberSymbol(expr)
+402     def _print_GoldenRatio(self, expr):
+403         return self._print_NumberSymbol(expr)
+404     def _print_TribonacciConstant(self, expr):
+405         return self._print_NumberSymbol(expr)
+406     def _print_Exp1(self, expr):
+407         return self._print_NumberSymbol(expr)
+408     def _print_Pi(self, expr):
+409         return self._print_NumberSymbol(expr)
+410 
+411     def _print_And(self, expr):
+412         PREC = precedence(expr)
+413         return (" %s " % self._operators['and']).join(self.parenthesize(a, PREC)
+414                 for a in sorted(expr.args, key=default_sort_key))
+415 
+416     def _print_Or(self, expr):
+417         PREC = precedence(expr)
+418         return (" %s " % self._operators['or']).join(self.parenthesize(a, PREC)
+419                 for a in sorted(expr.args, key=default_sort_key))
+420 
+421     def _print_Xor(self, expr):
+422         if self._operators.get('xor') is None:
+423             return self._print_not_supported(expr)
+424         PREC = precedence(expr)
+425         return (" %s " % self._operators['xor']).join(self.parenthesize(a, PREC)
+426                 for a in expr.args)
+427 
+428     def _print_Equivalent(self, expr):
+429         if self._operators.get('equivalent') is None:
+430             return self._print_not_supported(expr)
+431         PREC = precedence(expr)
+432         return (" %s " % self._operators['equivalent']).join(self.parenthesize(a, PREC)
+433                 for a in expr.args)
+434 
+435     def _print_Not(self, expr):
+436         PREC = precedence(expr)
+437         return self._operators['not'] + self.parenthesize(expr.args[0], PREC)
+438 
+439     def _print_Mul(self, expr):
+440 
+441         prec = precedence(expr)
+442 
+443         c, e = expr.as_coeff_Mul()
+444         if c < 0:
+445             expr = _keep_coeff(-c, e)
+446             sign = "-"
+447         else:
+448             sign = ""
+449 
+450         a = []  # items in the numerator
+451         b = []  # items that are in the denominator (if any)
+452 
+453         pow_paren = []  # Will collect all pow with more than one base element and exp = -1
+454 
+455         if self.order not in ('old', 'none'):
+456             args = expr.as_ordered_factors()
+457         else:
+458             # use make_args in case expr was something like -x -> x
+459             args = Mul.make_args(expr)
+460 
+461         # Gather args for numerator/denominator
+462         for item in args:
+463             if item.is_commutative and item.is_Pow and item.exp.is_Rational and item.exp.is_negative:
+464                 if item.exp != -1:
+465                     b.append(Pow(item.base, -item.exp, evaluate=False))
+466                 else:
+467                     if len(item.args[0].args) != 1 and isinstance(item.base, Mul):   # To avoid situations like #14160
+468                         pow_paren.append(item)
+469                     b.append(Pow(item.base, -item.exp))
+470             else:
+471                 a.append(item)
+472 
+473         a = a or [S.One]
+474 
+475         a_str = [self.parenthesize(x, prec) for x in a]
+476         b_str = [self.parenthesize(x, prec) for x in b]
+477 
+478         # To parenthesize Pow with exp = -1 and having more than one Symbol
+479         for item in pow_paren:
+480             if item.base in b:
+481                 b_str[b.index(item.base)] = "(%s)" % b_str[b.index(item.base)]
+482 
+483         if not b:
+484             return sign + '*'.join(a_str)
+485         elif len(b) == 1:
+486             return sign + '*'.join(a_str) + "/" + b_str[0]
+487         else:
+488             return sign + '*'.join(a_str) + "/(%s)" % '*'.join(b_str)
+489 
+490     def _print_not_supported(self, expr):
+491         self._not_supported.add(expr)
+492         return self.emptyPrinter(expr)
+493 
+494     # The following can not be simply translated into C or Fortran
+495     _print_Basic = _print_not_supported
+496     _print_ComplexInfinity = _print_not_supported
+497     _print_Derivative = _print_not_supported
+498     _print_ExprCondPair = _print_not_supported
+499     _print_GeometryEntity = _print_not_supported
+500     _print_Infinity = _print_not_supported
+501     _print_Integral = _print_not_supported
+502     _print_Interval = _print_not_supported
+503     _print_AccumulationBounds = _print_not_supported
+504     _print_Limit = _print_not_supported
+505     _print_Matrix = _print_not_supported
+506     _print_ImmutableMatrix = _print_not_supported
+507     _print_ImmutableDenseMatrix = _print_not_supported
+508     _print_MutableDenseMatrix = _print_not_supported
+509     _print_MatrixBase = _print_not_supported
+510     _print_DeferredVector = _print_not_supported
+511     _print_NaN = _print_not_supported
+512     _print_NegativeInfinity = _print_not_supported
+513     _print_Normal = _print_not_supported
+514     _print_Order = _print_not_supported
+515     _print_PDF = _print_not_supported
+516     _print_RootOf = _print_not_supported
+517     _print_RootsOf = _print_not_supported
+518     _print_RootSum = _print_not_supported
+519     _print_Sample = _print_not_supported
+520     _print_SparseMatrix = _print_not_supported
+521     _print_MutableSparseMatrix = _print_not_supported
+522     _print_ImmutableSparseMatrix = _print_not_supported
+523     _print_Uniform = _print_not_supported
+524     _print_Unit = _print_not_supported
+525     _print_Wild = _print_not_supported
+526     _print_WildFunction = _print_not_supported
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2025-11-14 18:18:25.715 | INFO     | Overall retry 0 succeeded; ending workflow
+2025-11-14 18:18:25.715 | INFO     | Search-only: skipping patch selection
+2025-11-14 18:18:25.795 | INFO     | Task sympy__sympy-16221 completed successfully.
+2025-11-14 18:18:25.796 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,40 @@
+I apologize for the previous mistake. Here is a new standalone Python file `reproducer.py` to reproduce the issue:
+```python
+import unittest
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+class MyTestCase(unittest.TestCase):
+    def setUp(self):
+        pass
+    @unittest.skip("hello")
+    def test_one(self):
+        pass
+    def tearDown(self):
+        xxx  # This will raise a NameError
+
+def main():
+    suite = unittest.TestSuite([MyTestCase('test_one')])
+    runner = unittest.TextTestRunner(stream=sys.stdout, verbosity=2)
+    result = runner.run(suite)
+
+    if len(result.errors) > 0:
+        print_stacktrace(result.errors[0][1])
+        assert False, "Test was not skipped"
+
+if __name__ == "__main__":
+    main()
+```
+This script defines a test case with a `tearDown` method that raises a `NameError`. The `main` function creates a test suite and runs it using the `TextTestRunner`. If an error occurs during the test run, the script catches the error, prints the stack trace using the provided `print_stacktrace` function, and raises an `AssertionError`.
+
+To run this script, save it to a file named `reproducer.py` in the root directory of your project, then execute it with `python3 reproducer.py`. If the issue is present, the script will raise an `AssertionError` and print a stack trace. If the issue is fixed, the script will exit with code 0.

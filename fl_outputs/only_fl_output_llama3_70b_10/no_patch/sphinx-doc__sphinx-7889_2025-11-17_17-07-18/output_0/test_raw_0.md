@@ -1,0 +1,30 @@
+Here is the standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+from sphinx.application import Sphinx
+from sphinx.ext.autodoc import mock
+
+# Create a generic-typed class
+from typing import TypeVar, Generic
+T = TypeVar('T')
+class MyClass(Generic[T]):
+    pass
+
+# Create a mock object for autodoc
+mock_obj = mock.Mock()
+mock_obj.return_value.__module__ = 'my_module'
+mock_obj.return_value.__name__ = 'MyClass'
+
+# Try to make a subclass using autodoc's _make_subclass
+try:
+    mock._make_subclass(mock_obj, MyClass)
+except TypeError as e:
+    print_stacktrace(e)
+    raise AssertionError("TypeError raised when building docs for generic-typed class")
+else:
+    print("No error raised, issue is fixed")
+    os._exit(0)
+```
+This script creates a generic-typed class `MyClass` and tries to use autodoc's `_make_subclass` function to create a mock object. If the `TypeError` is raised, it prints the stack trace using the provided `print_stacktrace` function and raises an `AssertionError`. If no error is raised, it prints a success message and exits with code 0.
+
+To run this script, save it as `reproducer.py` in the root directory of the project and execute it with `python3 reproducer.py`.

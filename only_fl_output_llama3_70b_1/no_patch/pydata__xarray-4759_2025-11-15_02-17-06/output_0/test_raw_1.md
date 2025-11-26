@@ -1,0 +1,32 @@
+Here is the standalone Python file `reproducer.py` to reproduce the issue:
+```python
+import xarray as xr
+import numpy as np
+
+def test_issue():
+    test = xr.Dataset(coords={'xy': ['x', 'y']})
+    test['test'] = xr.DataArray(np.array([0, 0]), dims=['xy'])
+
+    try:
+        assert test.coords["xy"].data.dtype.kind == 'U'
+        print("Issue not present: dtype of DataArray coordinates stays the same.")
+    except AssertionError as e:
+        print_stacktrace(e)
+        exit(1)
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    test_issue()
+```
+This script creates a `Dataset` with a coordinate `xy` of type `<U1`, adds a `DataArray` to it, and then checks if the dtype of the coordinate `xy` has changed. If it has, an `AssertionError` is raised, and the stack trace is printed.

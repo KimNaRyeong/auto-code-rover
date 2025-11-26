@@ -1,0 +1,60 @@
+Here is the revised standalone Python file `reproducer.py` to reproduce the issue:
+```
+import os
+import sys
+from django.conf import settings
+from django.db import models
+from django.db.models.functions import Right, Length
+
+# Configure Django settings
+settings.configure(
+    DATABASES={
+        'default': {
+            'ENGINE': 'django.db.backends.oracle',
+            # 'NAME': ':memory:'  # Use in-memory database for testing
+        }
+    },
+    INSTALLED_APPS=['reproducer']
+)
+
+from django.core.management import execute_from_command_line
+
+def print_stacktrace(e: Exception):
+    import traceback
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+# Create a test model
+class MyModel(models.Model):
+    foo = models.CharField(max_length=255)
+
+# Create a test database
+execute_from_command_line(['manage.py', 'migrate'])
+
+# Create a test instance
+my_obj = MyModel(foo='hello')
+my_obj.save()
+
+try:
+    # Annotate the model with the Right function
+    annotated_objs = MyModel.objects.annotate(suffix=Right("foo", Length("foo") - Length("foo")))
+    
+    # Check if the suffix is an empty string
+    for obj in annotated_objs:
+        assert obj.suffix == '', f"Expected empty string, got {obj.suffix}"
+    
+    print("Issue not present")
+    sys.exit(0)
+except AssertionError as e:
+    print_stacktrace(e)
+    sys.exit(1)
+```
+This script configures Django settings to use Oracle database and creates a test model. It then creates a test instance of the `MyModel` model and annotates it with the `Right` function. The script checks if the resulting suffix is an empty string, and raises an `AssertionError` if it's not. If the issue is present, the script prints a stack trace of the error and exits with code 1. If the issue is fixed, the script prints "Issue not present" and exits with code 0.
+
+Note: You need to have Oracle database installed and configured on your system for this script to work. Also, you may need to adjust the `DATABASES` setting to match your Oracle database connection details.

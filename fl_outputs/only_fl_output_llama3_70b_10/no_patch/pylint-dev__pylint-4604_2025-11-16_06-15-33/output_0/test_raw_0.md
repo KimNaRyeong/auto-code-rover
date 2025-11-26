@@ -1,0 +1,44 @@
+Here is the standalone Python file `reproducer.py` to reproduce the issue:
+```
+import subprocess
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback    
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    code = """
+\"\"\"Docstring.\"\"\
+
+import abc
+from abc import ABC
+
+X = ...  # type: abc.ABC
+Y = ...  # type: ABC
+"""
+
+    with open("a.py", "w") as f:
+        f.write(code)
+
+    try:
+        subprocess.check_output(["pylint", "--from-stdin", "a.py"], input=code.encode())
+    except subprocess.CalledProcessError as e:
+        output = e.output.decode()
+        if "W0611: Unused import abc" not in output:
+            print("Issue is fixed, exiting with code 0")
+            sys.exit(0)
+        else:
+            raise AssertionError("Issue is still present") from None
+
+if __name__ == "__main__":
+    main()
+```
+This script writes the given Python code to a file `a.py`, runs Pylint on it, and checks if the "Unused import abc" warning is emitted. If the warning is not emitted, the script exits with code 0. If the warning is still present, the script raises an `AssertionError` with a stack trace.
