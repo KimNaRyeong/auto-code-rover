@@ -155,3 +155,10 @@ class Gemma_7B(GroqModel):
             "groq/gemma-7b-it", 0.0000001, 0.0000001, parallel_tool_call=True
         )
         self.note = "A state-of-the-art open model from Google, boasting 7B parameters"
+
+class GPT_OSS_20B(GroqModel):
+    def __init__(self):
+        super().__init__(
+            "groq/openai/gpt-oss-20b", 0.000000075, 0.0000003, parallel_tool_call=True
+        )
+        self.note = "Open-weight Mixture-of-Experts model hosted by Groq, optimized for cost-efficient deployment. (Note: max_tokens is currently hardcoded to 1024 in GroqModel.call)"

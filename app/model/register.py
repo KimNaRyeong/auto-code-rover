@@ -8,6 +8,7 @@ from app.model import (
     gptlitellm,
     groq,
     ollama,
+    together
 )
 
 
@@ -51,6 +52,10 @@ def register_all_models() -> None:
     common.register_model(groq.Llama3_70B())
     common.register_model(groq.Mixtral_8x7B())
     common.register_model(groq.Gemma_7B())
+    common.register_model(groq.GPT_OSS_20B())
+
+    common.register_model(together.Together_GPT_OSS_20B())
+    common.register_model(together.Together_Mixtral_8x7B())
 
     common.register_model(gptlitellm.Gpt4o_20240513LiteLLM())
     common.register_model(gptlitellm.Gpt4_Turbo20240409LiteLLM())
