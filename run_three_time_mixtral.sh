@@ -1,0 +1,1 @@
+PYTHONPATH=. python app/main.py swe-bench --model together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1 --setup-map SWE-bench/setup_result/setup_map.json --tasks-map SWE-bench/setup_result/tasks_map.json --output-dir only_fl_output_mixtral_3 --task-list-file SWE-bench/sampled_tasks.txt
