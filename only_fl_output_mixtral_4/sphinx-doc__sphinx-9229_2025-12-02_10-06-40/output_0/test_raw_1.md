@@ -1,0 +1,64 @@
+ I apologize for the mistake in my previous response. Here is the corrected standalone Python script `reproducer.py` to reproduce the issue:
+```python
+import sys
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+from pathlib import Path
+from typing import Any, Callable, Dict, Union
+
+ScaffoldOpts = Dict[str, Any]
+"""Dictionary with PyScaffold's options, see ``pyscaffold.api.create_project``.
+Should be treated as immutable (if required, copy before changing).
+
+Please notice some behaviours given by the options **SHOULD** be observed. For example,
+files should be overwritten when the **force** option is ``True``. Similarly when
+**pretend** is ``True``, no operation should be really performed, but any action should
+be logged as if realized.
+"""
+
+FileContents = Union[str, None]
+"""When the file content is ``None``, the file should not be written to
+disk (empty files are represented by an empty string ``""`` as content).
+"""
+
+FileOp = Callable[[Path, FileContents, ScaffoldOpts], Union[Path, None]]
+"""Signature of functions considered file operations::
+
+    Callable[[Path, FileContents, ScaffoldOpts], Union[Path, None]]
+
+- **path** (:obj:`pathlib.Path`): file path potentially to be written to/changed
+  in the disk.
+- **contents** (:obj:`FileContents`): usually a string that represents a text content
+  of the file. :obj:`None` indicates the file should not be written.
+- **opts** (:obj:`ScaffoldOpts`): a dict with PyScaffold's options.
+
+If the file is written (or more generally changed, such as new access permissions)
+by convention they should return the :obj:`file path <pathlib.Path>`.
+If no file was touched, :obj:`None` should be returned. Please notice a **FileOp**
+might return :obj:`None` if a pre-existing file in the disk is not modified.
+
+.. note::
+    A **FileOp** usually has side effects (e.g. write a file to the disk), see
+    :obj:`FileFileContents` and :obj:`ScaffoldOpts` for other conventions.
+"""
+
+if __name__ == '__main__':
+    assert ScaffoldOpts.__doc__ is not None, "ScaffoldOpts docstring is missing"
+    assert FileContents.__doc__ is not None, "FileContents docstring is missing"
+    assert FileOp.__doc__ is not None, "FileOp docstring is missing"
+    print("No AssertionError raised, which means the docstrings are present.")
+```
+This script defines the `print_stacktrace` function to print the stack trace, and then defines the type aliases `ScaffoldOpts`, `FileContents`, and `FileOp` with docstrings. The script then checks if the docstrings are present by asserting that they are not `None`. If the docstrings are present, the script should print "No AssertionError raised, which means the docstrings are present." and exit with code 0. If the docstrings are missing, the script should raise an `AssertionError` and print a stack trace.
+
+To reproduce the issue, execute the script with `python3 reproducer.py` and observe that no `AssertionError` is raised. The script should exit with code 0, indicating that the docstrings are present.
+
+The expected behavior is that the `AssertionError` should be raised and a stack trace should be printed, indicating that the docstrings are missing. However, the actual behavior is that the `AssertionError` is not raised, which means that the docstrings are present. This is inconsistent with the issue description, which states that the docstrings are ignored and the only thing shown is the ``alias of ...

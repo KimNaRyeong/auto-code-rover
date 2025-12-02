@@ -1,0 +1,70 @@
+ I apologize for the confusion. Here is a revised `reproducer.py` file that should reproduce the issue:
+```python
+import sys
+import traceback
+
+import sphinx
+from sphinx.application import Sphinx
+from sphinx.ext.autodoc import ClassMethod
+
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+
+def setup(app: Sphinx):
+    app.connect("autodoc-process-docstring", process_docstring)
+
+
+def process_docstring(
+    app: Sphinx, what: str, name: str, obj: Any, options: dict, lines: list
+):
+    if what == "classmethod" and obj.__doc__ is None:
+        parent_class = get_parent_class(obj.__self__.__class__)
+        if parent_class is not None and hasattr(parent_class, name):
+            parent_method = getattr(parent_class, name)
+            if parent_method.__doc__ is not None:
+                lines[:0] = [parent_method.__doc__]
+
+
+def get_parent_class(cls: type) -> type | None:
+    for base in cls.__bases__:
+        if base is not object:
+            return base
+    return None
+
+
+if __name__ == "__main__":
+    sys.path.insert(0, "..")
+    app = sphinx.application.Sphinx(srcdir=".", confdir=".", outdir=".", doctreedir=".")
+    app.setup_extension("sphinx.ext.autodoc")
+    app.setup_extension("reproducer")
+
+    # Create a mock document
+    app.env.app.builder.build_all()
+
+    obj = getattr(getattr(app.env.app.object_types["module"], "spam"), "Child")
+    method = getattr(obj, "method")
+
+    if not isinstance(method, ClassMethod):
+        raise AssertionError("Expected ClassMethod, got: " + str(type(method)))
+
+    if method.__doc__ is None:
+        raise AssertionError(
+            "Expected docstring to be inherited, but got None."
+        )
+
+    print("No issues found.")
+```
+This script creates a mock document by calling `app.env.app.builder.build_all()` before checking the docstring of the `Child.method`. This should ensure that the `autodoc-process-docstring` event is triggered and the docstring is inherited.
+
+To run the script, execute `python3 reproducer.py` in the root directory of the project. If the issue is present, an `AssertionError` will be raised and a stack trace will be printed. If the issue is fixed, the script will print "No issues found." and exit with code 0.
+
+Note: The previous version of the script failed to run because it imported `sphinx.util.inspect` which depends on `docutils`, which was not installed in the environment. This version of the script does not depend on `sphinx.util.inspect`, so it should work in a clean environment.

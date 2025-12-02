@@ -1,0 +1,48 @@
+ I apologize for the confusion. It seems that the issue is related to the environment and not the code itself.
+
+Here is a standalone python file `reproducer.py` to reproduce the issue, which should work in a clean environment:
+```python
+import numpy as np
+from sklearn.metrics.pairwise import pairwise_distances
+import sys
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+X = np.array([
+    [1, 3],
+    [2, 1],
+    [3, 2]
+])
+
+expected_result = np.array([
+    [0.        , 0.29289322, 0.21064778],
+    [0.29289322, 0.        , 0.00772212],
+    [0.21064778, 0.00772212, 0.        ]
+])
+
+try:
+    actual_result = pairwise_distances(X, metric='cosine', n_jobs=-1)
+    assert np.allclose(actual_result, expected_result)
+except AssertionError:
+    print_stacktrace(AssertionError("pairwise_distances returns zeros for metric cosine when executed in parallel"))
+    sys.exit(1)
+except Exception as e:
+    print_stacktrace(e)
+    sys.exit(1)
+
+print("Test passed")
+sys.exit(0)
+```
+This script will raise an `AssertionError` if the issue is present and print a stack trace of the issue. The script will exit with code 0 if the issue is fixed.
+
+Please make sure that you have the required dependencies installed and that the environment is clean before running the script.
+
+Regarding the error message you provided, it seems that scikit-learn was not installed correctly. You may need to reinstall scikit-learn or create a new virtual environment and install scikit-learn there.
