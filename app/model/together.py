@@ -106,7 +106,7 @@ class TogetherModel(Model):
                 messages.append(json_instruction)
                 # messages.append({"role": "assistant", "content": prefill_content})
 
-            if self.name == 'together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1':
+            if self.name == 'together_ai/mixtralai/Mixtral-8x7B-Instruct-v0.1':
 
                 current_messages = [m.copy() for m in messages]
                 final_messages = self._merge_consecutive_messages(current_messages)
@@ -164,7 +164,7 @@ class Together_GPT_OSS_20B(TogetherModel):
 class Together_Mixtral_8x7B(TogetherModel):
     def __init__(self):
         super().__init__(
-            "together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1",
+            "together_ai/mixtralai/Mixtral-8x7B-Instruct-v0.1",
             0.0000006,
             0,
             parallel_tool_call=True
