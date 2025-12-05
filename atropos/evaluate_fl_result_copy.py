@@ -354,12 +354,12 @@ def analysis_result_type():
     print(f"No answer: {no_answer}")
 
 
-def vote_and_ranks_final_answers(r):
+def vote_and_ranks_final_answers(r, task_file):
     def tie_break(task, tie_methods):
         tie_broken_methods = []
 
         for i in range(1, r+1):
-            filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_70b_1_to_20.json'
+            filtered_fl_result_file = f'./fl_results/filtered_fl_result_mixtral.json'
             with open(filtered_fl_result_file, 'r') as f:
                 fl_result = json.load(f)
             answer_list = fl_result[task]
@@ -376,12 +376,12 @@ def vote_and_ranks_final_answers(r):
     voting_score_dict = defaultdict(lambda: defaultdict(float))
     ranking_dict = dict()
 
-    task_list_file = './sampled_tasks_1_to_20.txt'
+    task_list_file = task_file
     with open(task_list_file, 'r') as f:
         task_list = f.read().splitlines()
     print(len(task_list))
     for i in range(1, r+1):
-        filtered_fl_result_file = f'./fl_results/filtered_fl_result_llama3_70b_1_to_20.json'
+        filtered_fl_result_file = f'./fl_results/filtered_fl_result_mixtral.json'
         with open(filtered_fl_result_file, 'r') as f:
             fl_result = json.load(f)
         for task in task_list:
@@ -415,7 +415,34 @@ def vote_and_ranks_final_answers(r):
     return combined_result_dict
         
 
+def evaluate(combined_dict, task_list, dataset_size):
+    if dataset_size == 500:
+        modif_file = './modif_from_developer_patch.json'
+    else:
+        modif_file = './modif_from_developer_patch_1000size.json'
     
+    with open(modif_file, 'r') as f:
+        modif_dict = json.load(f)
+    
+    labels_dict = dict()
+    for task in task_list:
+        labels_dict[task] = 0
+    
+    for task, ranking in combined_dict["ranking"].items():
+        if ranking:
+            final_answer = ranking[0]
+            rel_file_path = final_answer.split('::')[0]
+            start, end = final_answer.split('_')[-2:]
+            start, end = int(start), int(end)
+            if rel_file_path in modif_dict[task].keys():
+                for modif in modif_dict[task][rel_file_path]:
+                    if start <= modif["start_lineno"] and end >= modif["end_lineno"]:
+                        labels_dict[task] = 1
+    
+    print(len(combined_dict["ranking"]))
+    print(sum(labels_dict.values()))
+    return labels_dict
+
 
         
 
@@ -438,11 +465,11 @@ if __name__ == "__main__":
 
     # save_bug_locations()
 
-    for i in range(1, args.repetition+1):
-        filtered_fl_dict = extract_fl_results(f"../fl_outputs/only_fl_output_llama3_70b_{i}")
-        print(len(filtered_fl_dict.keys()))
-        with open(f'./fl_results/filtered_fl_result_llama3_70b_1_to_20.json', 'w') as f:
-            json.dump(filtered_fl_dict, f, indent=4)
+    # for i in range(1, args.repetition+1):
+    #     filtered_fl_dict = extract_fl_results(f"../fl_outputs/only_fl_output_mixtral_{i}")
+    #     print(len(filtered_fl_dict.keys()))
+    #     with open(f'./fl_results/filtered_fl_result_mixtral.json', 'w') as f:
+    #         json.dump(filtered_fl_dict, f, indent=4)
 
 
     # save_diff_modif_dict("../only_fl_output_llama3_1000size_1")
@@ -493,10 +520,12 @@ if __name__ == "__main__":
     #     if max_idx > 5:
     #         print(instance)
 
-    combined_dict = vote_and_ranks_final_answers(args.repetition)
+    combined_dict = vote_and_ranks_final_answers(args.repetition, args.task_list)
     print(len(combined_dict["ranking"].keys()))
-    with open('./R1_combined_fl_results_llama3_70b_1_to_20.json', 'w') as f:
-        json.dump(combined_dict, f, indent=4)
+    # with open(f'./R{str(args.repetition)}_combined_fl_results_mixtral.json', 'w') as f:
+    #     json.dump(combined_dict, f, indent=4)
+    
+    labels_dict = evaluate(combined_dict, args.task_list, 500)
     
 
 

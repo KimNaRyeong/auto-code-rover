@@ -34,7 +34,7 @@ class Data_generater():
         task_list_file = './sampled_tasks.txt'
         with open(task_list_file, 'r') as f:
             self.task_list = f.read().splitlines()
-        # self.task_list = ['astropy__astropy-6938']
+        self.task_list = ['astropy__astropy-6938']
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
@@ -43,7 +43,7 @@ class Data_generater():
 
         # print(self.trajs_dict)
         # print()
-        # print(self.reasoning_paths_dict)
+        print(self.reasoning_paths_dict)
         # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
         # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
         self.args_dict = self.get_args_dict_for_k()
@@ -61,9 +61,9 @@ class Data_generater():
             for i in range(1, self.repetition+1):
 
                 if i == 1:
-                    output_dir = '../only_fl_output/no_patch'
+                    output_dir = '../fl_outputs/only_fl_output/no_patch'
                 else:
-                    output_dir = f'../only_fl_output{i}/no_patch'
+                    output_dir = f'../fl_outputs/only_fl_output{i}/no_patch'
                 instance_list = os.listdir(output_dir)
 
                 tool_call_layer_file = None
