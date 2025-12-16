@@ -4,20 +4,18 @@ import argparse
 import copy
 import ast
 import torch
+import fasttext
+import fasttext.util
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 from torch_geometric.utils import from_networkx
-from transformers import AutoTokenizer, AutoModel
 
-codebert_tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-codebert_model = AutoModel.from_pretrained("microsoft/codebert-base")
-codebert_model.eval()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-codebert_model.to(device)
-embedding_size = 768
+fasttext.util.download_model('en', if_exists='ignore')
+fasttext_model = fasttext.load_model('cc.en.300.bin')
+embedding_size = 300
 
 class Data_generater():
     def __init__(self, repetition, label_criteria):
@@ -288,14 +286,11 @@ class Data_generater():
             save_dir = f'./data/{hot_dir}/{answer_dir}'
         return save_dir
 
-    def embed_with_codebert(self, text):
-        # Dimension of output embedding: 768
-        inputs = codebert_tokenizer(str(text), return_tensors="pt", truncation=True, max_length=512, padding=True)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        with torch.no_grad():
-            outputs = codebert_model(**inputs)
-            embedding = outputs.last_hidden_state[:, 0, :].squeeze()
-        return embedding.cpu()
+    def embed_with_fasttext(self, text):
+        text_str = str(text)
+        embedding = fasttext_model.get_sentence_vector(text_str)
+
+        return torch.from_numpy(embedding).float()
 
     def generate_LIG_for_all_k(self, save_data, save_dir):
         def add_weight_edge(G, u, v, weight=1):
@@ -375,7 +370,7 @@ class Data_generater():
                         arg_embedding = torch.zeros(embedding_size, dtype=torch.float)
                     elif isinstance(node[0], str): 
                         func_vector = torch.ones(len(self.function_types) + 1, dtype=torch.float)
-                        arg_embedding = self.embed_with_codebert(str(node))
+                        arg_embedding = self.embed_with_fasttext(str(node))
                     else:
                         func_vector = torch.zeros(len(self.function_types) + 1, dtype=torch.float)
                         arguments = []
@@ -384,11 +379,11 @@ class Data_generater():
                                 func_idx = self.function_types.index(func_call['func_name'])
                             else:
                                 func_idx = -1
-                            func_vector[func_idx] = 1
+                            func_vector[func_idx] += 1
                         
                             for arg in func_call['arguments'].values():
                                 arguments.append(arg)
-                        arg_embedding = self.embed_with_codebert(str(arguments))
+                        arg_embedding = self.embed_with_fasttext(str(arguments))
 
                     embedding = torch.cat([func_vector, arg_embedding], dim=0)
                     node_embeddings.append(embedding)
@@ -447,30 +442,6 @@ class Data_generater():
         else:
             fig_name += '_no_answer'
         plt.savefig(f"./graphs/{fig_name}")
-
-
-    def generate_vector_for_all_tasks(self):
-        args_dict = defaultdict(set)
-        length_dict_nhot = defaultdict(int)
-        length_dict_onehot = defaultdict(int)
-        
-        for task_name, trajs in self.reasoning_paths_dict.items():
-            for traj in trajs:
-                vector_for_traj = []
-                num_fc = 0
-                for reasoning_step in traj:
-                    if self.nhot:
-                        func_vector = [0] * (len(self.function_types) + 1)
-                        for function_call in reasoning_step:
-                            if function_call in self.function_types:
-                                func_idx = self.function_types.index(function_call)
-                            else:
-                                func_idx = -1
-                            func_vector[func_idx] += 1 ## modify here!!
-                            func_vector[func_idx] = 1
-
-                        for function_call in reasoning_step:
-                            func_vector = [0] * (len(self.function_types) + 1)
                 
 def examine_tool_call_layers():
     task_list_file = './sampled_tasks.txt'
@@ -524,7 +495,7 @@ def examine_tool_call_layers():
                     print(f"No content in the after answer file")
 
 def get_save_dir(label_criteria, embedding_length):
-    save_dir = f'../data/parallel/embedding/codebert/nhot_normal/label_criteria_{label_criteria}'
+    save_dir = f'../data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_length}d/label_criteria_{label_criteria}/add'
     return save_dir
 
 if __name__ == '__main__':
