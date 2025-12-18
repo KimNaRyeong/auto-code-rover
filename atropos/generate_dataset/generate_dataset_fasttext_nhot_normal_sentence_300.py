@@ -41,8 +41,6 @@ class Data_generater():
         # print(self.reasoning_paths_dict)
         # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
         # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
-        self.args_dict = self.get_args_dict_for_k()
-        # # print(self.args_dict)
         self.label_dict = self.get_labels_dict()
         # # self.task_list = ['scikit-learn__scikit-learn-26400']
         # # self.task_list = ['astropy__astropy-6938']
@@ -75,8 +73,9 @@ class Data_generater():
                 filtered_fl_dict[instance_name] = []
                 continue
 
-            
-            for raw_fl in fl_before_process:
+            json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
+            no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
+            for raw_fl in no_duplicate_fl_before_process:
                 intended_behavior = raw_fl.get("intended_behavior", "")
 
                 for searched_fl in fl_after_process:
