@@ -47,7 +47,8 @@ class Data_generater():
         instance_dir_list = os.listdir(os.path.join(result_dir, 'no_patch'))
 
         filtered_fl_dict = defaultdict(list)
-
+        # instance_dir_list = ['django__django-13925_2025-12-01_02-52-22']
+        # instance_dir_list = ['django__django-13925_2025-12-01_04-00-00']
         for instance_dir in instance_dir_list:
             splited_instance_dir = instance_dir.split('_')
             instance_name = f"{splited_instance_dir[0]}__{splited_instance_dir[2]}"
@@ -69,10 +70,14 @@ class Data_generater():
             if not fl_before_process or not fl_after_process:
                 filtered_fl_dict[instance_name] = []
                 continue
+
+            # for x in fl_before_process:
+            #     print(x)
             
-            json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
-            no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
-            for raw_fl in no_duplicate_fl_before_process:
+            # json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
+            # no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
+            # for raw_fl in no_duplicate_fl_before_process:
+            for raw_fl in fl_before_process:
                 intended_behavior = raw_fl.get("intended_behavior", "")
 
                 for searched_fl in fl_after_process:
@@ -169,13 +174,14 @@ class Data_generater():
 
         for i in range(1, self.repetition+1):
             fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            if os.path.exists(fl_result_file):
-                with open(fl_result_file, 'r') as f:
-                    fl_results_dict = json.load(f)
-            else:
-                fl_results_dict = self.extract_fl_results(i)
-                with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
-                    json.dump(fl_results_dict, f, indent=4)
+            fl_results_dict = self.extract_fl_results(i)
+            # if os.path.exists(fl_result_file):
+            #     with open(fl_result_file, 'r') as f:
+            #         fl_results_dict = json.load(f)
+            # else:
+            #     fl_results_dict = self.extract_fl_results(i)
+            #     with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+            #         json.dump(fl_results_dict, f, indent=4)
 
             for task in self.task_list:
                 traj = self.trajs_dict[task][i]
@@ -526,8 +532,9 @@ if __name__ == '__main__':
 
     print("The number of tasks: ", len(data_generater.label_dict.values()))
     print("The number of tasks with positive labels: ", sum(data_generater.label_dict.values()))
-
+    # data_generater.extract_fl_results(2)
     max_num_args = data_generater.max_num_args
+    print(max_num_args)
     arg_vec_len = math.ceil(max_num_args * 16)
     print(arg_vec_len)
     data_generater.generate_LIG_for_all_k(arg_vec_len=arg_vec_len, save_data=True, save_dir=save_dir)

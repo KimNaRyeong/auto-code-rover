@@ -73,9 +73,10 @@ class Data_generater():
                 filtered_fl_dict[instance_name] = []
                 continue
 
-            json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
-            no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
-            for raw_fl in no_duplicate_fl_before_process:
+            # json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
+            # no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
+            # for raw_fl in no_duplicate_fl_before_process:
+            for raw_fl in fl_before_process:
                 intended_behavior = raw_fl.get("intended_behavior", "")
 
                 for searched_fl in fl_after_process:
@@ -171,13 +172,14 @@ class Data_generater():
 
         for i in range(1, self.repetition+1):
             fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            if os.path.exists(fl_result_file):
-                with open(fl_result_file, 'r') as f:
-                    fl_results_dict = json.load(f)
-            else:
-                fl_results_dict = self.extract_fl_results(i)
-                with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
-                    json.dump(fl_results_dict, f, indent=4)
+            fl_results_dict = self.extract_fl_results(i)
+            # if os.path.exists(fl_result_file):
+            #     with open(fl_result_file, 'r') as f:
+            #         fl_results_dict = json.load(f)
+            # else:
+            #     fl_results_dict = self.extract_fl_results(i)
+            #     with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+            #         json.dump(fl_results_dict, f, indent=4)
 
             for task in self.task_list:
                 traj = self.trajs_dict[task][i]
