@@ -175,6 +175,8 @@ class Data_generater():
         for i in range(1, self.repetition+1):
             fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
             fl_results_dict = self.extract_fl_results(i)
+            with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+                json.dump(fl_results_dict, f, indent=4)
             # if os.path.exists(fl_result_file):
             #     with open(fl_result_file, 'r') as f:
             #         fl_results_dict = json.load(f)
@@ -245,13 +247,16 @@ class Data_generater():
     
     def get_labels_dict(self):
         combined_result_file = '../combined_fl_results_mixtral.json'
-        if os.path.exists(combined_result_file):
-            with open(combined_result_file, 'r') as f:
-                combined_result = json.load(f)
-        else:
-            combined_result = self.vote_and_ranks_answers()
-            with open('../combined_fl_results_mixtral.json', 'w') as f:
-                json.dump(combined_result, f, indent=4)
+        # if os.path.exists(combined_result_file):
+        #     with open(combined_result_file, 'r') as f:
+        #         combined_result = json.load(f)
+        # else:
+        #     combined_result = self.vote_and_ranks_answers()
+        #     with open('../combined_fl_results_mixtral.json', 'w') as f:
+        #         json.dump(combined_result, f, indent=4)
+        combined_result = self.vote_and_ranks_answers()
+        with open('../combined_fl_results_mixtral.json', 'w') as f:
+            json.dump(combined_result, f, indent=4)
 
         with open('../modif_from_developer_patch_1000size.json', 'r') as f:
             modif_from_diff_dict = json.load(f)

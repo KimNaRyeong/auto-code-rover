@@ -229,7 +229,7 @@ def train_and_test_model(dataset, criterion, output_dim, K, kf, lr, batch_size, 
         rf.write(f"{dataset_type}\n")
     
     test_tasks_dict = {}
-    test_tasks_file = os.path.join(dir_dict['result'], 'test_bug_names.json')
+    test_tasks_file = os.path.join(dir_dict['result'], 'test_bug_names2.json')
     # ks = [2]
     for k in sorted(ks):
         with open(result_file, "a+") as rf:

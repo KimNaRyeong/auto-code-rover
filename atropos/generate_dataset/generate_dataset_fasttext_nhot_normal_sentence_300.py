@@ -41,6 +41,8 @@ class Data_generater():
         # print(self.reasoning_paths_dict)
         # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
         # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
+        self.args_dict = self.get_args_dict_for_k()
+        # # print(self.args_dict)
         self.label_dict = self.get_labels_dict()
         # # self.task_list = ['scikit-learn__scikit-learn-26400']
         # # self.task_list = ['astropy__astropy-6938']
@@ -73,9 +75,7 @@ class Data_generater():
                 filtered_fl_dict[instance_name] = []
                 continue
 
-            # json_set = set(json.dumps(fl, sort_keys=True) for fl in fl_before_process)
-            # no_duplicate_fl_before_process = [json.loads(j) for j in json_set]
-            # for raw_fl in no_duplicate_fl_before_process:
+            
             for raw_fl in fl_before_process:
                 intended_behavior = raw_fl.get("intended_behavior", "")
 
@@ -171,8 +171,7 @@ class Data_generater():
         reasoning_paths_dict = defaultdict(list)
 
         for i in range(1, self.repetition+1):
-            fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            fl_results_dict = self.extract_fl_results(i)
+            # fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
             # if os.path.exists(fl_result_file):
             #     with open(fl_result_file, 'r') as f:
             #         fl_results_dict = json.load(f)
@@ -180,6 +179,9 @@ class Data_generater():
             #     fl_results_dict = self.extract_fl_results(i)
             #     with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
             #         json.dump(fl_results_dict, f, indent=4)
+            fl_results_dict = self.extract_fl_results(i)
+            with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+                json.dump(fl_results_dict, f, indent=4)
 
             for task in self.task_list:
                 traj = self.trajs_dict[task][i]
@@ -222,14 +224,17 @@ class Data_generater():
         return args_dict
     
     def get_labels_dict(self):
-        combined_result_file = '../combined_fl_results_mixtral.json'
-        if os.path.exists(combined_result_file):
-            with open(combined_result_file, 'r') as f:
-                combined_result = json.load(f)
-        else:
-            combined_result = self.vote_and_ranks_answers()
-            with open('../combined_fl_results_mixtral.json', 'w') as f:
-                json.dump(combined_result, f, indent=4)
+        # combined_result_file = '../combined_fl_results_mixtral.json'
+        # if os.path.exists(combined_result_file):
+        #     with open(combined_result_file, 'r') as f:
+        #         combined_result = json.load(f)
+        # else:
+        #     combined_result = self.vote_and_ranks_answers()
+        #     with open('../combined_fl_results_mixtral.json', 'w') as f:
+        #         json.dump(combined_result, f, indent=4)
+        combined_result = self.vote_and_ranks_answers()
+        with open('../combined_fl_results_mixtral.json', 'w') as f:
+            json.dump(combined_result, f, indent=4)
 
         with open('../modif_from_developer_patch_1000size.json', 'r') as f:
             modif_from_diff_dict = json.load(f)
@@ -289,7 +294,7 @@ class Data_generater():
 
     def embed_with_fasttext(self, text):
         text_str = str(text)
-        embedding = fasttext_model.get_sentence_vector(text_str)
+        embedding = fasttext_model.get_word_vector(text_str)
 
         return torch.from_numpy(embedding).float()
 
@@ -444,6 +449,29 @@ class Data_generater():
             fig_name += '_no_answer'
         plt.savefig(f"./graphs/{fig_name}")
 
+
+    def generate_vector_for_all_tasks(self):
+        args_dict = defaultdict(set)
+        length_dict_nhot = defaultdict(int)
+        length_dict_onehot = defaultdict(int)
+        
+        for task_name, trajs in self.reasoning_paths_dict.items():
+            for traj in trajs:
+                vector_for_traj = []
+                num_fc = 0
+                for reasoning_step in traj:
+                    if self.nhot:
+                        func_vector = [0] * (len(self.function_types) + 1)
+                        for function_call in reasoning_step:
+                            if function_call in self.function_types:
+                                func_idx = self.function_types.index(function_call)
+                            else:
+                                func_idx = -1
+                            func_vector[func_idx] += 1 ## modify here!!
+                            func_vector[func_idx] = 1
+
+                        for function_call in reasoning_step:
+                            func_vector = [0] * (len(self.function_types) + 1)
                 
 def examine_tool_call_layers():
     task_list_file = './sampled_tasks.txt'
@@ -497,7 +525,7 @@ def examine_tool_call_layers():
                     print(f"No content in the after answer file")
 
 def get_save_dir(label_criteria, embedding_length):
-    save_dir = f'../data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_length}d/label_criteria_{label_criteria}'
+    save_dir = f'../data/parallel/embedding/fasttext/nhot_normal/word_vector/{embedding_length}d/label_criteria_{label_criteria}'
     return save_dir
 
 if __name__ == '__main__':
@@ -519,6 +547,5 @@ if __name__ == '__main__':
 
 
     
-
 
 
