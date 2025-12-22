@@ -27,7 +27,7 @@ def checkout_commit(repo_path, commit_hash):
     """
     해당 레포지토리 경로에서 특정 커밋으로 체크아웃합니다.
     """
-    print(f"    [GIT] Checking out commit {commit_hash} in {repo_path}...")
+    # print(f"    [GIT] Checking out commit {commit_hash} in {repo_path}...")
     try:
         # 강제로 체크아웃 (기존 변경사항 무시)
         subprocess.run(
@@ -37,10 +37,10 @@ def checkout_commit(repo_path, commit_hash):
             stdout=subprocess.DEVNULL, 
             stderr=subprocess.PIPE
         )
-        print(f"    [GIT] Successfully checked out to {commit_hash}")
+        # print(f"    [GIT] Successfully checked out to {commit_hash}")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"    [GIT ERROR] Failed to checkout: {e.stderr.decode().strip()}")
+        # print(f"    [GIT ERROR] Failed to checkout: {e.stderr.decode().strip()}")
         return False
 
 class Data_generater():
@@ -228,6 +228,10 @@ class Data_generater():
                 res: SearchResult
                 final_bug_locs: list[BugLocation] = []
                 for res in search_res:
+                    # Skip if not a SearchResult object (defensive programming)
+                    if not hasattr(res, 'start') or not hasattr(res, 'end'):
+                        print(res)
+                        continue
                     if res.start is None or res.end is None:
                         continue
                     new_bug_loc = BugLocation(res, project_path, intended_behavior)
