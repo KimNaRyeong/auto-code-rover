@@ -33,6 +33,9 @@ class Data_generater():
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
+        self.fl_results = dict()
+        for i in range(1, self.repetition+1):
+            self.fl_results[i] = self.extract_fl_results(i)
         self.trajs_dict = self.extract_trajs_from_logs()
         self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
 
@@ -92,9 +95,10 @@ class Data_generater():
             tie_broken_methods = []
 
             for i in range(1, self.repetition+1):
-                filtered_fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-                with open(filtered_fl_result_file, 'r') as f:
-                    fl_result = json.load(f)
+                # filtered_fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
+                # with open(filtered_fl_result_file, 'r') as f:
+                #     fl_result = json.load(f)
+                fl_result = self.fl_results[i]
                 answer_list = fl_result[task]
                 for answer in answer_list:
                     signature = f'{answer["rel_file_path"]}::{answer["class_name"]}#{answer["method_name"]}_{answer["start"]}_{answer["end"]}'
@@ -110,9 +114,7 @@ class Data_generater():
         ranking_dict = dict()
 
         for i in range(1, self.repetition+1):
-            filtered_fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            with open(filtered_fl_result_file, 'r') as f:
-                fl_result = json.load(f)
+            fl_result = self.fl_results[i]
             for task in self.task_list:
                 answer_list = fl_result[task]
                 for answer in answer_list:
@@ -171,14 +173,13 @@ class Data_generater():
         reasoning_paths_dict = defaultdict(list)
 
         for i in range(1, self.repetition+1):
-            fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
             # if os.path.exists(fl_result_file):
             #     with open(fl_result_file, 'r') as f:
             #         fl_results_dict = json.load(f)
             # else:
-            fl_results_dict = self.extract_fl_results(i)
-            with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
-                json.dump(fl_results_dict, f, indent=4)
+            fl_results_dict = self.fl_results[i]
+            # with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+            #     json.dump(fl_results_dict, f, indent=4)
 
             for task in self.task_list:
                 traj = self.trajs_dict[task][i]
@@ -227,8 +228,8 @@ class Data_generater():
         #         combined_result = json.load(f)
         # else:
         combined_result = self.vote_and_ranks_answers()
-        with open('../combined_fl_results_mixtral.json', 'w') as f:
-            json.dump(combined_result, f, indent=4)
+        # with open('../combined_fl_results_mixtral.json', 'w') as f:
+        #     json.dump(combined_result, f, indent=4)
 
         with open('../modif_from_developer_patch_1000size.json', 'r') as f:
             modif_from_diff_dict = json.load(f)
@@ -445,7 +446,7 @@ class Data_generater():
 
                 
 def examine_tool_call_layers():
-    task_list_file = './sampled_tasks.txt'
+    task_list_file = './sampled_tasks_1_and_2.txt'
     with open(task_list_file, 'r') as f:
         task_list = f.read().splitlines()
     
