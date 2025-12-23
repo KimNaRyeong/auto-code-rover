@@ -1,2 +1,3 @@
-python gcn_model_fasttext_word.py
-python gcn_model_fasttext_word.py -e 100
+python gcn_model_nhot.py
+python gcn_model_nhot.py -l 5
+python gcn_model_sequential_nhot.py
