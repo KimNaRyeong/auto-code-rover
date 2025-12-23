@@ -511,9 +511,9 @@ def main(dir_dict):
 def get_dir_dict(label_criteria):    
     dir_dict = {
         'data': f'../data/parallel/embedding/codebert/nhot_normal/label_criteria_{label_criteria}',
-        'result': f'../results/parallel/embedding/codebert/nhot_normal/label_criteria_{label_criteria}',
-        'trained_model': f'../trained_model/parallel/embedding/codebert/nhot_normal/label_criteria_{label_criteria}',
-        'train_graph': f'../train_graph/parallel/embedding/codebert/nhot_normal/label_criteria_{label_criteria}'
+        'result': f'../results/parallel/embedding/codebert/nhot_normal/not_add/label_criteria_{label_criteria}',
+        'trained_model': f'../trained_model/parallel/embedding/codebert/nhot_normal/not_add/label_criteria_{label_criteria}',
+        'train_graph': f'../train_graph/parallel/embedding/codebert/nhot_normal/not_add/label_criteria_{label_criteria}'
     }
 
     return dir_dict

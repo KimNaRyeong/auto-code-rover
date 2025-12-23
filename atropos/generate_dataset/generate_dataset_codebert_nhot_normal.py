@@ -4,13 +4,18 @@ import argparse
 import copy
 import ast
 import torch
+import subprocess
+import sys
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 from torch_geometric.utils import from_networkx
 from transformers import AutoTokenizer, AutoModel
+
+sys.path.insert(0, os.path.abspath('../..'))
+from app.search.search_backend import SearchBackend
+from app.data_structures import BugLocation, SearchResult
 
 codebert_tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
 codebert_model = AutoModel.from_pretrained("microsoft/codebert-base")
@@ -18,6 +23,20 @@ codebert_model.eval()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 codebert_model.to(device)
 embedding_size = 768
+
+def checkout_commit(repo_path, commit_hash):
+    try:
+        subprocess.run(
+            ['git', 'checkout', '-f', commit_hash],
+            cwd=repo_path,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        return False
+
 
 class Data_generater():
     def __init__(self, repetition, label_criteria):
@@ -35,6 +54,22 @@ class Data_generater():
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
+
+        ########### Filtering fl results directly and save ##############
+        # self.fl_results = dict()
+        # for i in range(1, self.repetition+1):
+        #     self.fl_results[i] = self.extract_fl_results(i)
+        # fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
+        # with open(fl_results_output_file, 'w') as f:
+        #     json.dump(self.fl_results, f, indent=4)
+        #################################################################
+
+        ################ Load the filtered_fl_results ###############
+        with open("../fl_results/filtered_fl_results_mixtral.json", 'r') as f:
+            filtered_fl_results = json.load(f)
+        self.fl_results = {int(k): v for k, v in filtered_fl_results.items()}
+        #############################################################
+
         self.trajs_dict = self.extract_trajs_from_logs()
         self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
 
@@ -43,7 +78,6 @@ class Data_generater():
         # print(self.reasoning_paths_dict)
         # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
         # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
-        self.args_dict = self.get_args_dict_for_k()
         # # print(self.args_dict)
         self.label_dict = self.get_labels_dict()
         # # self.task_list = ['scikit-learn__scikit-learn-26400']
@@ -53,39 +87,115 @@ class Data_generater():
         result_dir = f'../../fl_outputs/only_fl_output_mixtral_{idx}'
         instance_dir_list = os.listdir(os.path.join(result_dir, 'no_patch'))
 
-        filtered_fl_dict = defaultdict(list)
+        filtered_fl_dict = dict()
 
-        for instance_dir in instance_dir_list:
+        with open('../../SWE-bench/setup_result/setup_map.json', 'r') as f:
+            setup_map = json.load(f)
+        with open('../../SWE-bench/setup_result/tasks_map.json', 'r') as f:
+            tasks_map = json.load(f)
+
+        print(f"Filtering fl results for repetition {idx}")
+        for instance_dir in tqdm(instance_dir_list):
             splited_instance_dir = instance_dir.split('_')
             instance_name = f"{splited_instance_dir[0]}__{splited_instance_dir[2]}"
+            filtered_fl_dict[instance_name] = []
+
+            project_path = setup_map[instance_name]["repo_path"]
+            if not os.path.exists(project_path):
+                continue
+
+            task_info = tasks_map[instance_name]
+            task_commit = task_info.get("base_commit") or task_info.get("commit")
+
+            checkout_result = checkout_commit(project_path, task_commit) # returns True if checked out successfully, False otherwise
+            if not checkout_result:
+                continue
 
             fl_before_process_path = os.path.join(result_dir, 'no_patch', instance_dir, 'output_0/search/bug_locations_before_process.json')
-            fl_after_process_path = os.path.join(result_dir, 'no_patch', instance_dir, 'output_0/search/bug_locations_after_process.json')
+
             try:
                 with open(fl_before_process_path, 'r') as f:
                     fl_before_process = json.load(f)
             except:
                 fl_before_process = []
             
-            try:
-                with open(fl_after_process_path, 'r') as f:
-                    fl_after_process = json.load(f)
-            except:
-                fl_after_process = []
-            
-            if not fl_before_process or not fl_after_process:
-                filtered_fl_dict[instance_name] = []
+            if not fl_before_process:
                 continue
 
-            
-            for raw_fl in fl_before_process:
-                intended_behavior = raw_fl.get("intended_behavior", "")
+            backend = SearchBackend(project_path)
 
-                for searched_fl in fl_after_process:
-                    searched_fl_intended_behavior = searched_fl["intended_behavior"]
-                    if intended_behavior == searched_fl_intended_behavior:
-                        searched_fl["result_dir"] = os.path.join(result_dir, 'no_patch', instance_dir)
-                        filtered_fl_dict[instance_name].append(searched_fl)
+            res: SearchBackend
+            for bug_location_dict in fl_before_process:
+                tmp_file_name = bug_location_dict.get("file", "")
+                tmp_class_name = bug_location_dict.get("class", "")
+                tmp_method_name = bug_location_dict.get("method", "")
+                intended_behavior = bug_location_dict.get("intended_behavior", "")
+
+                # Handle Class.method format
+                if not tmp_class_name and tmp_method_name and "." in tmp_method_name:
+                    fragments = tmp_method_name.split(".")
+                    if len(fragments) == 2:
+                        tmp_class_name, tmp_method_name = fragments
+                
+                if not (tmp_file_name or tmp_class_name or tmp_method_name):
+                    continue
+
+                search_res = []
+
+                # Case 1: class + method
+                if tmp_class_name and tmp_method_name:
+                    output, curr_search_res, call_ok = backend.search_method_in_class(tmp_method_name, tmp_class_name)
+                    search_res.extend(curr_search_res)
+
+                    res: SearchResult
+                    if call_ok:
+                        for res in curr_search_res:
+                            if (res.class_name is None or res.func_name is None or res.file_path is None):
+                                continue
+
+                            inherited_output, inherited_search_res, _ = backend._get_inherited_methods(res.class_name, res.func_name)
+                            search_res.extend(inherited_search_res)
+                
+                # Case 2: file + method (no class)
+                elif tmp_file_name and tmp_method_name and not tmp_class_name:
+                    output, search_res, call_ok = backend.search_method_in_file(tmp_method_name, tmp_file_name)
+                
+                # Case 3: file + class (no method)
+                elif tmp_file_name and tmp_class_name and not tmp_method_name:
+                    output, search_res, call_ok = backend.search_class_in_file(tmp_class_name, tmp_file_name)
+                
+                # Case 4: class only (no file, no method)
+                elif tmp_class_name and not tmp_method_name and not tmp_file_name:
+                    output, search_res, call_ok = backend.get_class_full_snippet(tmp_class_name)
+                
+                # Case 5: method only (no class, no file)
+                elif tmp_method_name and not tmp_class_name and not tmp_file_name:
+                    output, search_res, call_ok = backend.search_method(tmp_method_name)
+                
+                # Case 6: file only (no method, no class)
+                elif tmp_file_name and not tmp_method_name and not tmp_class_name:
+                    output, search_res, call_ok = backend.get_file_content(tmp_file_name)
+                
+                res: SearchResult
+                final_bug_locs: list[BugLocation] = []
+                for res in search_res:
+                    if not hasattr(res, 'start') or not hasattr(res, 'end'):
+                        continue
+                    if res.start is None or res.end is None:
+                        continue
+                    new_bug_loc = BugLocation(res, project_path, intended_behavior)
+                    final_bug_locs.append(new_bug_loc)
+                
+                unique_bug_locations = []
+                for loc in final_bug_locs:
+                    if loc not in unique_bug_locations:
+                        unique_bug_locations.append(loc)
+                
+                if unique_bug_locations:
+                    for loc in unique_bug_locations:
+                        bug_loc_dict = loc.to_dict()
+                        bug_loc_dict["result_dir"] = os.path.join(result_dir, 'no_patch', instance_dir)
+                        filtered_fl_dict[instance_name].append(bug_loc_dict)
         
         return filtered_fl_dict
     
@@ -94,9 +204,7 @@ class Data_generater():
             tie_broken_methods = []
 
             for i in range(1, self.repetition+1):
-                filtered_fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-                with open(filtered_fl_result_file, 'r') as f:
-                    fl_result = json.load(f)
+                fl_result = self.fl_results[i]
                 answer_list = fl_result[task]
                 for answer in answer_list:
                     signature = f'{answer["rel_file_path"]}::{answer["class_name"]}#{answer["method_name"]}_{answer["start"]}_{answer["end"]}'
@@ -112,9 +220,7 @@ class Data_generater():
         ranking_dict = dict()
 
         for i in range(1, self.repetition+1):
-            filtered_fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            with open(filtered_fl_result_file, 'r') as f:
-                fl_result = json.load(f)
+            fl_result = self.fl_results[i]
             for task in self.task_list:
                 answer_list = fl_result[task]
                 for answer in answer_list:
@@ -122,7 +228,6 @@ class Data_generater():
                     voting_score_dict[task][signature] += 1/len(answer_list)
 
         for task, scores_dict in voting_score_dict.items():
-
             for signature in scores_dict.keys():
                 # voting_score_dict[task][signature] /= 5
                 scores_dict[signature] /= self.repetition
@@ -173,14 +278,15 @@ class Data_generater():
         reasoning_paths_dict = defaultdict(list)
 
         for i in range(1, self.repetition+1):
-            fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
-            if os.path.exists(fl_result_file):
-                with open(fl_result_file, 'r') as f:
-                    fl_results_dict = json.load(f)
-            else:
-                fl_results_dict = self.extract_fl_results(i)
-                with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
-                    json.dump(fl_results_dict, f, indent=4)
+            # fl_result_file = f'../fl_results/filtered_fl_result_mixtral_{i}.json'
+            # if os.path.exists(fl_result_file):
+            #     with open(fl_result_file, 'r') as f:
+            #         fl_results_dict = json.load(f)
+            # else:
+            #     fl_results_dict = self.extract_fl_results(i)
+            #     with open(f'../fl_results/filtered_fl_result_mixtral_{i}.json', 'w') as f:
+            #         json.dump(fl_results_dict, f, indent=4)
+            fl_results_dict = self.fl_results[i]
 
             for task in self.task_list:
                 traj = self.trajs_dict[task][i]
@@ -204,33 +310,36 @@ class Data_generater():
         return reasoning_paths_dict
                 
     
-    def get_args_dict_for_k(self):
+    # def get_args_dict_for_k(self):
 
-        args_dict = defaultdict(lambda: defaultdict(set))
+    #     args_dict = defaultdict(lambda: defaultdict(set))
 
-        for task, reasoning_paths in self.reasoning_paths_dict.items():
-            for idx, path in enumerate(reasoning_paths):
-                for i, reasoning_step in enumerate(path):
-                    for func_call in reasoning_step:
-                        for k in self.ks:
-                            if i < k:
-                                if "arguments" in func_call.keys():
-                                    args_dict[task][k] = args_dict[task][k].union(set(func_call["arguments"].values()))
-                                elif "answers" in func_call.keys():
-                                    for one_fl in func_call["answers"]:
-                                        args_dict[task][k] = args_dict[task][k].union(set(one_fl))
+    #     for task, reasoning_paths in self.reasoning_paths_dict.items():
+    #         for idx, path in enumerate(reasoning_paths):
+    #             for i, reasoning_step in enumerate(path):
+    #                 for func_call in reasoning_step:
+    #                     for k in self.ks:
+    #                         if i < k:
+    #                             if "arguments" in func_call.keys():
+    #                                 args_dict[task][k] = args_dict[task][k].union(set(func_call["arguments"].values()))
+    #                             elif "answers" in func_call.keys():
+    #                                 for one_fl in func_call["answers"]:
+    #                                     args_dict[task][k] = args_dict[task][k].union(set(one_fl))
                     
-        return args_dict
+    #     return args_dict
     
     def get_labels_dict(self):
-        combined_result_file = '../combined_fl_results_mixtral.json'
-        if os.path.exists(combined_result_file):
-            with open(combined_result_file, 'r') as f:
-                combined_result = json.load(f)
-        else:
-            combined_result = self.vote_and_ranks_answers()
-            with open('../combined_fl_results_mixtral.json', 'w') as f:
-                json.dump(combined_result, f, indent=4)
+        # combined_result_file = '../combined_fl_results_mixtral.json'
+        # if os.path.exists(combined_result_file):
+        #     with open(combined_result_file, 'r') as f:
+        #         combined_result = json.load(f)
+        # else:
+        #     combined_result = self.vote_and_ranks_answers()
+        #     with open('../combined_fl_results_mixtral.json', 'w') as f:
+        #         json.dump(combined_result, f, indent=4)
+        combined_result = self.vote_and_ranks_answers()
+        with open('../combined_fl_results_mixtral.json', 'w') as f:
+            json.dump(combined_result, f, indent=4)
 
         with open('../modif_from_developer_patch_1000size.json', 'r') as f:
             modif_from_diff_dict = json.load(f)
@@ -265,28 +374,6 @@ class Data_generater():
 
         plt.savefig(filename, format='png')
         plt.close()
-
-    def generate_save_dir(self):
-        if self.nhot:
-            hot_dir = 'nhot'
-        else:
-            hot_dir = 'onehot'
-        
-        if self.including_answer:
-            answer_dir = 'answer'
-        else:
-            answer_dir = 'no_answer'
-
-        if self.add_to_vector:
-            add_dir = 'add'
-        else:
-            add_dir = 'not_add'
-
-        if self.nhot:
-            save_dir = f'./data/{hot_dir}/{answer_dir}/{add_dir}'
-        else:
-            save_dir = f'./data/{hot_dir}/{answer_dir}'
-        return save_dir
 
     def embed_with_codebert(self, text):
         # Dimension of output embedding: 768
@@ -448,30 +535,6 @@ class Data_generater():
             fig_name += '_no_answer'
         plt.savefig(f"./graphs/{fig_name}")
 
-
-    def generate_vector_for_all_tasks(self):
-        args_dict = defaultdict(set)
-        length_dict_nhot = defaultdict(int)
-        length_dict_onehot = defaultdict(int)
-        
-        for task_name, trajs in self.reasoning_paths_dict.items():
-            for traj in trajs:
-                vector_for_traj = []
-                num_fc = 0
-                for reasoning_step in traj:
-                    if self.nhot:
-                        func_vector = [0] * (len(self.function_types) + 1)
-                        for function_call in reasoning_step:
-                            if function_call in self.function_types:
-                                func_idx = self.function_types.index(function_call)
-                            else:
-                                func_idx = -1
-                            func_vector[func_idx] += 1 ## modify here!!
-                            func_vector[func_idx] = 1
-
-                        for function_call in reasoning_step:
-                            func_vector = [0] * (len(self.function_types) + 1)
-                
 def examine_tool_call_layers():
     task_list_file = './sampled_tasks.txt'
     with open(task_list_file, 'r') as f:
@@ -541,11 +604,10 @@ if __name__ == '__main__':
     print("The number of tasks: ", len(data_generater.label_dict.values()))
     print("The number of tasks with positive labels: ", sum(data_generater.label_dict.values()))
 
-    data_generater.generate_LIG_for_all_k(save_data=False, save_dir=save_dir)
+    data_generater.generate_LIG_for_all_k(save_data=True, save_dir=save_dir)
 
 
 
     
-
 
 
