@@ -52,12 +52,20 @@ class Data_generater():
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
-        self.fl_results = dict()
-        for i in range(1, self.repetition+1):
-            self.fl_results[i] = self.extract_fl_results(i)
-        fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
-        with open(fl_results_output_file, 'w') as f:
-            json.dump(self.fl_results, f, indent=4)
+        ########### Filtering fl results directly and save ##############
+        # self.fl_results = dict()
+        # for i in range(1, self.repetition+1):
+        #     self.fl_results[i] = self.extract_fl_results(i)
+        # fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
+        # with open(fl_results_output_file, 'w') as f:
+        #     json.dump(self.fl_results, f, indent=4)
+        #################################################################
+
+        ################ Load the filtered_fl_results ###############
+        with open("../fl_results/filtered_fl_results_mixtral.json", 'r') as f:
+            filtered_fl_results = json.load(f)
+        self.fl_results = {int(k): v for k, v in filtered_fl_results.items()}
+        #############################################################
 
         self.trajs_dict = self.extract_trajs_from_logs()
         self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
@@ -573,7 +581,7 @@ def examine_tool_call_layers():
                     print(f"No content in the after answer file")
 
 def get_save_dir(label_criteria, embedding_length):
-    save_dir = f'../data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_length}d/label_criteria_{label_criteria}'
+    save_dir = f'../data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_length}d/not_add/label_criteria_{label_criteria}'
     return save_dir
 
 if __name__ == '__main__':
