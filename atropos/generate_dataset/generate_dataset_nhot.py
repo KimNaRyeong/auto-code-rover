@@ -390,12 +390,6 @@ class Data_generater():
         plt.savefig(filename, format='png')
         plt.close()
 
-    def embed_with_fasttext(self, text):
-        text_str = str(text)
-        embedding = fasttext_model.get_sentence_vector(text_str)
-
-        return torch.from_numpy(embedding).float()
-
     def generate_LIG_for_all_k(self, arg_vec_len, save_data, save_dir):
         def add_weight_edge(G, u, v, weight=1):
             if G.has_edge(u, v):
