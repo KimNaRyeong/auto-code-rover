@@ -4,18 +4,37 @@ import argparse
 import copy
 import ast
 import torch
+import subprocess
+import sys
 import fasttext
 import fasttext.util
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 from torch_geometric.utils import from_networkx
 
+sys.path.insert(0, os.path.abspath('../..'))
+from app.search.search_backend import SearchBackend
+from app.data_structures import BugLocation, SearchResult
+
 fasttext.util.download_model('en', if_exists='ignore')
 fasttext_model = fasttext.load_model('cc.en.300.bin')
 embedding_size = 300
+
+def checkout_commit(repo_path, commit_hash):
+    try:
+        subprocess.run(
+            ['git', 'checkout', '-f', commit_hash],
+            pwd=repo_path,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        return False
+
 
 class Data_generater():
     def __init__(self, repetition, label_criteria):
@@ -33,6 +52,13 @@ class Data_generater():
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
+        self.fl_results = dict()
+        for i in range(1, self.repetition+1):
+            self.fl_results[i] = self.extract_fl_results(i)
+        fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
+        with open(fl_results_output_file, 'w') as f:
+            json.dump(self.fl_results, f, indent=4)
+
         self.trajs_dict = self.extract_trajs_from_logs()
         self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
 
