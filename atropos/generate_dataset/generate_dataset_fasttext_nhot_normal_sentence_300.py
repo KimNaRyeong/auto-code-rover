@@ -598,7 +598,7 @@ if __name__ == '__main__':
     print("The number of tasks: ", len(data_generater.label_dict.values()))
     print("The number of tasks with positive labels: ", sum(data_generater.label_dict.values()))
 
-    data_generater.generate_LIG_for_all_k(save_data=True, save_dir=save_dir)
+    data_generater.generate_LIG_for_all_k(save_data=False, save_dir=save_dir)
 
 
 

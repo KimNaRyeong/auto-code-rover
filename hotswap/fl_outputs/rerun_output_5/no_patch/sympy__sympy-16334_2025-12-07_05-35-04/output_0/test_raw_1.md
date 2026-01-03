@@ -1,0 +1,33 @@
+ I apologize for the mistake in my previous response. Here is the corrected `reproducer.py` file:
+```python
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    from sympy import symbols, ask, Q
+    from sympy.abc import x, y, z
+
+    p = symbols('p', real=True, zero=False)
+    q = symbols('q', zero=True)
+    result = (q**p).is_positive
+    expected_result = False
+    assert result == expected_result, f"Expected {expected_result} but got {result}"
+
+if __name__ == "__main__":
+    try:
+        main()
+    except AssertionError as e:
+        print_stacktrace(e)
+        raise
+```
+This script should raise an `AssertionError` with a stack trace when executed with `python3 reproducer.py`, indicating that the issue is present. The script should exit with code 1. When the issue is fixed, the script should exit with code 0.
