@@ -55,7 +55,7 @@ def main():
     set_seed(42)
 
     # Configuration
-    k = 8
+    k = 20
     label_criteria = 1
     embedding_size = 300
     threshold = 0.5
@@ -64,8 +64,8 @@ def main():
     print(f"Using device: {device}")
 
     # Paths
-    base_path = '/home/kimnal0/auto-code-rover/atropos'
-    model_dir = f'{base_path}/trained_model/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
+    base_path = '/home/kimnal0/RepairAgent/Atropos'
+    model_dir = f'{base_path}/trained_model/parallel/nhot_normal/center_vector/0.99_0.99/label_criteria_{label_criteria}/FA'
     data_dir = f'{base_path}/data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
     result_dir = f'{base_path}/results/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
 
