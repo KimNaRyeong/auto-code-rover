@@ -1,8 +1,10 @@
 import json
 from collections import defaultdict
 from collections.abc import Iterable
+from glob import glob
 from itertools import cycle
 from os import PathLike
+from os.path import join as pjoin
 from os.path import samefile
 from pathlib import Path
 from shutil import copy2
@@ -23,6 +25,47 @@ from app.log import print_banner, print_issue
 from app.manage import ProjectApiManager
 from app.model.common import set_model
 from app.task import Task
+
+
+def find_previous_output_dir(task_id: str) -> str | None:
+    """
+    Find the previous output directory for resuming.
+    Looks in ./fl_outputs/only_fl_output_mixtral_{dir_idx}/no_patch/ for a directory
+    starting with the task name.
+
+    Args:
+        task_id: The task ID to look for
+
+    Returns:
+        Path to the previous output directory, or None if not found
+    """
+    if not config.output_dir:
+        return None
+
+    # Extract dir_idx from output_dir (e.g., 'output_dir_1' -> '1')
+    dir_idx = config.output_dir.split('_')[-1]
+
+    # Construct the search path
+    search_path = pjoin(".", "fl_outputs", f"only_fl_output_mixtral_{dir_idx}", "no_patch")
+
+    if not Path(search_path).exists():
+        logger.warning(f"Resume path does not exist: {search_path}")
+        return None
+
+    # Find directories starting with the task name
+    pattern = pjoin(search_path, f"{task_id}*")
+    matching_dirs = glob(pattern)
+
+    if not matching_dirs:
+        logger.warning(f"No previous output found for task {task_id} in {search_path}")
+        return None
+
+    if len(matching_dirs) > 1:
+        logger.warning(f"Multiple output directories found for {task_id}, using the first one")
+
+    prev_dir = matching_dirs[0]
+    logger.info(f"Found previous output directory: {prev_dir}")
+    return prev_dir
 
 
 def write_patch_iterative_with_review(
@@ -266,33 +309,60 @@ def _run_one_task(
     print_banner("Starting AutoCodeRover on the following issue")
     print_issue(problem_stmt)
 
+    # Check if we should resume from a previous state
+    prev_output_dir = None
+    if config.resume_from is not None:
+        prev_output_dir = find_previous_output_dir(api_manager.task.task_id)
+        if prev_output_dir:
+            logger.info(f"Resuming from interaction {config.resume_from}")
+            logger.info(f"Using previous output from: {prev_output_dir}")
+        else:
+            logger.warning(
+                f"Could not find previous output for task {api_manager.task.task_id}. "
+                "Starting from beginning."
+            )
+            config.resume_from = None
+
     test_agent = TestAgent(api_manager.task, output_dir)
 
     repro_result_map = {}
     repro_stderr = ""
     reproduced = False
     reproduced_test_content = None
-    try:
-        test_handle, test_content, orig_repro_result = (
-            test_agent.write_reproducing_test_without_feedback()
-        )
-        test_agent.save_test(test_handle)
 
-        coord = (PatchAgent.EMPTY_PATCH_HANDLE, test_handle)
-        repro_result_map[coord] = orig_repro_result
+    # Load reproduction results if resuming
+    if prev_output_dir:
+        # Try to load conv_reproducible.json
+        repro_file = Path(prev_output_dir, "output_0", "conv_reproducible.json")
+        if repro_file.exists():
+            logger.info("Loading previous reproduction results")
+            # For now, we skip reproduction when resuming
+            # In the future, we could load and reuse the reproduction results
+        else:
+            logger.warning("No reproduction results found in previous output")
+    else:
+        # Normal reproduction flow
+        try:
+            test_handle, test_content, orig_repro_result = (
+                test_agent.write_reproducing_test_without_feedback()
+            )
+            test_agent.save_test(test_handle)
 
-        if orig_repro_result.reproduced:
-            repro_stderr = orig_repro_result.stderr
-            reproduced = True
-            reproduced_test_content = test_content
-        # TODO: utilize the test for localization
-    except NoReproductionStep:
-        logger.info(
-            "Test agent decides that the issue statement does not contain "
-            "reproduction steps; skipping reproducer tracing"
-        )
-    except InvalidLLMResponse:
-        logger.warning("Failed to write a reproducer test; skipping reproducer tracing")
+            coord = (PatchAgent.EMPTY_PATCH_HANDLE, test_handle)
+            repro_result_map[coord] = orig_repro_result
+
+            if orig_repro_result.reproduced:
+                repro_stderr = orig_repro_result.stderr
+                reproduced = True
+                reproduced_test_content = test_content
+            # TODO: utilize the test for localization
+        except NoReproductionStep:
+            logger.info(
+                "Test agent decides that the issue statement does not contain "
+                "reproduction steps; skipping reproducer tracing"
+            )
+        except InvalidLLMResponse:
+            logger.warning("Failed to write a reproducer test; skipping reproducer tracing")
 
     if config.enable_sbfl:
         sbfl_result, *_ = api_manager.fault_localization()
@@ -301,7 +371,7 @@ def _run_one_task(
 
     bug_locs: list[BugLocation]
     bug_locs, search_msg_thread = api_manager.search_manager.search_iterative(
-        api_manager.task, sbfl_result, repro_stderr, reproduced_test_content
+        api_manager.task, sbfl_result, repro_stderr, reproduced_test_content, prev_output_dir
     )
 
     logger.info("Search completed. Bug locations: {}", bug_locs)

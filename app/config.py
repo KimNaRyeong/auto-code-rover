@@ -45,3 +45,6 @@ models: list[str] = []
 backup_model = ["gpt-4o-2024-05-13"]
 
 disable_angelic: bool = False
+
+# Resume from a specific interaction (1-indexed, None means start from beginning)
+resume_from: int | None = None

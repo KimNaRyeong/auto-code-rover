@@ -86,35 +86,42 @@ def prepare_issue_prompt(problem_stmt: str) -> str:
 
 
 def generator(
-    issue_stmt: str, sbfl_result: str, reproducer_result: str
+    issue_stmt: str, sbfl_result: str, reproducer_result: str, resume_messages: list[dict] | None = None
 ) -> Generator[tuple[str, MessageThread], tuple[str, bool] | None, None]:
     """
     Args:
         - issue_stmt: problem statement
         - sbfl_result: result after running sbfl
+        - resume_messages: if provided, resume from these messages instead of starting fresh
     """
 
-    msg_thread = MessageThread()
-    msg_thread.add_system(SYSTEM_PROMPT)
+    if resume_messages is not None:
+        # Resume from saved state
+        msg_thread = MessageThread(messages=resume_messages)
+        logger.debug(f"<Agent search> Resuming from saved state with {len(resume_messages)} messages")
+    else:
+        # Start fresh
+        msg_thread = MessageThread()
+        msg_thread.add_system(SYSTEM_PROMPT)
 
-    issue_prompt = prepare_issue_prompt(issue_stmt)
-    msg_thread.add_user(issue_prompt)
+        issue_prompt = prepare_issue_prompt(issue_stmt)
+        msg_thread.add_user(issue_prompt)
 
-    if config.enable_sbfl:
-        sbfl_prompt = "An external analysis tool has been deployed to identify the suspicious code to be fixed. You can choose to use the results from this tool, if you think they are useful."
-        sbfl_prompt += "The tool output is as follows:\n"
-        sbfl_prompt += sbfl_result
-        msg_thread.add_user(sbfl_prompt)
+        if config.enable_sbfl:
+            sbfl_prompt = "An external analysis tool has been deployed to identify the suspicious code to be fixed. You can choose to use the results from this tool, if you think they are useful."
+            sbfl_prompt += "The tool output is as follows:\n"
+            sbfl_prompt += sbfl_result
+            msg_thread.add_user(sbfl_prompt)
 
-    if config.reproduce_and_review and reproducer_result:
-        reproducer_prompt = "An external analysis tool has been deployed to construct tests that reproduce the issue. You can choose to use the results from this tool, if you think they are useful."
-        reproducer_prompt += "The tool output is as follows:\n"
-        reproducer_prompt += reproducer_result
-        msg_thread.add_user(reproducer_prompt)
+        if config.reproduce_and_review and reproducer_result:
+            reproducer_prompt = "An external analysis tool has been deployed to construct tests that reproduce the issue. You can choose to use the results from this tool, if you think they are useful."
+            reproducer_prompt += "The tool output is as follows:\n"
+            reproducer_prompt += reproducer_result
+            msg_thread.add_user(reproducer_prompt)
 
-    msg_thread.add_user(SELECT_PROMPT)
+        msg_thread.add_user(SELECT_PROMPT)
 
-    print_acr(SELECT_PROMPT, "context retrieval initial prompt")
+        print_acr(SELECT_PROMPT, "context retrieval initial prompt")
 
     # TODO: figure out what should be printed to console here
     # print_acr(prompt, f"context retrieval round {start_round_no}")
@@ -122,9 +129,24 @@ def generator(
     while True:
 
         # first call is to select some APIs to call
-        logger.debug("<Agent search> Selecting APIs to call.")
-        res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
-        msg_thread.add_model(res_text)
+        if resume_messages is not None:
+            # Resuming: use the last assistant message without calling LLM
+            last_assistant_content = ""
+            for msg in reversed(msg_thread.messages):
+                if msg.get("role") == "assistant":
+                    last_assistant_content = msg.get("content", "")
+                    break
+
+            logger.debug("<Agent search> Resuming - using last assistant message without LLM call")
+            res_text = last_assistant_content
+            # Note: we don't add to msg_thread here because it's already in the messages
+            # Important: Set resume_messages to None so we only do this once
+            resume_messages = None
+        else:
+            # Normal mode: call LLM to select APIs
+            logger.debug("<Agent search> Selecting APIs to call.")
+            res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
+            msg_thread.add_model(res_text)
         # TODO: print the response
         print_retrieval(res_text, "Model response (API selection)")
 
