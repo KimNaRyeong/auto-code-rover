@@ -4,7 +4,10 @@ non-json format.
 """
 
 import re
+import os
+import json
 from collections.abc import Generator
+from glob import glob
 
 from loguru import logger
 
@@ -84,15 +87,40 @@ def prepare_issue_prompt(problem_stmt: str) -> str:
     result = "<issue>" + problem_stripped + "\n</issue>"
     return result
 
+def get_prev_output_dir(task_id, dir_idx):
+    prev_output_dir = os.path.join('.', 'fl_outputs', f'only_fl_output_mixtral_{dir_idx}', 'no_patch')
+    pattern = os.path.join(prev_output_dir, f"{task_id}*")
+    matching_dirs = glob(pattern)
 
+    if len(matching_dirs) == 1:
+        return matching_dirs[0]
+    else:
+        raise Exception("There is no matching prev directory")
+    
 def generator(
-    issue_stmt: str, sbfl_result: str, reproducer_result: str
+    issue_stmt: str, sbfl_result: str, reproducer_result: str, task_id: str = ""
 ) -> Generator[tuple[str, MessageThread], tuple[str, bool] | None, None]:
     """
     Args:
         - issue_stmt: problem statement
         - sbfl_result: result after running sbfl
+        - reproducer_result: result from reproducer
+        - task_id: current task ID being processed
     """
+
+    resume_from = config.resume_from
+    output_dir = config.output_dir
+
+    dir_idx = output_dir.split('_')[-1]
+
+    prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
+    prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
+    
+
+    # task_id is now available in this generator
+    # You can use it like: logger.info(f"Processing task: {task_id}")
+    
 
     msg_thread = MessageThread()
     msg_thread.add_system(SYSTEM_PROMPT)
@@ -119,11 +147,25 @@ def generator(
     # TODO: figure out what should be printed to console here
     # print_acr(prompt, f"context retrieval round {start_round_no}")
 
+    round_no = -1  # Initialize round number
+
     while True:
 
         # first call is to select some APIs to call
         logger.debug("<Agent search> Selecting APIs to call.")
-        res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
+        with open('./search_debug', 'a+') as f:
+            f.write(f"==========Search prompt {round_no+1}===========\n")
+            f.write(str(msg_thread.to_msg())+'\n')
+        if resume_from and round_no <  resume_from - 2:
+            prev_search_file = os.path.join(prev_search_dir, f'search_round_{round_no+1}.json')
+            with open(prev_search_file, 'r') as f:
+                search_content = json.load(f)
+                res_text = search_content[-1]["content"]
+        else:
+            res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
+        with open('./search_debug', 'a+') as f:
+            f.write(f"==========Search assistant {round_no+1}===========\n")
+            f.write(res_text+'\n')
         msg_thread.add_model(res_text)
         # TODO: print the response
         print_retrieval(res_text, "Model response (API selection)")
@@ -131,7 +173,7 @@ def generator(
         # the search result should be sent here by our backend AST search tool
         generator_input = yield res_text, msg_thread
         assert generator_input is not None
-        search_result, re_search = generator_input
+        search_result, re_search, round_no = generator_input
 
         if re_search:
             # the search APIs selected have some issue
@@ -147,8 +189,20 @@ def generator(
         msg_thread.add_user(search_result)
         msg_thread.add_user(ANALYZE_PROMPT)
         print_acr(ANALYZE_PROMPT, "context retrieval analyze prompt")
-
-        res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
+        with open('./search_debug', 'a+') as f:
+            f.write(f"==========Search prompt analysis {round_no+1}===========\n")
+            f.write(str(msg_thread.to_msg())+'\n')
+        
+        if resume_from and round_no < resume_from - 1:
+            prev_search_file = os.path.join(prev_search_dir, f'search_round_{round_no+1}.json')
+            with open(prev_search_file, 'r') as f:
+                search_content = json.load(f)
+                res_text = search_content[-3]["content"]
+        else:
+            res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
+        with open('./search_debug', 'a+') as f:
+            f.write(f"==========Search assistance analysis {round_no+1}===========\n")
+            f.write(res_text+'\n')
         msg_thread.add_model(res_text)
         print_retrieval(res_text, "Model response (context analysis)")
 

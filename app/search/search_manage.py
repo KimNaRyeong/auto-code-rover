@@ -41,11 +41,12 @@ class SearchManager:
             - The message thread that contains the search conversation.
         """
         search_api_generator = agent_search.generator(
-            task.get_issue_statement(), sbfl_result, reproducer_result
+            task.get_issue_statement(), sbfl_result, reproducer_result, task.task_id
         )
-        # input to generator, should be (search_result_msg, re_search)
+        # input to generator, should be (search_result_msg, re_search, round_no)
         # the first item is the results of search sent from backend
         # the second item is whether the agent should select APIs again, or proceed to analysis
+        # the third item is the current round number
         generator_input = None
 
         round_no = 0
@@ -70,7 +71,7 @@ class SearchManager:
 
             # extract json API calls from the raw response.
             selected_apis, proxy_threads = agent_proxy.run_with_retries(
-                agent_search_response
+                agent_search_response, search_round=round_no, task_id=task.task_id
             )
 
             logger.debug("Agent proxy return the following json: {}", selected_apis)
@@ -86,7 +87,7 @@ class SearchManager:
                     "Could not extract API calls from agent search response, asking search agent to re-generate response."
                 )
                 search_result_msg = "The search API calls seem not valid. Please check the arguments you give carefully and try again."
-                generator_input = (search_result_msg, True)
+                generator_input = (search_result_msg, True, round_no)
                 continue
 
             # there are valid search APIs - parse them
@@ -153,7 +154,7 @@ class SearchManager:
                     "Failed to retrieve code from all bug locations. Asking search agent to re-generate response."
                 )
                 search_result_msg = "Failed to retrieve code from all bug locations. You may need to check whether the arguments are correct or issue more search API calls."
-                generator_input = (search_result_msg, True)
+                generator_input = (search_result_msg, True, round_no)
                 continue
 
             # location not confirmed by the search agent - send backend result and go to next round
@@ -188,7 +189,7 @@ class SearchManager:
                 "Obtained search results from API invocation. Going into next retrieval round."
             )
             search_result_msg = collated_search_res_str
-            generator_input = (search_result_msg, False)
+            generator_input = (search_result_msg, False, round_no)
 
         # used up all the rounds, but could not return the buggy locations
         logger.info("Too many rounds. Try writing patch anyway.")

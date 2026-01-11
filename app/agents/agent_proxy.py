@@ -2,11 +2,15 @@
 A proxy agent. Process raw response into json format.
 """
 
+import os
 import inspect
+import json
 from typing import Any
+from glob import glob
 
 from loguru import logger
 
+from app import config
 from app.data_structures import MessageThread
 from app.model import common
 from app.post_process import ExtractStatus, is_valid_json
@@ -41,8 +45,7 @@ Make sure each API call is written as a valid python expression.
 }
 """
 
-
-def run_with_retries(text: str, retries=5) -> tuple[str | None, list[MessageThread]]:
+def run_with_retries(text: str, retries=5, search_round: int = -1, task_id: str = "") -> tuple[str | None, list[MessageThread]]:
     msg_threads = []
     for idx in range(1, retries + 1):
         logger.debug(
@@ -51,7 +54,7 @@ def run_with_retries(text: str, retries=5) -> tuple[str | None, list[MessageThre
             retries,
         )
 
-        res_text, new_thread = run(text)
+        res_text, new_thread = run(text, search_round, task_id)
         msg_threads.append(new_thread)
 
         extract_status, data = is_valid_json(res_text)
@@ -69,18 +72,50 @@ def run_with_retries(text: str, retries=5) -> tuple[str | None, list[MessageThre
         return res_text, msg_threads
     return None, msg_threads
 
+def get_prev_output_dir(task_id, dir_idx):
+    prev_output_dir = os.path.join('.', 'fl_outputs', f'only_fl_output_mixtral_{dir_idx}', 'no_patch')
+    pattern = os.path.join(prev_output_dir, f"{task_id}*")
+    matching_dirs = glob(pattern)
 
-def run(text: str) -> tuple[str, MessageThread]:
+    if len(matching_dirs) == 1:
+        return matching_dirs[0]
+    else:
+        raise Exception("There is no matching prev directory")
+
+def run(text: str, search_round: int = -1, task_id: str = "") -> tuple[str, MessageThread]:
     """
     Run the agent to extract issue to json format.
     """
 
+    resume_from = config.resume_from
+    output_dir = config.output_dir
+    dir_idx = output_dir.split('_')[-1]
+
+    prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
+    prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
+
+
     msg_thread = MessageThread()
     msg_thread.add_system(PROXY_PROMPT)
     msg_thread.add_user(text)
-    res_text, *_ = common.SELECTED_MODEL.call(
-        msg_thread.to_msg(), response_format="json_object"
-    )
+    with open('./search_debug', 'a+') as f:
+
+        f.write(f"==========proxy prompt for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
+        f.write(str(msg_thread.to_msg())+'\n')
+    
+    if resume_from and search_round < resume_from - 1:
+        prev_proxy_file = os.path.join(prev_search_dir, f'agent_proxy_{search_round}.json')
+        with open(prev_proxy_file, 'r') as f:
+            proxy_content = json.load(f)
+            res_text = proxy_content[-1][-1]["content"]
+    else:
+        res_text, *_ = common.SELECTED_MODEL.call(
+            msg_thread.to_msg(), response_format="json_object"
+        )
+    with open('./search_debug', 'a+') as f:
+        f.write(f"==========proxy assistance for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
+        f.write(res_text+'\n')
 
     msg_thread.add_model(res_text, [])  # no tools
 

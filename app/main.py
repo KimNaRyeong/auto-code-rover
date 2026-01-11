@@ -100,6 +100,7 @@ def main():
     config.enable_perfect_angelic = args.enable_perfect_angelic
     config.only_save_sbfl_result = args.save_sbfl_result
     config.only_reproduce = args.reproduce
+    config.resume_from = args.resume_from
 
     subcommand = getattr(args, subparser_dest_attr_name)
     if subcommand == "swe-bench":
@@ -299,6 +300,12 @@ def add_task_related_args(parser: ArgumentParser) -> None:
         type=str,
         default=1,
         help="Number of processes to run the tasks in parallel.",
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=int,
+        default=None,
+        help="Resume from a specific interaction number (1-indexed). Requires pre-existing results in fl_outputs directory.",
     )
 
 
