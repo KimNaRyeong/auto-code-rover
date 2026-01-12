@@ -153,9 +153,9 @@ def generator(
 
         # first call is to select some APIs to call
         logger.debug("<Agent search> Selecting APIs to call.")
-        with open('./search_debug', 'a+') as f:
-            f.write(f"==========Search prompt {round_no+1}===========\n")
-            f.write(str(msg_thread.to_msg())+'\n')
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"==========Search prompt {round_no+1}===========\n")
+            # f.write(str(msg_thread.to_msg())+'\n')
         if resume_from and round_no <  resume_from - 2:
             prev_search_file = os.path.join(prev_search_dir, f'search_round_{round_no+1}.json')
             with open(prev_search_file, 'r') as f:
@@ -163,9 +163,9 @@ def generator(
                 res_text = search_content[-1]["content"]
         else:
             res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
-        with open('./search_debug', 'a+') as f:
-            f.write(f"==========Search assistant {round_no+1}===========\n")
-            f.write(res_text+'\n')
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"==========Search assistant {round_no+1}===========\n")
+            # f.write(res_text+'\n')
         msg_thread.add_model(res_text)
         # TODO: print the response
         print_retrieval(res_text, "Model response (API selection)")
@@ -189,9 +189,9 @@ def generator(
         msg_thread.add_user(search_result)
         msg_thread.add_user(ANALYZE_PROMPT)
         print_acr(ANALYZE_PROMPT, "context retrieval analyze prompt")
-        with open('./search_debug', 'a+') as f:
-            f.write(f"==========Search prompt analysis {round_no+1}===========\n")
-            f.write(str(msg_thread.to_msg())+'\n')
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"==========Search prompt analysis {round_no+1}===========\n")
+            # f.write(str(msg_thread.to_msg())+'\n')
         
         if resume_from and round_no < resume_from - 1:
             prev_search_file = os.path.join(prev_search_dir, f'search_round_{round_no+1}.json')
@@ -200,9 +200,9 @@ def generator(
                 res_text = search_content[-3]["content"]
         else:
             res_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg())
-        with open('./search_debug', 'a+') as f:
-            f.write(f"==========Search assistance analysis {round_no+1}===========\n")
-            f.write(res_text+'\n')
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"==========Search assistance analysis {round_no+1}===========\n")
+            # f.write(res_text+'\n')
         msg_thread.add_model(res_text)
         print_retrieval(res_text, "Model response (context analysis)")
 

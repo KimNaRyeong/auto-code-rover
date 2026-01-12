@@ -1,5 +1,7 @@
 import json
 import re
+import os
+from glob import glob
 from collections import defaultdict
 from collections.abc import Generator
 from copy import deepcopy
@@ -9,6 +11,7 @@ from typing import TypeAlias
 from loguru import logger
 from tenacity import retry, stop_after_attempt
 
+from app import config
 from app.agents.agent_common import InvalidLLMResponse
 from app.data_structures import MessageThread, ReproResult
 from app.log import print_acr, print_reproducer
@@ -53,6 +56,15 @@ class NoReproductionStep(RuntimeError):
 
 TestHandle: TypeAlias = str
 
+def get_prev_output_dir(task_id, dir_idx):
+    prev_output_dir = os.path.join('.', 'fl_outputs', f'only_fl_output_mixtral_{dir_idx}', 'no_patch')
+    pattern = os.path.join(prev_output_dir, f"{task_id}*")
+    matching_dirs = glob(pattern)
+
+    if len(matching_dirs) == 1:
+        return matching_dirs[0]
+    else:
+        raise Exception("There is no matching prev directory")
 
 class TestAgent:
     def __init__(self, task: Task, task_dir: str) -> None:
@@ -88,7 +100,7 @@ class TestAgent:
         self, num_feedbacks: int, retries: int
     ) -> tuple[TestHandle, str, ReproResult]:
         reproducible, guard_thread = self._issue_has_reproduction_steps(
-            self.task.get_issue_statement()
+            self.task.get_issue_statement(), self.task.task_id
         )
         guard_thread.save_to_file(Path(self.task_dir, "conv_reproducible.json"))
         if not reproducible:
@@ -96,9 +108,8 @@ class TestAgent:
 
         for _ in range(retries):
             feedback_handles = self._select_feedback_handles(num_feedbacks)
-
-            response, test_content, thread = self._write_test(feedback_handles)
             self._request_idx += 1
+            response, test_content, thread = self._write_test(feedback_handles)
             print_reproducer(response)
             Path(self.task_dir, f"test_raw_{self._request_idx}.md").write_text(response)
             thread.save_to_file(
@@ -127,7 +138,7 @@ class TestAgent:
 
     @classmethod
     def _issue_has_reproduction_steps(
-        cls, issue_statement: str
+        cls, issue_statement: str, task_id: str
     ) -> tuple[bool, MessageThread]:
         prefix_thread = MessageThread()
 
@@ -148,10 +159,36 @@ class TestAgent:
         )
 
         @retry(stop=stop_after_attempt(3))
-        def query_and_parse():
-            response, *_ = common.SELECTED_MODEL.call(
-                prefix_thread.to_msg(), response_format="json_object"
-            )
+
+
+        def query_and_parse(task_id):
+
+            resume_from = config.resume_from
+            output_dir = config.output_dir
+
+            dir_idx = output_dir.split('_')[-1]
+
+            prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
+
+            # with open('./search_debug', 'a+') as f:
+            #     f.write(task_id + '\n')
+            #     f.write(f"========== in quenry_and_parse prompt ===========\n")
+            #     f.write(str(prefix_thread.to_msg())+'\n')
+            
+            if resume_from:
+                reproducible_file = os.path.join(prev_output_dir, 'output_0', 'conv_reproducible.json')
+                with open(reproducible_file, 'r') as f:
+                    response = json.load(f)[-1]["content"]
+                print("here")
+            else:
+                    
+                response, *_ = common.SELECTED_MODEL.call(
+                    prefix_thread.to_msg(), response_format="json_object"
+                )
+            # with open('./search_debug', 'a+') as f:
+            #     f.write(f"========== in quenry_and_parse assistant ===========\n")
+            #     f.write(str(response)+'\n')
 
             result = json.loads(response)[key]
 
@@ -163,7 +200,7 @@ class TestAgent:
 
             return result, thread
 
-        return query_and_parse()
+        return query_and_parse(task_id)
 
     def _select_feedback_handles(self, max_num_feedbacks: int) -> list[TestHandle]:
         if 0 <= max_num_feedbacks <= len(self._history):
@@ -182,6 +219,15 @@ class TestAgent:
     ) -> tuple[str, str | None, MessageThread]:
         history_handles = history_handles or []
 
+        resume_from = config.resume_from
+        output_dir = config.output_dir
+
+        dir_idx = output_dir.split('_')[-1]
+
+        task_id = self.task.task_id
+
+        prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
         thread = self._construct_init_thread()
         if any(handle in self._feedbacks for handle in history_handles):
             thread.add_user(INITIAL_REQUEST)
@@ -197,7 +243,19 @@ class TestAgent:
         if not history_handles:
             print_acr(INITIAL_REQUEST)
 
-        response, *_ = common.SELECTED_MODEL.call(thread.to_msg())
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"========== in _write_test prompt {self._request_idx} ===========\n")
+        #     f.write(str(thread.to_msg())+'\n')
+        
+        if resume_from:
+            reproduce_test_file = os.path.join(prev_output_dir, 'output_0', f'test_raw_{self._request_idx}.md')
+            with open(reproduce_test_file, 'r', encoding='utf-8') as f:
+                response = f.read()
+        else:
+            response, *_ = common.SELECTED_MODEL.call(thread.to_msg())
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"========== in _write_test assistant {self._request_idx} ===========\n")
+        #     f.write(str(response+'\n'))
 
         return response, self.convert_response_to_test(response), thread
 
@@ -287,7 +345,13 @@ def generator(
     index = 1
     thread = deepcopy(prefix_thread)
     while True:
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"========== in generator prompt {index} ===========\n")
+        #     f.write(str(prefix_thread.to_msg())+'\n')
         response, *_ = common.SELECTED_MODEL.call(prefix_thread.to_msg())
+        # with open('./search_debug', 'a+') as f:
+        #     f.write(f"========== in _write_test assistant {index} ===========\n")
+        #     f.write(str(response)+'\n')
 
         thread.add_model(response, [])
         print_reproducer(response, desc=f"Try {index}")

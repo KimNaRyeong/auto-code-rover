@@ -99,10 +99,10 @@ def run(text: str, search_round: int = -1, task_id: str = "") -> tuple[str, Mess
     msg_thread = MessageThread()
     msg_thread.add_system(PROXY_PROMPT)
     msg_thread.add_user(text)
-    with open('./search_debug', 'a+') as f:
+    # with open('./search_debug', 'a+') as f:
 
-        f.write(f"==========proxy prompt for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
-        f.write(str(msg_thread.to_msg())+'\n')
+        # f.write(f"==========proxy prompt for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
+        # f.write(str(msg_thread.to_msg())+'\n')
     
     if resume_from and search_round < resume_from - 1:
         prev_proxy_file = os.path.join(prev_search_dir, f'agent_proxy_{search_round}.json')
@@ -113,9 +113,9 @@ def run(text: str, search_round: int = -1, task_id: str = "") -> tuple[str, Mess
         res_text, *_ = common.SELECTED_MODEL.call(
             msg_thread.to_msg(), response_format="json_object"
         )
-    with open('./search_debug', 'a+') as f:
-        f.write(f"==========proxy assistance for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
-        f.write(res_text+'\n')
+    # with open('./search_debug', 'a+') as f:
+    #     f.write(f"==========proxy assistance for task {task_id} (will be saved to agent_proxy_{search_round}.json)===========\n")
+        # f.write(res_text+'\n')
 
     msg_thread.add_model(res_text, [])  # no tools
 

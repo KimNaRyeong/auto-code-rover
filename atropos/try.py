@@ -21,5 +21,19 @@ def search_instance_with_two_fl(result_dir): # search in the applicable_patch di
         if "Found 2 methods with name " in final_fl_response:
             print(instance_dir)
 
-search_instance_with_two_fl('../results/acr-run-1')
+def search_instance_with_reproduce_true(result_dir): # search in the applicable_patch dir in result_dir
+    instance_list = os.listdir(result_dir)
+    for instance_dir in instance_list:
+        
+        reproduce_file = os.path.join(result_dir, instance_dir, 'output_0/conv_reproducible.json')
+
+        if os.path.exists(reproduce_file):
+            with open(reproduce_file, 'r') as f:
+                reproduce_content = json.load(f)
+                if 'false' not in reproduce_content[3]["content"]:
+                    print(instance_dir)
+            
+
+search_instance_with_reproduce_true('../fl_outputs/only_fl_output/no_patch')
+
 
