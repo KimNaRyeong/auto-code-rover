@@ -496,7 +496,7 @@ def main(dir_dict):
     print_metadata(dataset, ks, "dataset")
 
     criterion = nn.BCEWithLogitsLoss()
-    output_dim = 1
+    output_dim = 1 
     K = 5 
     kf = KFold(n_splits=K, shuffle=True, random_state=42)
     lr = 0.001
