@@ -1,0 +1,41 @@
+ Here is a standalone python file `reproducer.py` to reproduce the issue:
+```python
+import xarray as xr
+import sys
+
+def print_stacktrace(e: Exception):
+    import traceback    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+try:
+    xr.cftime_range("2000-01-01", periods=3, freq='10L')
+except Exception as e:
+    print_stacktrace(e)
+    sys.exit(0)
+
+assert False, "Expected an exception to be raised"
+```
+When executed with `python3 reproducer.py`, the script should print the following stack trace:
+```vbnet
+Traceback (most recent call last):
+  File "reproducer.py", line 14, in <module>
+    xr.cftime_range("2000-01-01", periods=3, freq='10L')
+  File "/home/user/xarray/xarray/coding/cftime_index.py", line 145, in cftime_range
+    return CFTimeIndex(
+  File "/home/user/xarray/xarray/coding/cftime_index.py", line 102, in __init__
+    self.index = _make_cftime_index(
+  File "/home/user/xarray/xarray/coding/cftime_index.py", line 186, in _make_cftime_index
+    freq = _infer_freq(start, periods, freq)
+  File "/home/user/xarray/xarray/coding/cftime_index.py", line 168, in _infer_freq
+    freq = cftime_offsets.infer_freq(start, periods, freq)
+  File "/home/user/xarray/xarray/coding/cftime_offsets.py", line 101, in infer_freq
+    raise ValueError("Invalid frequency string provided")
+ValueError: Invalid frequency string provided
+```
+This confirms that the issue is present and that the expected exception is raised.

@@ -1,0 +1,43 @@
+ I apologize for the confusion earlier. I misunderstood the issue. Here's a new `reproducer.py` file that reproduces the issue:
+```python
+import xarray as xr
+import sys
+import time
+
+def print_stacktrace(e: Exception):
+    import traceback   
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    start_time = time.time()
+    ds = xr.open_dataset('https://storage.googleapis.com/open-datasets/rda/test_data/air_temperature.nc', engine='netcdf4')
+    repr_time = time.time() - start_time
+    print(f"DS repr time: {repr_time}s")
+    start_time = time.time()
+    # Comment the following line to see the difference in loading time
+    array_size = ds.sizes['time']
+    load_time = time.time() - start_time
+    print(f"Array size load time: {load_time}s")
+    total_time = repr_time + load_time
+    print(f"Total time: {total_time}s")
+    assert total_time > 5, "Expected slow reprs, but took less than 5 seconds."
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print_stacktrace(e)
+        sys.exit(1)
+```
+This script will print the time taken to load the dataset and the time taken to load the array size. If the total time taken is less than 5 seconds, it will raise an AssertionError and print a stack trace.
+
+You can run the script with `python3 reproducer.py`. If the issue is present, it should raise an AssertionError and print a stack trace. If the issue is fixed, it should exit with code 0.
+
+Please note that the dataset used in this example is publicly available and can be accessed by anyone. The dataset is not large, but the issue still occurs due to the time taken to load the array size.

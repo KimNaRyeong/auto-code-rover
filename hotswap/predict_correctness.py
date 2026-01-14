@@ -55,7 +55,7 @@ def main():
     set_seed(42)
 
     # Configuration
-    k = 20
+    k = 8
     label_criteria = 1
     embedding_size = 300
     threshold = 0.5
@@ -64,8 +64,8 @@ def main():
     print(f"Using device: {device}")
 
     # Paths
-    base_path = '/home/kimnal0/RepairAgent/Atropos'
-    model_dir = f'{base_path}/trained_model/parallel/nhot_normal/center_vector/0.99_0.99/label_criteria_{label_criteria}/FA'
+    base_path = '/home/kimnal0/auto-code-rover/atropos'
+    model_dir = f'{base_path}/trained_model/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
     data_dir = f'{base_path}/data/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
     result_dir = f'{base_path}/results/parallel/embedding/fasttext/nhot_normal/sentence_vector/{embedding_size}d/not_add/label_criteria_{label_criteria}'
 
@@ -98,6 +98,7 @@ def main():
         test_tasks = test_tasks_dict[fold]
 
         # Load model for this fold
+        print(model_dir)
         model = load_model_for_fold(fold, k, device, model_dir)
 
         predictions[fold_str] = {}
@@ -125,7 +126,7 @@ def main():
     output_dir = '/home/kimnal0/auto-code-rover/hotswap/predictions'
     os.makedirs(output_dir, exist_ok=True)
 
-    output_file = os.path.join(output_dir, f'k{k}_predictions.json')
+    output_file = os.path.join(output_dir, f'k{k}_predictions2.json')
     with open(output_file, 'w') as f:
         json.dump(predictions, f, indent=4)
 
@@ -173,7 +174,7 @@ def main():
             if pred_info['predicted_label'] == 1
         ]
 
-    rerun_file = os.path.join(output_dir, f'k{k}_tasks_to_rerun.json')
+    rerun_file = os.path.join(output_dir, f'k{k}_tasks_to_rerun2.json')
     with open(rerun_file, 'w') as f:
         json.dump(tasks_to_rerun, f, indent=4)
 

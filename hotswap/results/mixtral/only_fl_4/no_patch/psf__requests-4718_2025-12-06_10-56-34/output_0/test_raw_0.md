@@ -1,0 +1,35 @@
+ Here is a standalone Python script `reproducer.py` that reproduces the issue:
+```python
+import requests
+
+def print_stacktrace(e: Exception):
+    import traceback    import sys    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def run_test():
+    try:
+        https_server = requests.get('https://localhost:4443', auth=('hello', 'world'), verify=False)
+        assert https_server.status_code == 302
+
+        http_server = requests.get(https_server.headers['Location'], auth=('hello', 'world'), verify=False)
+        assert http_server.status_code == 200
+
+        # Assert that the Authorization header is not present in the HTTP request
+        assert 'Authorization' not in http_server.request.headers
+
+    except AssertionError as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == '__main__':
+    run_test()
+```
+When executed with `python3 reproducer.py`, the script will raise an `AssertionError` if the issue is present and print a stack trace of the issue. The script will exit with code 0 when the issue is fixed.
+
+Note: The SSL server code is not included in this script, as it is not necessary to reproduce the issue. The SSL server code provided in the issue description can be used separately to test the script.

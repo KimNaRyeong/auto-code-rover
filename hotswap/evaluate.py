@@ -23,14 +23,9 @@ def checkout_commit(repo_path, commit_hash):
         return False
 
 def extract_fl_results(model, r_idx):
-    if model == 'hotswap':
-        result_dir = f'../fl_outputs/only_fl_hotswap_full_{r_idx}'
-    elif model == 'mixtral':
-        result_dir = f'../fl_outputs/only_fl_output_mixtral_{r_idx}'
-    elif model == 'gpt-4':
-        result_dir = f'../fl_outputs/only_fl_output{r_idx}'
+    result_dir = f'./results/{model}/only_fl_{r_idx}/no_patch'
 
-    instance_dir_list = os.listdir(os.path.join(result_dir, 'no_patch'))
+    instance_dir_list = os.listdir(result_dir)
 
     filtered_fl_dict = dict()
 
@@ -57,7 +52,7 @@ def extract_fl_results(model, r_idx):
         if not checkout_result:
             continue
 
-        fl_before_process_path = os.path.join(result_dir, 'no_patch', instance_dir, 'output_0/search/bug_locations_before_process.json')
+        fl_before_process_path = os.path.join(result_dir, instance_dir, 'output_0/search/bug_locations_before_process.json')
 
         try:
             with open(fl_before_process_path, 'r') as f:
@@ -139,7 +134,7 @@ def extract_fl_results(model, r_idx):
             if unique_bug_locations:
                 for loc in unique_bug_locations:
                     bug_loc_dict = loc.to_dict()
-                    bug_loc_dict["result_dir"] = os.path.join(result_dir, 'no_patch', instance_dir)
+                    bug_loc_dict["result_dir"] = os.path.join(result_dir, instance_dir)
                     filtered_fl_dict[instance_name].append(bug_loc_dict)
     
     return filtered_fl_dict
@@ -160,10 +155,13 @@ def vote_and_ranks_answers(fl_results_for_r):
 
                     if not tie_methods:
                         return tie_broken_methods
-                    
-    task_list_file = '../atropos/sampled_tasks_1_and_2.txt'
-    with open(task_list_file, 'r') as f:
-        task_list = f.read().splitlines()
+    
+    test_bug_name_file = f'/home/kimnal0/auto-code-rover/atropos/results/parallel/embedding/fasttext/nhot_normal/sentence_vector/300d/not_add/label_criteria_1/test_bug_names2.json'
+    with open(test_bug_name_file, 'r') as f:
+        test_bug_name = json.load(f)
+    task_list = []
+    for i, tt in test_bug_name.items():
+        task_list.extend(tt)
 
     voting_score_dict = defaultdict(lambda: defaultdict(float))
     ranking_dict = dict()
@@ -248,13 +246,8 @@ def get_cost(model):
     total_input_tokens = 0
     total_output_tokens = 0
     for i in range(1, 6):
-        if model == "hotswap":
-            result_dir = f'../fl_outputs/only_fl_hotswap_{i}/no_patch'
-        if model == 'gpt-4':
-            result_dir = f'../fl_outputs/only_fl_output{i}/no_patch'
-        if model == 'mixtral':
-            result_dir = f'../fl_outputs/only_fl_output_mixtral_{i}/no_patch'
-
+        result_dir = f'./results/{model}/only_fl_{i}/no_patch'
+        
         instance_dir_list = os.listdir(result_dir)
         for instance_dir in instance_dir_list:
             cost_file = os.path.join(result_dir, instance_dir, 'cost.json')
@@ -271,40 +264,43 @@ def get_cost(model):
 def evaluate_hotswap():
     hotswap_fl_results_for_r = dict()
     mixtral_fl_results_for_r = dict()
-    gpt4_fl_results_for_r = dict()
-    for i in range(1, 6):
-        hotswap_fl_results_for_r[i] = extract_fl_results("hotswap", i)
-        fl_results_output_file = './filtered_fl_results_hotswap.json'
-        with open(fl_results_output_file, 'w') as f:
-            json.dump(hotswap_fl_results_for_r, f, indent = 4)
-        mixtral_fl_results_for_r[i] = extract_fl_results("mixtral", i)
-        fl_results_output_file = './filtered_fl_results_mixtral.json'
-        with open(fl_results_output_file, 'w') as f:
-            json.dump(mixtral_fl_results_for_r, f, indent = 4)
-        gpt4_fl_results_for_r[i] = extract_fl_results("gpt-4", i)
-        fl_results_output_file = './filtered_fl_results_gpt-4.json'
-        with open(fl_results_output_file, 'w') as f:
-            json.dump(gpt4_fl_results_for_r, f, indent = 4)
+    # gpt4_fl_results_for_r = dict()
+    # for i in range(1, 6):
+    #     hotswap_fl_results_for_r[i] = extract_fl_results("hotswap", i)
+    #     mixtral_fl_results_for_r[i] = extract_fl_results("mixtral", i)
+    #     # gpt4_fl_results_for_r[i] = extract_fl_results("gpt-4", i)
+        
+    # fl_results_output_file = './filtered_fl_results_hotswap.json'
+    # with open(fl_results_output_file, 'w') as f:
+    #     json.dump(hotswap_fl_results_for_r, f, indent = 4)
     
-    # hotswap_filtered_result_file = './filtered_fl_results_hotswap.json'
-    # mixtral_filtered_result_file = './filtered_fl_results_mixtral.json'
+    # fl_results_output_file = './filtered_fl_results_mixtral.json'
+    # with open(fl_results_output_file, 'w') as f:
+    #     json.dump(mixtral_fl_results_for_r, f, indent = 4)
+
+    # fl_results_output_file = './filtered_fl_results_gpt-4.json'
+    # with open(fl_results_output_file, 'w') as f:
+    #     json.dump(gpt4_fl_results_for_r, f, indent = 4)
+    
+    hotswap_filtered_result_file = './filtered_fl_results_hotswap.json'
+    mixtral_filtered_result_file = './filtered_fl_results_mixtral.json'
     # gpt4_filtered_result_file = './filtered_fl_results_gpt-4.json'
 
-    # with open(hotswap_filtered_result_file, 'r') as f:
-    #     hotswap_fl_results_for_r = json.load(f)
-    # with open(mixtral_filtered_result_file, 'r') as f:
-    #     mixtral_fl_results_for_r = json.load(f)
+    with open(hotswap_filtered_result_file, 'r') as f:
+        hotswap_fl_results_for_r = json.load(f)
+    with open(mixtral_filtered_result_file, 'r') as f:
+        mixtral_fl_results_for_r = json.load(f)
     # with open(gpt4_filtered_result_file, 'r') as f:
     #     gpt4_fl_results_for_r = json.load(f)
 
     # =================== Evaluation ====================
     
-    # hotswap_evaluation_result = evaluate("hotswap")
-    # mixtral_evaluation_result = evaluate("mixtral")
+    hotswap_evaluation_result = evaluate("hotswap")
+    mixtral_evaluation_result = evaluate("mixtral")
     # gpt4_evaluation_result = evaluate("gpt-4")
 
-    # print(f"Mixtral: {mixtral_evaluation_result}")
-    # print(f"Hotswap: {hotswap_evaluation_result}")
+    print(f"Mixtral: {mixtral_evaluation_result}")
+    print(f"Hotswap: {hotswap_evaluation_result}")
     # print(f"gpt-4: {gpt4_evaluation_result}")
 
     # =================== Cost Calculation =====================
@@ -315,15 +311,12 @@ def evaluate_hotswap():
     hotswap_time_cost, hotswap_input_tokens, hotswap_output_tokens = get_cost("hotswap")
     hotswap_monetary_cost = ((hotswap_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((hotswap_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
 
-    gpt4_time_cost, gpt4_input_tokens, gpt4_output_tokens = get_cost("gpt-4")
-    gpt4_monetary_cost = ((gpt4_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((gpt4_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
+    # gpt4_time_cost, gpt4_input_tokens, gpt4_output_tokens = get_cost("gpt-4")
+    # gpt4_monetary_cost = ((gpt4_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((gpt4_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
 
     print(f"Mixtral - time cost: {mixtral_time_cost:.4f}, monetary cost: {mixtral_monetary_cost:.4f}")
     print(f"Hotswap - time cost: {hotswap_time_cost:.4f}, monetary cost: {hotswap_monetary_cost:.4f}")
-    print(f"Gpt-4 - time cost: {gpt4_time_cost:.4f}, monetary cost: {gpt4_monetary_cost:.4f}")
-    
-
-
+    # print(f"Gpt-4 - time cost: {gpt4_time_cost:.4f}, monetary cost: {gpt4_monetary_cost:.4f}")
 
 
 if __name__ == '__main__':
