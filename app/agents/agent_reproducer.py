@@ -162,13 +162,12 @@ class TestAgent:
 
 
         def query_and_parse(task_id):
-
             resume_from = config.resume_from
             output_dir = config.output_dir
-
-            dir_idx = output_dir.split('_')[-1]
-
-            prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+            
+            if resume_from:
+                dir_idx = output_dir.split('_')[-1]
+                prev_output_dir = get_prev_output_dir(task_id, dir_idx)
 
 
             # with open('./search_debug', 'a+') as f:
@@ -222,11 +221,13 @@ class TestAgent:
         resume_from = config.resume_from
         output_dir = config.output_dir
 
-        dir_idx = output_dir.split('_')[-1]
+        if resume_from:
 
-        task_id = self.task.task_id
+            dir_idx = output_dir.split('_')[-1]
 
-        prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+            task_id = self.task.task_id
+
+            prev_output_dir = get_prev_output_dir(task_id, dir_idx)
 
         thread = self._construct_init_thread()
         if any(handle in self._feedbacks for handle in history_handles):

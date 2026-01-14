@@ -1,0 +1,32 @@
+ I apologize for the syntax error in my previous response. Here is the corrected `reproducer.py` script:
+```python
+from sympy import *
+import sys
+import traceback
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def main():
+    a = 2*sqrt(2)*I*cos(pi/6 - I*asinh(5*sqrt(2)/2)/3)/3
+    a_evalf = a.evalf()
+    b = a.simplify()
+    b_evalf = b.evalf()
+    assert a_evalf == b_evalf, "The simplification of trigonometric functions with complex arguments is incorrect."
+    print("The simplification of trigonometric functions with complex arguments is correct.")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except AssertionError as e:
+        print_stacktrace(e)
+        sys.exit(1)
+```
+When executed with `python3 reproducer.py`, the script will raise an `AssertionError` with a stack trace, indicating that the simplification of trigonometric functions with complex arguments is incorrect. The line numbers of the statements in the script are shown clearly, making it easy to identify the source of the issue.

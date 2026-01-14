@@ -1,0 +1,2 @@
+PYTHONPATH=. python app/main.py swe-bench --model gpt-4-0125-preview --setup-map SWE-bench/setup_result/setup_map.json --tasks-map SWE-bench/setup_result/tasks_map.json --output-dir fl_outputs/only_fl_output4 --task-list-file SWE-bench/sampled_tasks2.txt
+PYTHONPATH=. python app/main.py swe-bench --model gpt-4-0125-preview --setup-map SWE-bench/setup_result/setup_map.json --tasks-map SWE-bench/setup_result/tasks_map.json --output-dir fl_outputs/only_fl_output5 --task-list-file SWE-bench/sampled_tasks2.txt

@@ -1,0 +1,41 @@
+import subprocess
+import re
+import traceback
+import sys
+
+def print_stacktrace(e: Exception):
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def run_make(makefile, target):
+    try:
+        result = subprocess.run(["make", "-f", makefile, target], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError(f"make command failed with return code {result.returncode}\n{result.stderr}")
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+def check_pdf_output(pdf_file):
+    try:
+        with open(pdf_file, "r") as f:
+            content = f.read()
+        if re.search(r"First reference to first footnote \[\d+\]\nFirst reference to second footnote \[\d+\]\nSecond reference to first footnote \[\d+\]\nSecond reference to second footnote \[\d+\]\n", content) is None:
+            raise AssertionError("PDF output does not match expected behavior")
+    except Exception as e:
+        print_stacktrace(e)
+        raise
+
+if __name__ == "__main__":
+    makefile = "Makefile"
+    pdf_file = "build/latex/index.pdf"
+
+    run_make(makefile, "latexpdf")
+    check_pdf_output(pdf_file)
+    print("Test passed")

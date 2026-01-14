@@ -111,11 +111,13 @@ def generator(
     resume_from = config.resume_from
     output_dir = config.output_dir
 
-    dir_idx = output_dir.split('_')[-1]
+    if resume_from:
 
-    prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+        dir_idx = output_dir.split('_')[-1]
 
-    prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
+        prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
+        prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
     
 
     # task_id is now available in this generator

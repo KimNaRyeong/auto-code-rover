@@ -89,11 +89,13 @@ def run(text: str, search_round: int = -1, task_id: str = "") -> tuple[str, Mess
 
     resume_from = config.resume_from
     output_dir = config.output_dir
-    dir_idx = output_dir.split('_')[-1]
 
-    prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+    if resume_from:
+        dir_idx = output_dir.split('_')[-1]
 
-    prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
+        prev_output_dir = get_prev_output_dir(task_id, dir_idx)
+
+        prev_search_dir = os.path.join(prev_output_dir, 'output_0', 'search')
 
 
     msg_thread = MessageThread()

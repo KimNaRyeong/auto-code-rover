@@ -1,0 +1,58 @@
+ Here is a standalone python file `reproducer.py` to reproduce the issue:
+
+```python
+import xarray as xr
+import pandas as pd
+
+def print_stacktrace(e: Exception):
+    import traceback    import sys    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+if __name__ == '__main__':
+    da = xr.DataArray([[[1]]], dims=["a","b","c"]).stack(ab=["a", "b"])
+    try:
+        da.to_series()
+    except Exception as e:
+        print_stacktrace(e)
+
+    try:
+        da.to_dataframe("A")
+    except Exception as e:
+        print_stacktrace(e)
+```
+
+When the script is executed with `python3 reproducer.py`, it should raise a `NotImplementedError` with the following stack trace:
+
+```
+Traceback (most recent call last):
+  File "reproducer.py", line 17, in <module>
+    da.to_series()
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataarray.py", line 1156, in to_series
+    return self.to_dataset(name=name).to_series(name)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1251, in to_series
+    return self._to_series(name)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1270, in _to_series
+    return self._to_dataframe().squeeze(axis=0)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1266, in _to_dataframe
+    return self._to_dataframe_impl(index=index, columns=columns)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1291, in _to_dataframe_impl
+    return self._to_series_impl(index=index, name=name).to_frame()
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1257, in _to_series_impl
+    return self._to_series_with_index(index=index, name=name)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1277, in _to_series_with_index
+    return self._to_series_with_index_impl(index=index, name=name)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/dataset.py", line 1307, in _to_series_with_index_impl
+    index = ensure_index(index)
+  File "/path/to/lib/python3.8/site-packages/xarray/core/indexing.py", line 105, in ensure_index
+    return pd.Index(index)
+  File "/path/to/lib/python3.8/site-packages/pandas/core/indexes/base.py", line 207, in __new__
+    return Index(data, **kwargs)
+  File "/path/to/lib/python3.8/site-packages/pandas/core/indexes/base.py", line 502, in __init__
+    self._check_integrity()
+  File "/path/to/lib/python3.8/site

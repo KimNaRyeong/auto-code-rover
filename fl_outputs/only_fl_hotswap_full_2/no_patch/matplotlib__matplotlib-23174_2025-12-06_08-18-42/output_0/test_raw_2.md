@@ -1,0 +1,45 @@
+ I apologize for the confusion, I see the issue now. The problem is that the `print_stacktrace` function is defined inside the `try` block, so it is not defined when the `SyntaxError` is raised. Here is the corrected version of the standalone python file `reproducer.py` to reproduce the issue:
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+def print_stacktrace(e: Exception):
+    import traceback    import sys    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+delta = 0.025 
+x = np.arange(-3.0, 3.0, delta) 
+y = np.arange(-2.0, 2.0, delta) 
+X, Y = np.meshgrid(x, y) 
+Z1 = np.exp(-(X**2) - Y**2) 
+Z2 = np.exp(-((X - 1) ** 2) - (Y - 1) ** 2) 
+Z = (Z1 - Z2) * 2 
+
+fig = plt.figure() 
+figs = fig.subfigures(nrows=1, ncols=2) 
+
+try: 
+    for f in figs: 
+        ax = f.subplots() 
+        CS = ax.contour(X, Y, Z) 
+        ax.clabel(CS, inline=True, fontsize=10) 
+        ax.set_title("Simplest default with labels") 
+except Exception as e: 
+    print_stacktrace(e) 
+    assert False 
+
+plt.show()
+```
+This script will raise an `AssertionError` when executed with `python3 reproducer.py`, and print the stack trace of the issue.
+
+The script uses the provided `print_stacktrace` function to print the stack trace, so that the line numbers of the statements are shown clearly.
+
+The script also uses a `try-except` block to catch any exception that might be raised, and prints the stack trace and raises an `AssertionError` if an exception is raised.
+
+Please let me know if you have any questions or if there's anything else I can help you with.
