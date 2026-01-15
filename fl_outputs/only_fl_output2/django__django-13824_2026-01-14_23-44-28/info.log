@@ -1,0 +1,643 @@
+2026-01-14 23:44:28.419 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-14 23:44:33.772 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=273, output_tokens=12, cost=0.003090
+2026-01-14 23:44:33.773 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-14 23:44:33.777 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 23:44:43.416 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=577, output_tokens=387, cost=0.017380
+2026-01-14 23:44:43.423 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 23:44:45.910 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=741, output_tokens=43, cost=0.008700
+2026-01-14 23:44:45.911 | DEBUG    | Extracted a valid json.
+2026-01-14 23:44:45.911 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"STATIC_URL\")",
+        "search_class(\"URLValidator\")",
+        "search_code(\"SCRIPT_NAME\")"
+    ],
+    "bug_locations": []
+}
+2026-01-14 23:44:46.040 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-14 23:44:46.041 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-14 23:45:02.055 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2013, output_tokens=762, cost=0.042990
+2026-01-14 23:45:02.064 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 23:45:11.294 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2991, output_tokens=392, cost=0.041670
+2026-01-14 23:45:11.301 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 23:45:17.206 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=746, output_tokens=221, cost=0.014090
+2026-01-14 23:45:17.206 | DEBUG    | Extracted a valid json.
+2026-01-14 23:45:17.206 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[
+        {
+            "file": "django/core/handlers/wsgi.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The logic should correctly identify fully qualified URLs (i.e., starting with 'http://' or 'https://') and avoid prepending `SCRIPT_NAME` or '/' to them. This might involve adding a check to see if `STATIC_URL` starts with a valid scheme before any modifications are applied."
+        },
+        {
+            "file": "django/core/validators.py",
+            "class": "URLValidator",
+            "method": "",
+            "intended_behavior": "The URL validation logic within `URLValidator` should be reviewed and potentially updated to ensure that it accommodates a broader range of valid URLs, including those that may be used internally or in development environments (like 'http://minio/static/'). This could involve adjusting the regex patterns or the validation criteria to more accurately recognize valid URLs, preventing them from being incorrectly flagged as invalid."
+        }
+    ]
+}
+2026-01-14 23:45:17.211 | DEBUG    | Bug location extracted successfully: [<file>django/core/handlers/wsgi.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from io import BytesIO
+2 
+3 from django.conf import settings
+4 from django.core import signals
+5 from django.core.handlers import base
+6 from django.http import HttpRequest, QueryDict, parse_cookie
+7 from django.urls import set_script_prefix
+8 from django.utils.encoding import repercent_broken_unicode
+9 from django.utils.functional import cached_property
+10 from django.utils.regex_helper import _lazy_re_compile
+11 
+12 _slashes_re = _lazy_re_compile(br'/+')
+13 
+14 
+15 class LimitedStream:
+16     """Wrap another stream to disallow reading it past a number of bytes."""
+17     def __init__(self, stream, limit, buf_size=64 * 1024 * 1024):
+18         self.stream = stream
+19         self.remaining = limit
+20         self.buffer = b''
+21         self.buf_size = buf_size
+22 
+23     def _read_limited(self, size=None):
+24         if size is None or size > self.remaining:
+25             size = self.remaining
+26         if size == 0:
+27             return b''
+28         result = self.stream.read(size)
+29         self.remaining -= len(result)
+30         return result
+31 
+32     def read(self, size=None):
+33         if size is None:
+34             result = self.buffer + self._read_limited()
+35             self.buffer = b''
+36         elif size < len(self.buffer):
+37             result = self.buffer[:size]
+38             self.buffer = self.buffer[size:]
+39         else:  # size >= len(self.buffer)
+40             result = self.buffer + self._read_limited(size - len(self.buffer))
+41             self.buffer = b''
+42         return result
+43 
+44     def readline(self, size=None):
+45         while b'\n' not in self.buffer and \
+46               (size is None or len(self.buffer) < size):
+47             if size:
+48                 # since size is not None here, len(self.buffer) < size
+49                 chunk = self._read_limited(size - len(self.buffer))
+50             else:
+51                 chunk = self._read_limited()
+52             if not chunk:
+53                 break
+54             self.buffer += chunk
+55         sio = BytesIO(self.buffer)
+56         if size:
+57             line = sio.readline(size)
+58         else:
+59             line = sio.readline()
+60         self.buffer = sio.read()
+61         return line
+62 
+63 
+64 class WSGIRequest(HttpRequest):
+65     def __init__(self, environ):
+66         script_name = get_script_name(environ)
+67         # If PATH_INFO is empty (e.g. accessing the SCRIPT_NAME URL without a
+68         # trailing slash), operate as if '/' was requested.
+69         path_info = get_path_info(environ) or '/'
+70         self.environ = environ
+71         self.path_info = path_info
+72         # be careful to only replace the first slash in the path because of
+73         # http://test/something and http://test//something being different as
+74         # stated in https://www.ietf.org/rfc/rfc2396.txt
+75         self.path = '%s/%s' % (script_name.rstrip('/'),
+76                                path_info.replace('/', '', 1))
+77         self.META = environ
+78         self.META['PATH_INFO'] = path_info
+79         self.META['SCRIPT_NAME'] = script_name
+80         self.method = environ['REQUEST_METHOD'].upper()
+81         # Set content_type, content_params, and encoding.
+82         self._set_content_type_params(environ)
+83         try:
+84             content_length = int(environ.get('CONTENT_LENGTH'))
+85         except (ValueError, TypeError):
+86             content_length = 0
+87         self._stream = LimitedStream(self.environ['wsgi.input'], content_length)
+88         self._read_started = False
+89         self.resolver_match = None
+90 
+91     def _get_scheme(self):
+92         return self.environ.get('wsgi.url_scheme')
+93 
+94     @cached_property
+95     def GET(self):
+96         # The WSGI spec says 'QUERY_STRING' may be absent.
+97         raw_query_string = get_bytes_from_wsgi(self.environ, 'QUERY_STRING', '')
+98         return QueryDict(raw_query_string, encoding=self._encoding)
+99 
+100     def _get_post(self):
+101         if not hasattr(self, '_post'):
+102             self._load_post_and_files()
+103         return self._post
+104 
+105     def _set_post(self, post):
+106         self._post = post
+107 
+108     @cached_property
+109     def COOKIES(self):
+110         raw_cookie = get_str_from_wsgi(self.environ, 'HTTP_COOKIE', '')
+111         return parse_cookie(raw_cookie)
+112 
+113     @property
+114     def FILES(self):
+115         if not hasattr(self, '_files'):
+116             self._load_post_and_files()
+117         return self._files
+118 
+119     POST = property(_get_post, _set_post)
+120 
+121 
+122 class WSGIHandler(base.BaseHandler):
+123     request_class = WSGIRequest
+124 
+125     def __init__(self, *args, **kwargs):
+126         super().__init__(*args, **kwargs)
+127         self.load_middleware()
+128 
+129     def __call__(self, environ, start_response):
+130         set_script_prefix(get_script_name(environ))
+131         signals.request_started.send(sender=self.__class__, environ=environ)
+132         request = self.request_class(environ)
+133         response = self.get_response(request)
+134 
+135         response._handler_class = self.__class__
+136 
+137         status = '%d %s' % (response.status_code, response.reason_phrase)
+138         response_headers = [
+139             *response.items(),
+140             *(('Set-Cookie', c.output(header='')) for c in response.cookies.values()),
+141         ]
+142         start_response(status, response_headers)
+143         if getattr(response, 'file_to_stream', None) is not None and environ.get('wsgi.file_wrapper'):
+144             # If `wsgi.file_wrapper` is used the WSGI server does not call
+145             # .close on the response, but on the file wrapper. Patch it to use
+146             # response.close instead which takes care of closing all files.
+147             response.file_to_stream.close = response.close
+148             response = environ['wsgi.file_wrapper'](response.file_to_stream, response.block_size)
+149         return response
+150 
+151 
+152 def get_path_info(environ):
+153     """Return the HTTP request's PATH_INFO as a string."""
+154     path_info = get_bytes_from_wsgi(environ, 'PATH_INFO', '/')
+155 
+156     return repercent_broken_unicode(path_info).decode()
+157 
+158 
+159 def get_script_name(environ):
+160     """
+161     Return the equivalent of the HTTP request's SCRIPT_NAME environment
+162     variable. If Apache mod_rewrite is used, return what would have been
+163     the script name prior to any rewriting (so it's the script name as seen
+164     from the client's perspective), unless the FORCE_SCRIPT_NAME setting is
+165     set (to anything).
+166     """
+167     if settings.FORCE_SCRIPT_NAME is not None:
+168         return settings.FORCE_SCRIPT_NAME
+169 
+170     # If Apache's mod_rewrite had a whack at the URL, Apache set either
+171     # SCRIPT_URL or REDIRECT_URL to the full resource URL before applying any
+172     # rewrites. Unfortunately not every Web server (lighttpd!) passes this
+173     # information through all the time, so FORCE_SCRIPT_NAME, above, is still
+174     # needed.
+175     script_url = get_bytes_from_wsgi(environ, 'SCRIPT_URL', '') or get_bytes_from_wsgi(environ, 'REDIRECT_URL', '')
+176 
+177     if script_url:
+178         if b'//' in script_url:
+179             # mod_wsgi squashes multiple successive slashes in PATH_INFO,
+180             # do the same with script_url before manipulating paths (#17133).
+181             script_url = _slashes_re.sub(b'/', script_url)
+182         path_info = get_bytes_from_wsgi(environ, 'PATH_INFO', '')
+183         script_name = script_url[:-len(path_info)] if path_info else script_url
+184     else:
+185         script_name = get_bytes_from_wsgi(environ, 'SCRIPT_NAME', '')
+186 
+187     return script_name.decode()
+188 
+189 
+190 def get_bytes_from_wsgi(environ, key, default):
+191     """
+192     Get a value from the WSGI environ dictionary as bytes.
+193 
+194     key and default should be strings.
+195     """
+196     value = environ.get(key, default)
+197     # Non-ASCII values in the WSGI environ are arbitrarily decoded with
+198     # ISO-8859-1. This is wrong for Django websites where UTF-8 is the default.
+199     # Re-encode to recover the original bytestring.
+200     return value.encode('iso-8859-1')
+201 
+202 
+203 def get_str_from_wsgi(environ, key, default):
+204     """
+205     Get a value from the WSGI environ dictionary as str.
+206 
+207     key and default should be str objects.
+208     """
+209     value = get_bytes_from_wsgi(environ, key, default)
+210     return value.decode(errors='replace')
+
+</code><intended_behavior>The logic should correctly identify fully qualified URLs (i.e., starting with 'http://' or 'https://') and avoid prepending `SCRIPT_NAME` or '/' to them. This might involve adding a check to see if `STATIC_URL` starts with a valid scheme before any modifications are applied.</intended_behavior>, <file>django/core/validators.py</file>
+<class>URLValidator</class>
+<method>None</method>
+<code>
+65 class URLValidator(RegexValidator):
+66     ul = '\u00a1-\uffff'  # Unicode letters range (must not be a raw string).
+67 
+68     # IP patterns
+69     ipv4_re = r'(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)){3}'
+70     ipv6_re = r'\[[0-9a-f:.]+\]'  # (simple regex, validated later)
+71 
+72     # Host patterns
+73     hostname_re = r'[a-z' + ul + r'0-9](?:[a-z' + ul + r'0-9-]{0,61}[a-z' + ul + r'0-9])?'
+74     # Max length for domain name labels is 63 characters per RFC 1034 sec. 3.1
+75     domain_re = r'(?:\.(?!-)[a-z' + ul + r'0-9-]{1,63}(?<!-))*'
+76     tld_re = (
+77         r'\.'                                # dot
+78         r'(?!-)'                             # can't start with a dash
+79         r'(?:[a-z' + ul + '-]{2,63}'         # domain label
+80         r'|xn--[a-z0-9]{1,59})'              # or punycode label
+81         r'(?<!-)'                            # can't end with a dash
+82         r'\.?'                               # may have a trailing dot
+83     )
+84     host_re = '(' + hostname_re + domain_re + tld_re + '|localhost)'
+85 
+86     regex = _lazy_re_compile(
+87         r'^(?:[a-z0-9.+-]*)://'  # scheme is validated separately
+88         r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'  # user:pass authentication
+89         r'(?:' + ipv4_re + '|' + ipv6_re + '|' + host_re + ')'
+90         r'(?::\d{2,5})?'  # port
+91         r'(?:[/?#][^\s]*)?'  # resource path
+92         r'\Z', re.IGNORECASE)
+93     message = _('Enter a valid URL.')
+94     schemes = ['http', 'https', 'ftp', 'ftps']
+95 
+96     def __init__(self, schemes=None, **kwargs):
+97         super().__init__(**kwargs)
+98         if schemes is not None:
+99             self.schemes = schemes
+100 
+101     def __call__(self, value):
+102         if not isinstance(value, str):
+103             raise ValidationError(self.message, code=self.code, params={'value': value})
+104         # Check if the scheme is valid.
+105         scheme = value.split('://')[0].lower()
+106         if scheme not in self.schemes:
+107             raise ValidationError(self.message, code=self.code, params={'value': value})
+108 
+109         # Then check full URL
+110         try:
+111             super().__call__(value)
+112         except ValidationError as e:
+113             # Trivial case failed. Try for possible IDN domain
+114             if value:
+115                 try:
+116                     scheme, netloc, path, query, fragment = urlsplit(value)
+117                 except ValueError:  # for example, "Invalid IPv6 URL"
+118                     raise ValidationError(self.message, code=self.code, params={'value': value})
+119                 try:
+120                     netloc = punycode(netloc)  # IDN -> ACE
+121                 except UnicodeError:  # invalid domain part
+122                     raise e
+123                 url = urlunsplit((scheme, netloc, path, query, fragment))
+124                 super().__call__(url)
+125             else:
+126                 raise
+127         else:
+128             # Now verify IPv6 in the netloc part
+129             host_match = re.search(r'^\[(.+)\](?::\d{2,5})?$', urlsplit(value).netloc)
+130             if host_match:
+131                 potential_ip = host_match[1]
+132                 try:
+133                     validate_ipv6_address(potential_ip)
+134                 except ValidationError:
+135                     raise ValidationError(self.message, code=self.code, params={'value': value})
+136 
+137         # The maximum length of a full host name is 253 characters per RFC 1034
+138         # section 3.1. It's defined to be 255 bytes or less, but this includes
+139         # one byte for the length of the name and one byte for the trailing dot
+140         # that's used to indicate absolute names in DNS.
+141         if len(urlsplit(value).netloc) > 253:
+142             raise ValidationError(self.message, code=self.code, params={'value': value})
+
+</code><intended_behavior>The URL validation logic within `URLValidator` should be reviewed and potentially updated to ensure that it accommodates a broader range of valid URLs, including those that may be used internally or in development environments (like 'http://minio/static/'). This could involve adjusting the regex patterns or the validation criteria to more accurately recognize valid URLs, preventing them from being incorrectly flagged as invalid.</intended_behavior>]
+2026-01-14 23:45:17.211 | INFO     | Search completed. Bug locations: [<file>django/core/handlers/wsgi.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from io import BytesIO
+2 
+3 from django.conf import settings
+4 from django.core import signals
+5 from django.core.handlers import base
+6 from django.http import HttpRequest, QueryDict, parse_cookie
+7 from django.urls import set_script_prefix
+8 from django.utils.encoding import repercent_broken_unicode
+9 from django.utils.functional import cached_property
+10 from django.utils.regex_helper import _lazy_re_compile
+11 
+12 _slashes_re = _lazy_re_compile(br'/+')
+13 
+14 
+15 class LimitedStream:
+16     """Wrap another stream to disallow reading it past a number of bytes."""
+17     def __init__(self, stream, limit, buf_size=64 * 1024 * 1024):
+18         self.stream = stream
+19         self.remaining = limit
+20         self.buffer = b''
+21         self.buf_size = buf_size
+22 
+23     def _read_limited(self, size=None):
+24         if size is None or size > self.remaining:
+25             size = self.remaining
+26         if size == 0:
+27             return b''
+28         result = self.stream.read(size)
+29         self.remaining -= len(result)
+30         return result
+31 
+32     def read(self, size=None):
+33         if size is None:
+34             result = self.buffer + self._read_limited()
+35             self.buffer = b''
+36         elif size < len(self.buffer):
+37             result = self.buffer[:size]
+38             self.buffer = self.buffer[size:]
+39         else:  # size >= len(self.buffer)
+40             result = self.buffer + self._read_limited(size - len(self.buffer))
+41             self.buffer = b''
+42         return result
+43 
+44     def readline(self, size=None):
+45         while b'\n' not in self.buffer and \
+46               (size is None or len(self.buffer) < size):
+47             if size:
+48                 # since size is not None here, len(self.buffer) < size
+49                 chunk = self._read_limited(size - len(self.buffer))
+50             else:
+51                 chunk = self._read_limited()
+52             if not chunk:
+53                 break
+54             self.buffer += chunk
+55         sio = BytesIO(self.buffer)
+56         if size:
+57             line = sio.readline(size)
+58         else:
+59             line = sio.readline()
+60         self.buffer = sio.read()
+61         return line
+62 
+63 
+64 class WSGIRequest(HttpRequest):
+65     def __init__(self, environ):
+66         script_name = get_script_name(environ)
+67         # If PATH_INFO is empty (e.g. accessing the SCRIPT_NAME URL without a
+68         # trailing slash), operate as if '/' was requested.
+69         path_info = get_path_info(environ) or '/'
+70         self.environ = environ
+71         self.path_info = path_info
+72         # be careful to only replace the first slash in the path because of
+73         # http://test/something and http://test//something being different as
+74         # stated in https://www.ietf.org/rfc/rfc2396.txt
+75         self.path = '%s/%s' % (script_name.rstrip('/'),
+76                                path_info.replace('/', '', 1))
+77         self.META = environ
+78         self.META['PATH_INFO'] = path_info
+79         self.META['SCRIPT_NAME'] = script_name
+80         self.method = environ['REQUEST_METHOD'].upper()
+81         # Set content_type, content_params, and encoding.
+82         self._set_content_type_params(environ)
+83         try:
+84             content_length = int(environ.get('CONTENT_LENGTH'))
+85         except (ValueError, TypeError):
+86             content_length = 0
+87         self._stream = LimitedStream(self.environ['wsgi.input'], content_length)
+88         self._read_started = False
+89         self.resolver_match = None
+90 
+91     def _get_scheme(self):
+92         return self.environ.get('wsgi.url_scheme')
+93 
+94     @cached_property
+95     def GET(self):
+96         # The WSGI spec says 'QUERY_STRING' may be absent.
+97         raw_query_string = get_bytes_from_wsgi(self.environ, 'QUERY_STRING', '')
+98         return QueryDict(raw_query_string, encoding=self._encoding)
+99 
+100     def _get_post(self):
+101         if not hasattr(self, '_post'):
+102             self._load_post_and_files()
+103         return self._post
+104 
+105     def _set_post(self, post):
+106         self._post = post
+107 
+108     @cached_property
+109     def COOKIES(self):
+110         raw_cookie = get_str_from_wsgi(self.environ, 'HTTP_COOKIE', '')
+111         return parse_cookie(raw_cookie)
+112 
+113     @property
+114     def FILES(self):
+115         if not hasattr(self, '_files'):
+116             self._load_post_and_files()
+117         return self._files
+118 
+119     POST = property(_get_post, _set_post)
+120 
+121 
+122 class WSGIHandler(base.BaseHandler):
+123     request_class = WSGIRequest
+124 
+125     def __init__(self, *args, **kwargs):
+126         super().__init__(*args, **kwargs)
+127         self.load_middleware()
+128 
+129     def __call__(self, environ, start_response):
+130         set_script_prefix(get_script_name(environ))
+131         signals.request_started.send(sender=self.__class__, environ=environ)
+132         request = self.request_class(environ)
+133         response = self.get_response(request)
+134 
+135         response._handler_class = self.__class__
+136 
+137         status = '%d %s' % (response.status_code, response.reason_phrase)
+138         response_headers = [
+139             *response.items(),
+140             *(('Set-Cookie', c.output(header='')) for c in response.cookies.values()),
+141         ]
+142         start_response(status, response_headers)
+143         if getattr(response, 'file_to_stream', None) is not None and environ.get('wsgi.file_wrapper'):
+144             # If `wsgi.file_wrapper` is used the WSGI server does not call
+145             # .close on the response, but on the file wrapper. Patch it to use
+146             # response.close instead which takes care of closing all files.
+147             response.file_to_stream.close = response.close
+148             response = environ['wsgi.file_wrapper'](response.file_to_stream, response.block_size)
+149         return response
+150 
+151 
+152 def get_path_info(environ):
+153     """Return the HTTP request's PATH_INFO as a string."""
+154     path_info = get_bytes_from_wsgi(environ, 'PATH_INFO', '/')
+155 
+156     return repercent_broken_unicode(path_info).decode()
+157 
+158 
+159 def get_script_name(environ):
+160     """
+161     Return the equivalent of the HTTP request's SCRIPT_NAME environment
+162     variable. If Apache mod_rewrite is used, return what would have been
+163     the script name prior to any rewriting (so it's the script name as seen
+164     from the client's perspective), unless the FORCE_SCRIPT_NAME setting is
+165     set (to anything).
+166     """
+167     if settings.FORCE_SCRIPT_NAME is not None:
+168         return settings.FORCE_SCRIPT_NAME
+169 
+170     # If Apache's mod_rewrite had a whack at the URL, Apache set either
+171     # SCRIPT_URL or REDIRECT_URL to the full resource URL before applying any
+172     # rewrites. Unfortunately not every Web server (lighttpd!) passes this
+173     # information through all the time, so FORCE_SCRIPT_NAME, above, is still
+174     # needed.
+175     script_url = get_bytes_from_wsgi(environ, 'SCRIPT_URL', '') or get_bytes_from_wsgi(environ, 'REDIRECT_URL', '')
+176 
+177     if script_url:
+178         if b'//' in script_url:
+179             # mod_wsgi squashes multiple successive slashes in PATH_INFO,
+180             # do the same with script_url before manipulating paths (#17133).
+181             script_url = _slashes_re.sub(b'/', script_url)
+182         path_info = get_bytes_from_wsgi(environ, 'PATH_INFO', '')
+183         script_name = script_url[:-len(path_info)] if path_info else script_url
+184     else:
+185         script_name = get_bytes_from_wsgi(environ, 'SCRIPT_NAME', '')
+186 
+187     return script_name.decode()
+188 
+189 
+190 def get_bytes_from_wsgi(environ, key, default):
+191     """
+192     Get a value from the WSGI environ dictionary as bytes.
+193 
+194     key and default should be strings.
+195     """
+196     value = environ.get(key, default)
+197     # Non-ASCII values in the WSGI environ are arbitrarily decoded with
+198     # ISO-8859-1. This is wrong for Django websites where UTF-8 is the default.
+199     # Re-encode to recover the original bytestring.
+200     return value.encode('iso-8859-1')
+201 
+202 
+203 def get_str_from_wsgi(environ, key, default):
+204     """
+205     Get a value from the WSGI environ dictionary as str.
+206 
+207     key and default should be str objects.
+208     """
+209     value = get_bytes_from_wsgi(environ, key, default)
+210     return value.decode(errors='replace')
+
+</code><intended_behavior>The logic should correctly identify fully qualified URLs (i.e., starting with 'http://' or 'https://') and avoid prepending `SCRIPT_NAME` or '/' to them. This might involve adding a check to see if `STATIC_URL` starts with a valid scheme before any modifications are applied.</intended_behavior>, <file>django/core/validators.py</file>
+<class>URLValidator</class>
+<method>None</method>
+<code>
+65 class URLValidator(RegexValidator):
+66     ul = '\u00a1-\uffff'  # Unicode letters range (must not be a raw string).
+67 
+68     # IP patterns
+69     ipv4_re = r'(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|[0-1]?\d?\d)){3}'
+70     ipv6_re = r'\[[0-9a-f:.]+\]'  # (simple regex, validated later)
+71 
+72     # Host patterns
+73     hostname_re = r'[a-z' + ul + r'0-9](?:[a-z' + ul + r'0-9-]{0,61}[a-z' + ul + r'0-9])?'
+74     # Max length for domain name labels is 63 characters per RFC 1034 sec. 3.1
+75     domain_re = r'(?:\.(?!-)[a-z' + ul + r'0-9-]{1,63}(?<!-))*'
+76     tld_re = (
+77         r'\.'                                # dot
+78         r'(?!-)'                             # can't start with a dash
+79         r'(?:[a-z' + ul + '-]{2,63}'         # domain label
+80         r'|xn--[a-z0-9]{1,59})'              # or punycode label
+81         r'(?<!-)'                            # can't end with a dash
+82         r'\.?'                               # may have a trailing dot
+83     )
+84     host_re = '(' + hostname_re + domain_re + tld_re + '|localhost)'
+85 
+86     regex = _lazy_re_compile(
+87         r'^(?:[a-z0-9.+-]*)://'  # scheme is validated separately
+88         r'(?:[^\s:@/]+(?::[^\s:@/]*)?@)?'  # user:pass authentication
+89         r'(?:' + ipv4_re + '|' + ipv6_re + '|' + host_re + ')'
+90         r'(?::\d{2,5})?'  # port
+91         r'(?:[/?#][^\s]*)?'  # resource path
+92         r'\Z', re.IGNORECASE)
+93     message = _('Enter a valid URL.')
+94     schemes = ['http', 'https', 'ftp', 'ftps']
+95 
+96     def __init__(self, schemes=None, **kwargs):
+97         super().__init__(**kwargs)
+98         if schemes is not None:
+99             self.schemes = schemes
+100 
+101     def __call__(self, value):
+102         if not isinstance(value, str):
+103             raise ValidationError(self.message, code=self.code, params={'value': value})
+104         # Check if the scheme is valid.
+105         scheme = value.split('://')[0].lower()
+106         if scheme not in self.schemes:
+107             raise ValidationError(self.message, code=self.code, params={'value': value})
+108 
+109         # Then check full URL
+110         try:
+111             super().__call__(value)
+112         except ValidationError as e:
+113             # Trivial case failed. Try for possible IDN domain
+114             if value:
+115                 try:
+116                     scheme, netloc, path, query, fragment = urlsplit(value)
+117                 except ValueError:  # for example, "Invalid IPv6 URL"
+118                     raise ValidationError(self.message, code=self.code, params={'value': value})
+119                 try:
+120                     netloc = punycode(netloc)  # IDN -> ACE
+121                 except UnicodeError:  # invalid domain part
+122                     raise e
+123                 url = urlunsplit((scheme, netloc, path, query, fragment))
+124                 super().__call__(url)
+125             else:
+126                 raise
+127         else:
+128             # Now verify IPv6 in the netloc part
+129             host_match = re.search(r'^\[(.+)\](?::\d{2,5})?$', urlsplit(value).netloc)
+130             if host_match:
+131                 potential_ip = host_match[1]
+132                 try:
+133                     validate_ipv6_address(potential_ip)
+134                 except ValidationError:
+135                     raise ValidationError(self.message, code=self.code, params={'value': value})
+136 
+137         # The maximum length of a full host name is 253 characters per RFC 1034
+138         # section 3.1. It's defined to be 255 bytes or less, but this includes
+139         # one byte for the length of the name and one byte for the trailing dot
+140         # that's used to indicate absolute names in DNS.
+141         if len(urlsplit(value).netloc) > 253:
+142             raise ValidationError(self.message, code=self.code, params={'value': value})
+
+</code><intended_behavior>The URL validation logic within `URLValidator` should be reviewed and potentially updated to ensure that it accommodates a broader range of valid URLs, including those that may be used internally or in development environments (like 'http://minio/static/'). This could involve adjusting the regex patterns or the validation criteria to more accurately recognize valid URLs, preventing them from being incorrectly flagged as invalid.</intended_behavior>]
+2026-01-14 23:45:17.211 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-14 23:45:17.211 | INFO     | Search-only: skipping patch selection
+2026-01-14 23:45:17.350 | INFO     | Task django__django-13824 completed successfully.
+2026-01-14 23:45:17.351 | INFO     | No patch generated. You can try running ACR again.

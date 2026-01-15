@@ -1,0 +1,671 @@
+2026-01-14 16:54:31.645 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-14 16:54:36.381 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1351, output_tokens=12, cost=0.013870
+2026-01-14 16:54:43.725 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1531, output_tokens=298, cost=0.024250
+2026-01-14 16:54:44.821 | INFO     | registered non reproducing test 0
+2026-01-14 16:54:57.694 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2644, output_tokens=517, cost=0.041950
+2026-01-14 16:54:58.762 | INFO     | registered non reproducing test 1
+2026-01-14 16:55:10.403 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2889, output_tokens=515, cost=0.044340
+2026-01-14 16:55:11.497 | INFO     | registered non reproducing test 2
+2026-01-14 16:55:11.497 | WARNING  | Failed to write a reproducer test; skipping reproducer tracing
+2026-01-14 16:55:11.500 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 16:55:18.996 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1617, output_tokens=242, cost=0.023430
+2026-01-14 16:55:19.002 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 16:55:23.200 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=596, output_tokens=64, cost=0.007880
+2026-01-14 16:55:23.202 | DEBUG    | Extracted a valid json.
+2026-01-14 16:55:23.202 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"CalibratedClassifierCV\")",
+        "search_method_in_class(\"predict_proba\", \"CalibratedClassifierCV\")",
+        "search_code(\"proba[:, class_idx] = calibrator.predict(this_pred)\")"
+    ],
+    "bug_locations": []
+}
+2026-01-14 16:55:23.289 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-14 16:55:23.289 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-14 16:55:39.328 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3162, output_tokens=531, cost=0.047550
+2026-01-14 16:55:39.340 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 16:55:47.827 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3909, output_tokens=280, cost=0.047490
+2026-01-14 16:55:47.834 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 16:55:54.424 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=634, output_tokens=224, cost=0.013060
+2026-01-14 16:55:54.425 | DEBUG    | Extracted a valid json.
+2026-01-14 16:55:54.426 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[
+        {
+            "file": "scikit-learn/sklearn/calibration.py",
+            "class": "_CalibratedClassifier",
+            "method": "predict_proba",
+            "intended_behavior": "The method should check if the output from `calibrator.predict(this_pred)` is a pandas DataFrame when the `transform_output=\"pandas\"` configuration is set. If so, it should convert this DataFrame to a numpy array before trying to assign it to `proba[:, class_idx]`. This will ensure that regardless of the output format specified by the global configuration (`set_config(transform_output=\"pandas\")`), the method `predict_proba` will work seamlessly. The conversion could be achieved with a simple conditional check and using the `.values` attribute or the `to_numpy()` method for DataFrames. This change must preserve the method's ability to accurately provide calibrated probabilities in the expected numpy array format, ensuring compatibility with the rest of the scikit-learn ecosystem which may rely on numpy arrays for further computations."
+        }
+    ]
+}
+2026-01-14 16:55:54.433 | DEBUG    | Bug location extracted successfully: [<file>scikit-learn/sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>predict_proba</method>
+<code>
+774     def predict_proba(self, X):
+775         """Calculate calibrated probabilities.
+776 
+777         Calculates classification calibrated probabilities
+778         for each class, in a one-vs-all manner, for `X`.
+779 
+780         Parameters
+781         ----------
+782         X : ndarray of shape (n_samples, n_features)
+783             The sample data.
+784 
+785         Returns
+786         -------
+787         proba : array, shape (n_samples, n_classes)
+788             The predicted probabilities. Can be exact zeros.
+789         """
+790         predictions, _ = _get_response_values(
+791             self.estimator,
+792             X,
+793             response_method=["decision_function", "predict_proba"],
+794         )
+795         if predictions.ndim == 1:
+796             # Reshape binary output from `(n_samples,)` to `(n_samples, 1)`
+797             predictions = predictions.reshape(-1, 1)
+798 
+799         n_classes = self.classes.shape[0]
+800 
+801         proba = np.zeros((_num_samples(X), n_classes))
+802 
+803         if self.method in ("sigmoid", "isotonic"):
+804             label_encoder = LabelEncoder().fit(self.classes)
+805             pos_class_indices = label_encoder.transform(self.estimator.classes_)
+806             for class_idx, this_pred, calibrator in zip(
+807                 pos_class_indices, predictions.T, self.calibrators
+808             ):
+809                 if n_classes == 2:
+810                     # When binary, `predictions` consists only of predictions for
+811                     # clf.classes_[1] but `pos_class_indices` = 0
+812                     class_idx += 1
+813                 proba[:, class_idx] = calibrator.predict(this_pred)
+814             # Normalize the probabilities
+815             if n_classes == 2:
+816                 proba[:, 0] = 1.0 - proba[:, 1]
+817             else:
+818                 denominator = np.sum(proba, axis=1)[:, np.newaxis]
+819                 # In the edge case where for each class calibrator returns a zero
+820                 # probability for a given sample, use the uniform distribution
+821                 # instead.
+822                 uniform_proba = np.full_like(proba, 1 / n_classes)
+823                 proba = np.divide(
+824                     proba, denominator, out=uniform_proba, where=denominator != 0
+825                 )
+826         elif self.method == "temperature":
+827             xp, _ = get_namespace(predictions)
+828             if n_classes == 2 and predictions.shape[-1] == 1:
+829                 response_method_name = _check_response_method(
+830                     self.estimator,
+831                     ["decision_function", "predict_proba"],
+832                 ).__name__
+833                 if response_method_name == "predict_proba":
+834                     predictions = xp.concat([1 - predictions, predictions], axis=1)
+835             proba = self.calibrators[0].predict(predictions)
+836 
+837         # Deal with cases where the predicted probability minimally exceeds 1.0
+838         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+839 
+840         return proba
+
+</code><intended_behavior>The method should check if the output from `calibrator.predict(this_pred)` is a pandas DataFrame when the `transform_output="pandas"` configuration is set. If so, it should convert this DataFrame to a numpy array before trying to assign it to `proba[:, class_idx]`. This will ensure that regardless of the output format specified by the global configuration (`set_config(transform_output="pandas")`), the method `predict_proba` will work seamlessly. The conversion could be achieved with a simple conditional check and using the `.values` attribute or the `to_numpy()` method for DataFrames. This change must preserve the method's ability to accurately provide calibrated probabilities in the expected numpy array format, ensuring compatibility with the rest of the scikit-learn ecosystem which may rely on numpy arrays for further computations.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>predict_proba</method>
+<code>
+732     def predict_proba(self, X):
+733         """Calculate calibrated probabilities.
+734 
+735         Calculates classification calibrated probabilities
+736         for each class, in a one-vs-all manner, for `X`.
+737 
+738         Parameters
+739         ----------
+740         X : ndarray of shape (n_samples, n_features)
+741             The sample data.
+742 
+743         Returns
+744         -------
+745         proba : array, shape (n_samples, n_classes)
+746             The predicted probabilities. Can be exact zeros.
+747         """
+748         n_classes = len(self.classes)
+749         pred_method, method_name = _get_prediction_method(self.estimator)
+750         predictions = _compute_predictions(pred_method, method_name, X, n_classes)
+751 
+752         label_encoder = LabelEncoder().fit(self.classes)
+753         pos_class_indices = label_encoder.transform(self.estimator.classes_)
+754 
+755         proba = np.zeros((_num_samples(X), n_classes))
+756         for class_idx, this_pred, calibrator in zip(
+757             pos_class_indices, predictions.T, self.calibrators
+758         ):
+759             if n_classes == 2:
+760                 # When binary, `predictions` consists only of predictions for
+761                 # clf.classes_[1] but `pos_class_indices` = 0
+762                 class_idx += 1
+763             proba[:, class_idx] = calibrator.predict(this_pred)
+764 
+765         # Normalize the probabilities
+766         if n_classes == 2:
+767             proba[:, 0] = 1.0 - proba[:, 1]
+768         else:
+769             denominator = np.sum(proba, axis=1)[:, np.newaxis]
+770             # In the edge case where for each class calibrator returns a null
+771             # probability for a given sample, use the uniform distribution
+772             # instead.
+773             uniform_proba = np.full_like(proba, 1 / n_classes)
+774             proba = np.divide(
+775                 proba, denominator, out=uniform_proba, where=denominator != 0
+776             )
+777 
+778         # Deal with cases where the predicted probability minimally exceeds 1.0
+779         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+780 
+781         return proba
+
+</code><intended_behavior>The method should check if the output from `calibrator.predict(this_pred)` is a pandas DataFrame when the `transform_output="pandas"` configuration is set. If so, it should convert this DataFrame to a numpy array before trying to assign it to `proba[:, class_idx]`. This will ensure that regardless of the output format specified by the global configuration (`set_config(transform_output="pandas")`), the method `predict_proba` will work seamlessly. The conversion could be achieved with a simple conditional check and using the `.values` attribute or the `to_numpy()` method for DataFrames. This change must preserve the method's ability to accurately provide calibrated probabilities in the expected numpy array format, ensuring compatibility with the rest of the scikit-learn ecosystem which may rely on numpy arrays for further computations.</intended_behavior>, <file>scikit-learn/sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>None</method>
+<code>
+745 class _CalibratedClassifier:
+746     """Pipeline-like chaining a fitted classifier and its fitted calibrators.
+747 
+748     Parameters
+749     ----------
+750     estimator : estimator instance
+751         Fitted classifier.
+752 
+753     calibrators : list of fitted estimator instances
+754         List of fitted calibrators (either 'IsotonicRegression' or
+755         '_SigmoidCalibration'). The number of calibrators equals the number of
+756         classes. However, if there are 2 classes, the list contains only one
+757         fitted calibrator.
+758 
+759     classes : array-like of shape (n_classes,)
+760         All the prediction classes.
+761 
+762     method : {'sigmoid', 'isotonic'}, default='sigmoid'
+763         The method to use for calibration. Can be 'sigmoid' which
+764         corresponds to Platt's method or 'isotonic' which is a
+765         non-parametric approach based on isotonic regression.
+766     """
+767 
+768     def __init__(self, estimator, calibrators, *, classes, method="sigmoid"):
+769         self.estimator = estimator
+770         self.calibrators = calibrators
+771         self.classes = classes
+772         self.method = method
+773 
+774     def predict_proba(self, X):
+775         """Calculate calibrated probabilities.
+776 
+777         Calculates classification calibrated probabilities
+778         for each class, in a one-vs-all manner, for `X`.
+779 
+780         Parameters
+781         ----------
+782         X : ndarray of shape (n_samples, n_features)
+783             The sample data.
+784 
+785         Returns
+786         -------
+787         proba : array, shape (n_samples, n_classes)
+788             The predicted probabilities. Can be exact zeros.
+789         """
+790         predictions, _ = _get_response_values(
+791             self.estimator,
+792             X,
+793             response_method=["decision_function", "predict_proba"],
+794         )
+795         if predictions.ndim == 1:
+796             # Reshape binary output from `(n_samples,)` to `(n_samples, 1)`
+797             predictions = predictions.reshape(-1, 1)
+798 
+799         n_classes = self.classes.shape[0]
+800 
+801         proba = np.zeros((_num_samples(X), n_classes))
+802 
+803         if self.method in ("sigmoid", "isotonic"):
+804             label_encoder = LabelEncoder().fit(self.classes)
+805             pos_class_indices = label_encoder.transform(self.estimator.classes_)
+806             for class_idx, this_pred, calibrator in zip(
+807                 pos_class_indices, predictions.T, self.calibrators
+808             ):
+809                 if n_classes == 2:
+810                     # When binary, `predictions` consists only of predictions for
+811                     # clf.classes_[1] but `pos_class_indices` = 0
+812                     class_idx += 1
+813                 proba[:, class_idx] = calibrator.predict(this_pred)
+814             # Normalize the probabilities
+815             if n_classes == 2:
+816                 proba[:, 0] = 1.0 - proba[:, 1]
+817             else:
+818                 denominator = np.sum(proba, axis=1)[:, np.newaxis]
+819                 # In the edge case where for each class calibrator returns a zero
+820                 # probability for a given sample, use the uniform distribution
+821                 # instead.
+822                 uniform_proba = np.full_like(proba, 1 / n_classes)
+823                 proba = np.divide(
+824                     proba, denominator, out=uniform_proba, where=denominator != 0
+825                 )
+826         elif self.method == "temperature":
+827             xp, _ = get_namespace(predictions)
+828             if n_classes == 2 and predictions.shape[-1] == 1:
+829                 response_method_name = _check_response_method(
+830                     self.estimator,
+831                     ["decision_function", "predict_proba"],
+832                 ).__name__
+833                 if response_method_name == "predict_proba":
+834                     predictions = xp.concat([1 - predictions, predictions], axis=1)
+835             proba = self.calibrators[0].predict(predictions)
+836 
+837         # Deal with cases where the predicted probability minimally exceeds 1.0
+838         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+839 
+840         return proba
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>None</method>
+<code>
+703 class _CalibratedClassifier:
+704     """Pipeline-like chaining a fitted classifier and its fitted calibrators.
+705 
+706     Parameters
+707     ----------
+708     estimator : estimator instance
+709         Fitted classifier.
+710 
+711     calibrators : list of fitted estimator instances
+712         List of fitted calibrators (either 'IsotonicRegression' or
+713         '_SigmoidCalibration'). The number of calibrators equals the number of
+714         classes. However, if there are 2 classes, the list contains only one
+715         fitted calibrator.
+716 
+717     classes : array-like of shape (n_classes,)
+718         All the prediction classes.
+719 
+720     method : {'sigmoid', 'isotonic'}, default='sigmoid'
+721         The method to use for calibration. Can be 'sigmoid' which
+722         corresponds to Platt's method or 'isotonic' which is a
+723         non-parametric approach based on isotonic regression.
+724     """
+725 
+726     def __init__(self, estimator, calibrators, *, classes, method="sigmoid"):
+727         self.estimator = estimator
+728         self.calibrators = calibrators
+729         self.classes = classes
+730         self.method = method
+731 
+732     def predict_proba(self, X):
+733         """Calculate calibrated probabilities.
+734 
+735         Calculates classification calibrated probabilities
+736         for each class, in a one-vs-all manner, for `X`.
+737 
+738         Parameters
+739         ----------
+740         X : ndarray of shape (n_samples, n_features)
+741             The sample data.
+742 
+743         Returns
+744         -------
+745         proba : array, shape (n_samples, n_classes)
+746             The predicted probabilities. Can be exact zeros.
+747         """
+748         n_classes = len(self.classes)
+749         pred_method, method_name = _get_prediction_method(self.estimator)
+750         predictions = _compute_predictions(pred_method, method_name, X, n_classes)
+751 
+752         label_encoder = LabelEncoder().fit(self.classes)
+753         pos_class_indices = label_encoder.transform(self.estimator.classes_)
+754 
+755         proba = np.zeros((_num_samples(X), n_classes))
+756         for class_idx, this_pred, calibrator in zip(
+757             pos_class_indices, predictions.T, self.calibrators
+758         ):
+759             if n_classes == 2:
+760                 # When binary, `predictions` consists only of predictions for
+761                 # clf.classes_[1] but `pos_class_indices` = 0
+762                 class_idx += 1
+763             proba[:, class_idx] = calibrator.predict(this_pred)
+764 
+765         # Normalize the probabilities
+766         if n_classes == 2:
+767             proba[:, 0] = 1.0 - proba[:, 1]
+768         else:
+769             denominator = np.sum(proba, axis=1)[:, np.newaxis]
+770             # In the edge case where for each class calibrator returns a null
+771             # probability for a given sample, use the uniform distribution
+772             # instead.
+773             uniform_proba = np.full_like(proba, 1 / n_classes)
+774             proba = np.divide(
+775                 proba, denominator, out=uniform_proba, where=denominator != 0
+776             )
+777 
+778         # Deal with cases where the predicted probability minimally exceeds 1.0
+779         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+780 
+781         return proba
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-14 16:55:54.434 | INFO     | Search completed. Bug locations: [<file>scikit-learn/sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>predict_proba</method>
+<code>
+774     def predict_proba(self, X):
+775         """Calculate calibrated probabilities.
+776 
+777         Calculates classification calibrated probabilities
+778         for each class, in a one-vs-all manner, for `X`.
+779 
+780         Parameters
+781         ----------
+782         X : ndarray of shape (n_samples, n_features)
+783             The sample data.
+784 
+785         Returns
+786         -------
+787         proba : array, shape (n_samples, n_classes)
+788             The predicted probabilities. Can be exact zeros.
+789         """
+790         predictions, _ = _get_response_values(
+791             self.estimator,
+792             X,
+793             response_method=["decision_function", "predict_proba"],
+794         )
+795         if predictions.ndim == 1:
+796             # Reshape binary output from `(n_samples,)` to `(n_samples, 1)`
+797             predictions = predictions.reshape(-1, 1)
+798 
+799         n_classes = self.classes.shape[0]
+800 
+801         proba = np.zeros((_num_samples(X), n_classes))
+802 
+803         if self.method in ("sigmoid", "isotonic"):
+804             label_encoder = LabelEncoder().fit(self.classes)
+805             pos_class_indices = label_encoder.transform(self.estimator.classes_)
+806             for class_idx, this_pred, calibrator in zip(
+807                 pos_class_indices, predictions.T, self.calibrators
+808             ):
+809                 if n_classes == 2:
+810                     # When binary, `predictions` consists only of predictions for
+811                     # clf.classes_[1] but `pos_class_indices` = 0
+812                     class_idx += 1
+813                 proba[:, class_idx] = calibrator.predict(this_pred)
+814             # Normalize the probabilities
+815             if n_classes == 2:
+816                 proba[:, 0] = 1.0 - proba[:, 1]
+817             else:
+818                 denominator = np.sum(proba, axis=1)[:, np.newaxis]
+819                 # In the edge case where for each class calibrator returns a zero
+820                 # probability for a given sample, use the uniform distribution
+821                 # instead.
+822                 uniform_proba = np.full_like(proba, 1 / n_classes)
+823                 proba = np.divide(
+824                     proba, denominator, out=uniform_proba, where=denominator != 0
+825                 )
+826         elif self.method == "temperature":
+827             xp, _ = get_namespace(predictions)
+828             if n_classes == 2 and predictions.shape[-1] == 1:
+829                 response_method_name = _check_response_method(
+830                     self.estimator,
+831                     ["decision_function", "predict_proba"],
+832                 ).__name__
+833                 if response_method_name == "predict_proba":
+834                     predictions = xp.concat([1 - predictions, predictions], axis=1)
+835             proba = self.calibrators[0].predict(predictions)
+836 
+837         # Deal with cases where the predicted probability minimally exceeds 1.0
+838         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+839 
+840         return proba
+
+</code><intended_behavior>The method should check if the output from `calibrator.predict(this_pred)` is a pandas DataFrame when the `transform_output="pandas"` configuration is set. If so, it should convert this DataFrame to a numpy array before trying to assign it to `proba[:, class_idx]`. This will ensure that regardless of the output format specified by the global configuration (`set_config(transform_output="pandas")`), the method `predict_proba` will work seamlessly. The conversion could be achieved with a simple conditional check and using the `.values` attribute or the `to_numpy()` method for DataFrames. This change must preserve the method's ability to accurately provide calibrated probabilities in the expected numpy array format, ensuring compatibility with the rest of the scikit-learn ecosystem which may rely on numpy arrays for further computations.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>predict_proba</method>
+<code>
+732     def predict_proba(self, X):
+733         """Calculate calibrated probabilities.
+734 
+735         Calculates classification calibrated probabilities
+736         for each class, in a one-vs-all manner, for `X`.
+737 
+738         Parameters
+739         ----------
+740         X : ndarray of shape (n_samples, n_features)
+741             The sample data.
+742 
+743         Returns
+744         -------
+745         proba : array, shape (n_samples, n_classes)
+746             The predicted probabilities. Can be exact zeros.
+747         """
+748         n_classes = len(self.classes)
+749         pred_method, method_name = _get_prediction_method(self.estimator)
+750         predictions = _compute_predictions(pred_method, method_name, X, n_classes)
+751 
+752         label_encoder = LabelEncoder().fit(self.classes)
+753         pos_class_indices = label_encoder.transform(self.estimator.classes_)
+754 
+755         proba = np.zeros((_num_samples(X), n_classes))
+756         for class_idx, this_pred, calibrator in zip(
+757             pos_class_indices, predictions.T, self.calibrators
+758         ):
+759             if n_classes == 2:
+760                 # When binary, `predictions` consists only of predictions for
+761                 # clf.classes_[1] but `pos_class_indices` = 0
+762                 class_idx += 1
+763             proba[:, class_idx] = calibrator.predict(this_pred)
+764 
+765         # Normalize the probabilities
+766         if n_classes == 2:
+767             proba[:, 0] = 1.0 - proba[:, 1]
+768         else:
+769             denominator = np.sum(proba, axis=1)[:, np.newaxis]
+770             # In the edge case where for each class calibrator returns a null
+771             # probability for a given sample, use the uniform distribution
+772             # instead.
+773             uniform_proba = np.full_like(proba, 1 / n_classes)
+774             proba = np.divide(
+775                 proba, denominator, out=uniform_proba, where=denominator != 0
+776             )
+777 
+778         # Deal with cases where the predicted probability minimally exceeds 1.0
+779         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+780 
+781         return proba
+
+</code><intended_behavior>The method should check if the output from `calibrator.predict(this_pred)` is a pandas DataFrame when the `transform_output="pandas"` configuration is set. If so, it should convert this DataFrame to a numpy array before trying to assign it to `proba[:, class_idx]`. This will ensure that regardless of the output format specified by the global configuration (`set_config(transform_output="pandas")`), the method `predict_proba` will work seamlessly. The conversion could be achieved with a simple conditional check and using the `.values` attribute or the `to_numpy()` method for DataFrames. This change must preserve the method's ability to accurately provide calibrated probabilities in the expected numpy array format, ensuring compatibility with the rest of the scikit-learn ecosystem which may rely on numpy arrays for further computations.</intended_behavior>, <file>scikit-learn/sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>None</method>
+<code>
+745 class _CalibratedClassifier:
+746     """Pipeline-like chaining a fitted classifier and its fitted calibrators.
+747 
+748     Parameters
+749     ----------
+750     estimator : estimator instance
+751         Fitted classifier.
+752 
+753     calibrators : list of fitted estimator instances
+754         List of fitted calibrators (either 'IsotonicRegression' or
+755         '_SigmoidCalibration'). The number of calibrators equals the number of
+756         classes. However, if there are 2 classes, the list contains only one
+757         fitted calibrator.
+758 
+759     classes : array-like of shape (n_classes,)
+760         All the prediction classes.
+761 
+762     method : {'sigmoid', 'isotonic'}, default='sigmoid'
+763         The method to use for calibration. Can be 'sigmoid' which
+764         corresponds to Platt's method or 'isotonic' which is a
+765         non-parametric approach based on isotonic regression.
+766     """
+767 
+768     def __init__(self, estimator, calibrators, *, classes, method="sigmoid"):
+769         self.estimator = estimator
+770         self.calibrators = calibrators
+771         self.classes = classes
+772         self.method = method
+773 
+774     def predict_proba(self, X):
+775         """Calculate calibrated probabilities.
+776 
+777         Calculates classification calibrated probabilities
+778         for each class, in a one-vs-all manner, for `X`.
+779 
+780         Parameters
+781         ----------
+782         X : ndarray of shape (n_samples, n_features)
+783             The sample data.
+784 
+785         Returns
+786         -------
+787         proba : array, shape (n_samples, n_classes)
+788             The predicted probabilities. Can be exact zeros.
+789         """
+790         predictions, _ = _get_response_values(
+791             self.estimator,
+792             X,
+793             response_method=["decision_function", "predict_proba"],
+794         )
+795         if predictions.ndim == 1:
+796             # Reshape binary output from `(n_samples,)` to `(n_samples, 1)`
+797             predictions = predictions.reshape(-1, 1)
+798 
+799         n_classes = self.classes.shape[0]
+800 
+801         proba = np.zeros((_num_samples(X), n_classes))
+802 
+803         if self.method in ("sigmoid", "isotonic"):
+804             label_encoder = LabelEncoder().fit(self.classes)
+805             pos_class_indices = label_encoder.transform(self.estimator.classes_)
+806             for class_idx, this_pred, calibrator in zip(
+807                 pos_class_indices, predictions.T, self.calibrators
+808             ):
+809                 if n_classes == 2:
+810                     # When binary, `predictions` consists only of predictions for
+811                     # clf.classes_[1] but `pos_class_indices` = 0
+812                     class_idx += 1
+813                 proba[:, class_idx] = calibrator.predict(this_pred)
+814             # Normalize the probabilities
+815             if n_classes == 2:
+816                 proba[:, 0] = 1.0 - proba[:, 1]
+817             else:
+818                 denominator = np.sum(proba, axis=1)[:, np.newaxis]
+819                 # In the edge case where for each class calibrator returns a zero
+820                 # probability for a given sample, use the uniform distribution
+821                 # instead.
+822                 uniform_proba = np.full_like(proba, 1 / n_classes)
+823                 proba = np.divide(
+824                     proba, denominator, out=uniform_proba, where=denominator != 0
+825                 )
+826         elif self.method == "temperature":
+827             xp, _ = get_namespace(predictions)
+828             if n_classes == 2 and predictions.shape[-1] == 1:
+829                 response_method_name = _check_response_method(
+830                     self.estimator,
+831                     ["decision_function", "predict_proba"],
+832                 ).__name__
+833                 if response_method_name == "predict_proba":
+834                     predictions = xp.concat([1 - predictions, predictions], axis=1)
+835             proba = self.calibrators[0].predict(predictions)
+836 
+837         # Deal with cases where the predicted probability minimally exceeds 1.0
+838         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+839 
+840         return proba
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>sklearn/calibration.py</file>
+<class>_CalibratedClassifier</class>
+<method>None</method>
+<code>
+703 class _CalibratedClassifier:
+704     """Pipeline-like chaining a fitted classifier and its fitted calibrators.
+705 
+706     Parameters
+707     ----------
+708     estimator : estimator instance
+709         Fitted classifier.
+710 
+711     calibrators : list of fitted estimator instances
+712         List of fitted calibrators (either 'IsotonicRegression' or
+713         '_SigmoidCalibration'). The number of calibrators equals the number of
+714         classes. However, if there are 2 classes, the list contains only one
+715         fitted calibrator.
+716 
+717     classes : array-like of shape (n_classes,)
+718         All the prediction classes.
+719 
+720     method : {'sigmoid', 'isotonic'}, default='sigmoid'
+721         The method to use for calibration. Can be 'sigmoid' which
+722         corresponds to Platt's method or 'isotonic' which is a
+723         non-parametric approach based on isotonic regression.
+724     """
+725 
+726     def __init__(self, estimator, calibrators, *, classes, method="sigmoid"):
+727         self.estimator = estimator
+728         self.calibrators = calibrators
+729         self.classes = classes
+730         self.method = method
+731 
+732     def predict_proba(self, X):
+733         """Calculate calibrated probabilities.
+734 
+735         Calculates classification calibrated probabilities
+736         for each class, in a one-vs-all manner, for `X`.
+737 
+738         Parameters
+739         ----------
+740         X : ndarray of shape (n_samples, n_features)
+741             The sample data.
+742 
+743         Returns
+744         -------
+745         proba : array, shape (n_samples, n_classes)
+746             The predicted probabilities. Can be exact zeros.
+747         """
+748         n_classes = len(self.classes)
+749         pred_method, method_name = _get_prediction_method(self.estimator)
+750         predictions = _compute_predictions(pred_method, method_name, X, n_classes)
+751 
+752         label_encoder = LabelEncoder().fit(self.classes)
+753         pos_class_indices = label_encoder.transform(self.estimator.classes_)
+754 
+755         proba = np.zeros((_num_samples(X), n_classes))
+756         for class_idx, this_pred, calibrator in zip(
+757             pos_class_indices, predictions.T, self.calibrators
+758         ):
+759             if n_classes == 2:
+760                 # When binary, `predictions` consists only of predictions for
+761                 # clf.classes_[1] but `pos_class_indices` = 0
+762                 class_idx += 1
+763             proba[:, class_idx] = calibrator.predict(this_pred)
+764 
+765         # Normalize the probabilities
+766         if n_classes == 2:
+767             proba[:, 0] = 1.0 - proba[:, 1]
+768         else:
+769             denominator = np.sum(proba, axis=1)[:, np.newaxis]
+770             # In the edge case where for each class calibrator returns a null
+771             # probability for a given sample, use the uniform distribution
+772             # instead.
+773             uniform_proba = np.full_like(proba, 1 / n_classes)
+774             proba = np.divide(
+775                 proba, denominator, out=uniform_proba, where=denominator != 0
+776             )
+777 
+778         # Deal with cases where the predicted probability minimally exceeds 1.0
+779         proba[(1.0 < proba) & (proba <= 1.0 + 1e-5)] = 1.0
+780 
+781         return proba
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-14 16:55:54.434 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-14 16:55:54.434 | INFO     | Search-only: skipping patch selection
+2026-01-14 16:55:54.570 | INFO     | Task scikit-learn__scikit-learn-25500 completed successfully.
+2026-01-14 16:55:54.571 | INFO     | No patch generated. You can try running ACR again.

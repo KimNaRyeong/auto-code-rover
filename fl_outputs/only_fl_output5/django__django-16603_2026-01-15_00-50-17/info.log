@@ -1,0 +1,767 @@
+2026-01-15 00:50:18.013 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:50:21.274 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=749, output_tokens=12, cost=0.007850
+2026-01-15 00:50:38.705 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=929, output_tokens=710, cost=0.030590
+2026-01-15 00:50:40.099 | INFO     | registered non reproducing test 0
+2026-01-15 00:50:57.362 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1993, output_tokens=821, cost=0.044560
+2026-01-15 00:50:58.582 | INFO     | registered non reproducing test 1
+2026-01-15 00:51:15.107 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2374, output_tokens=704, cost=0.044860
+2026-01-15 00:51:16.385 | INFO     | registered non reproducing test 2
+2026-01-15 00:51:16.385 | WARNING  | Failed to write a reproducer test; skipping reproducer tracing
+2026-01-15 00:51:16.388 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:51:22.476 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1024, output_tokens=268, cost=0.018280
+2026-01-15 00:51:22.482 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:51:24.986 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=622, output_tokens=57, cost=0.007930
+2026-01-15 00:51:24.987 | DEBUG    | Extracted a valid json.
+2026-01-15 00:51:24.987 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method_in_file(\"read_body\", \"django/core/handlers/asgi.py\")",
+        "search_class(\"ASGITest\")",
+        "search_method(\"await_many_dispatch\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 00:51:24.992 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:51:24.992 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:51:39.873 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1480, output_tokens=622, cost=0.033460
+2026-01-15 00:51:39.887 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:51:48.288 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2318, output_tokens=370, cost=0.034280
+2026-01-15 00:51:48.296 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:51:53.621 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=724, output_tokens=212, cost=0.013600
+2026-01-15 00:51:53.621 | DEBUG    | Extracted a valid json.
+2026-01-15 00:51:53.621 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/core/handlers/asgi.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Efficiently recognize and process `http.disconnect` messages at any point during the request lifecycle, not just when reading the body. This is crucial for handling scenarios where clients disconnect prematurely during long-polling or similar long-held request operations. Upon receiving a `http.disconnect` message, the server should cleanly terminate the request handling process without proceeding with further processing or attempting to send a response, as the client has already disconnected. This handling should be implemented in a way that does not interfere with the existing functionality of the code, preserving the normal flow of request processing and response generation when `http.disconnect` messages are not received. Additionally, this behavior implies that error handling and resource cleanup mechanisms must be in place to deal with scenarios of client disconnection effectively, preventing resource leaks or hanging operations within the server."
+        }
+    ]
+}
+2026-01-15 00:51:53.625 | DEBUG    | Bug location extracted successfully: [<file>django/core/handlers/asgi.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import asyncio
+2 import logging
+3 import sys
+4 import tempfile
+5 import traceback
+6 from contextlib import aclosing
+7 
+8 from asgiref.sync import ThreadSensitiveContext, sync_to_async
+9 
+10 from django.conf import settings
+11 from django.core import signals
+12 from django.core.exceptions import RequestAborted, RequestDataTooBig
+13 from django.core.handlers import base
+14 from django.http import (
+15     FileResponse,
+16     HttpRequest,
+17     HttpResponse,
+18     HttpResponseBadRequest,
+19     HttpResponseServerError,
+20     QueryDict,
+21     parse_cookie,
+22 )
+23 from django.urls import set_script_prefix
+24 from django.utils.functional import cached_property
+25 
+26 logger = logging.getLogger("django.request")
+27 
+28 
+29 def get_script_prefix(scope):
+30     """
+31     Return the script prefix to use from either the scope or a setting.
+32     """
+33     if settings.FORCE_SCRIPT_NAME:
+34         return settings.FORCE_SCRIPT_NAME
+35     return scope.get("root_path", "") or ""
+36 
+37 
+38 class ASGIRequest(HttpRequest):
+39     """
+40     Custom request subclass that decodes from an ASGI-standard request dict
+41     and wraps request body handling.
+42     """
+43 
+44     # Number of seconds until a Request gives up on trying to read a request
+45     # body and aborts.
+46     body_receive_timeout = 60
+47 
+48     def __init__(self, scope, body_file):
+49         self.scope = scope
+50         self._post_parse_error = False
+51         self._read_started = False
+52         self.resolver_match = None
+53         self.script_name = get_script_prefix(scope)
+54         if self.script_name:
+55             # TODO: Better is-prefix checking, slash handling?
+56             self.path_info = scope["path"].removeprefix(self.script_name)
+57         else:
+58             self.path_info = scope["path"]
+59         # The Django path is different from ASGI scope path args, it should
+60         # combine with script name.
+61         if self.script_name:
+62             self.path = "%s/%s" % (
+63                 self.script_name.rstrip("/"),
+64                 self.path_info.replace("/", "", 1),
+65             )
+66         else:
+67             self.path = scope["path"]
+68         # HTTP basics.
+69         self.method = self.scope["method"].upper()
+70         # Ensure query string is encoded correctly.
+71         query_string = self.scope.get("query_string", "")
+72         if isinstance(query_string, bytes):
+73             query_string = query_string.decode()
+74         self.META = {
+75             "REQUEST_METHOD": self.method,
+76             "QUERY_STRING": query_string,
+77             "SCRIPT_NAME": self.script_name,
+78             "PATH_INFO": self.path_info,
+79             # WSGI-expecting code will need these for a while
+80             "wsgi.multithread": True,
+81             "wsgi.multiprocess": True,
+82         }
+83         if self.scope.get("client"):
+84             self.META["REMOTE_ADDR"] = self.scope["client"][0]
+85             self.META["REMOTE_HOST"] = self.META["REMOTE_ADDR"]
+86             self.META["REMOTE_PORT"] = self.scope["client"][1]
+87         if self.scope.get("server"):
+88             self.META["SERVER_NAME"] = self.scope["server"][0]
+89             self.META["SERVER_PORT"] = str(self.scope["server"][1])
+90         else:
+91             self.META["SERVER_NAME"] = "unknown"
+92             self.META["SERVER_PORT"] = "0"
+93         # Headers go into META.
+94         for name, value in self.scope.get("headers", []):
+95             name = name.decode("latin1")
+96             if name == "content-length":
+97                 corrected_name = "CONTENT_LENGTH"
+98             elif name == "content-type":
+99                 corrected_name = "CONTENT_TYPE"
+100             else:
+101                 corrected_name = "HTTP_%s" % name.upper().replace("-", "_")
+102             # HTTP/2 say only ASCII chars are allowed in headers, but decode
+103             # latin1 just in case.
+104             value = value.decode("latin1")
+105             if corrected_name in self.META:
+106                 value = self.META[corrected_name] + "," + value
+107             self.META[corrected_name] = value
+108         # Pull out request encoding, if provided.
+109         self._set_content_type_params(self.META)
+110         # Directly assign the body file to be our stream.
+111         self._stream = body_file
+112         # Other bits.
+113         self.resolver_match = None
+114 
+115     @cached_property
+116     def GET(self):
+117         return QueryDict(self.META["QUERY_STRING"])
+118 
+119     def _get_scheme(self):
+120         return self.scope.get("scheme") or super()._get_scheme()
+121 
+122     def _get_post(self):
+123         if not hasattr(self, "_post"):
+124             self._load_post_and_files()
+125         return self._post
+126 
+127     def _set_post(self, post):
+128         self._post = post
+129 
+130     def _get_files(self):
+131         if not hasattr(self, "_files"):
+132             self._load_post_and_files()
+133         return self._files
+134 
+135     POST = property(_get_post, _set_post)
+136     FILES = property(_get_files)
+137 
+138     @cached_property
+139     def COOKIES(self):
+140         return parse_cookie(self.META.get("HTTP_COOKIE", ""))
+141 
+142     def close(self):
+143         super().close()
+144         self._stream.close()
+145 
+146 
+147 class ASGIHandler(base.BaseHandler):
+148     """Handler for ASGI requests."""
+149 
+150     request_class = ASGIRequest
+151     # Size to chunk response bodies into for multiple response messages.
+152     chunk_size = 2**16
+153 
+154     def __init__(self):
+155         super().__init__()
+156         self.load_middleware(is_async=True)
+157 
+158     async def __call__(self, scope, receive, send):
+159         """
+160         Async entrypoint - parses the request and hands off to get_response.
+161         """
+162         # Serve only HTTP connections.
+163         # FIXME: Allow to override this.
+164         if scope["type"] != "http":
+165             raise ValueError(
+166                 "Django can only handle ASGI/HTTP connections, not %s." % scope["type"]
+167             )
+168 
+169         async with ThreadSensitiveContext():
+170             await self.handle(scope, receive, send)
+171 
+172     async def handle(self, scope, receive, send):
+173         """
+174         Handles the ASGI request. Called via the __call__ method.
+175         """
+176         # Receive the HTTP request body as a stream object.
+177         try:
+178             body_file = await self.read_body(receive)
+179         except RequestAborted:
+180             return
+181         # Request is complete and can be served.
+182         set_script_prefix(get_script_prefix(scope))
+183         await signals.request_started.asend(sender=self.__class__, scope=scope)
+184         # Get the request and check for basic issues.
+185         request, error_response = self.create_request(scope, body_file)
+186         if request is None:
+187             body_file.close()
+188             await self.send_response(error_response, send)
+189             return
+190         # Try to catch a disconnect while getting response.
+191         tasks = [
+192             asyncio.create_task(self.run_get_response(request)),
+193             asyncio.create_task(self.listen_for_disconnect(receive)),
+194         ]
+195         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+196         done, pending = done.pop(), pending.pop()
+197         # Allow views to handle cancellation.
+198         pending.cancel()
+199         try:
+200             await pending
+201         except asyncio.CancelledError:
+202             # Task re-raised the CancelledError as expected.
+203             pass
+204         try:
+205             response = done.result()
+206         except RequestAborted:
+207             body_file.close()
+208             return
+209         except AssertionError:
+210             body_file.close()
+211             raise
+212         # Send the response.
+213         await self.send_response(response, send)
+214 
+215     async def listen_for_disconnect(self, receive):
+216         """Listen for disconnect from the client."""
+217         message = await receive()
+218         if message["type"] == "http.disconnect":
+219             raise RequestAborted()
+220         # This should never happen.
+221         assert False, "Invalid ASGI message after request body: %s" % message["type"]
+222 
+223     async def run_get_response(self, request):
+224         """Get async response."""
+225         # Use the async mode of BaseHandler.
+226         response = await self.get_response_async(request)
+227         response._handler_class = self.__class__
+228         # Increase chunk size on file responses (ASGI servers handles low-level
+229         # chunking).
+230         if isinstance(response, FileResponse):
+231             response.block_size = self.chunk_size
+232         return response
+233 
+234     async def read_body(self, receive):
+235         """Reads an HTTP body from an ASGI connection."""
+236         # Use the tempfile that auto rolls-over to a disk file as it fills up.
+237         body_file = tempfile.SpooledTemporaryFile(
+238             max_size=settings.FILE_UPLOAD_MAX_MEMORY_SIZE, mode="w+b"
+239         )
+240         while True:
+241             message = await receive()
+242             if message["type"] == "http.disconnect":
+243                 body_file.close()
+244                 # Early client disconnect.
+245                 raise RequestAborted()
+246             # Add a body chunk from the message, if provided.
+247             if "body" in message:
+248                 body_file.write(message["body"])
+249             # Quit out if that's the end.
+250             if not message.get("more_body", False):
+251                 break
+252         body_file.seek(0)
+253         return body_file
+254 
+255     def create_request(self, scope, body_file):
+256         """
+257         Create the Request object and returns either (request, None) or
+258         (None, response) if there is an error response.
+259         """
+260         try:
+261             return self.request_class(scope, body_file), None
+262         except UnicodeDecodeError:
+263             logger.warning(
+264                 "Bad Request (UnicodeDecodeError)",
+265                 exc_info=sys.exc_info(),
+266                 extra={"status_code": 400},
+267             )
+268             return None, HttpResponseBadRequest()
+269         except RequestDataTooBig:
+270             return None, HttpResponse("413 Payload too large", status=413)
+271 
+272     def handle_uncaught_exception(self, request, resolver, exc_info):
+273         """Last-chance handler for exceptions."""
+274         # There's no WSGI server to catch the exception further up
+275         # if this fails, so translate it into a plain text response.
+276         try:
+277             return super().handle_uncaught_exception(request, resolver, exc_info)
+278         except Exception:
+279             return HttpResponseServerError(
+280                 traceback.format_exc() if settings.DEBUG else "Internal Server Error",
+281                 content_type="text/plain",
+282             )
+283 
+284     async def send_response(self, response, send):
+285         """Encode and send a response out over ASGI."""
+286         # Collect cookies into headers. Have to preserve header case as there
+287         # are some non-RFC compliant clients that require e.g. Content-Type.
+288         response_headers = []
+289         for header, value in response.items():
+290             if isinstance(header, str):
+291                 header = header.encode("ascii")
+292             if isinstance(value, str):
+293                 value = value.encode("latin1")
+294             response_headers.append((bytes(header), bytes(value)))
+295         for c in response.cookies.values():
+296             response_headers.append(
+297                 (b"Set-Cookie", c.output(header="").encode("ascii").strip())
+298             )
+299         # Initial response message.
+300         await send(
+301             {
+302                 "type": "http.response.start",
+303                 "status": response.status_code,
+304                 "headers": response_headers,
+305             }
+306         )
+307         # Streaming responses need to be pinned to their iterator.
+308         if response.streaming:
+309             # - Consume via `__aiter__` and not `streaming_content` directly, to
+310             #   allow mapping of a sync iterator.
+311             # - Use aclosing() when consuming aiter.
+312             #   See https://github.com/python/cpython/commit/6e8dcda
+313             async with aclosing(aiter(response)) as content:
+314                 async for part in content:
+315                     for chunk, _ in self.chunk_bytes(part):
+316                         await send(
+317                             {
+318                                 "type": "http.response.body",
+319                                 "body": chunk,
+320                                 # Ignore "more" as there may be more parts; instead,
+321                                 # use an empty final closing message with False.
+322                                 "more_body": True,
+323                             }
+324                         )
+325             # Final closing message.
+326             await send({"type": "http.response.body"})
+327         # Other responses just need chunking.
+328         else:
+329             # Yield chunks of response.
+330             for chunk, last in self.chunk_bytes(response.content):
+331                 await send(
+332                     {
+333                         "type": "http.response.body",
+334                         "body": chunk,
+335                         "more_body": not last,
+336                     }
+337                 )
+338         await sync_to_async(response.close, thread_sensitive=True)()
+339 
+340     @classmethod
+341     def chunk_bytes(cls, data):
+342         """
+343         Chunks some data up so it can be sent in reasonable size messages.
+344         Yields (chunk, last_chunk) tuples.
+345         """
+346         position = 0
+347         if not data:
+348             yield data, True
+349             return
+350         while position < len(data):
+351             yield (
+352                 data[position : position + cls.chunk_size],
+353                 (position + cls.chunk_size) >= len(data),
+354             )
+355             position += cls.chunk_size
+
+</code><intended_behavior>Efficiently recognize and process `http.disconnect` messages at any point during the request lifecycle, not just when reading the body. This is crucial for handling scenarios where clients disconnect prematurely during long-polling or similar long-held request operations. Upon receiving a `http.disconnect` message, the server should cleanly terminate the request handling process without proceeding with further processing or attempting to send a response, as the client has already disconnected. This handling should be implemented in a way that does not interfere with the existing functionality of the code, preserving the normal flow of request processing and response generation when `http.disconnect` messages are not received. Additionally, this behavior implies that error handling and resource cleanup mechanisms must be in place to deal with scenarios of client disconnection effectively, preventing resource leaks or hanging operations within the server.</intended_behavior>]
+2026-01-15 00:51:53.625 | INFO     | Search completed. Bug locations: [<file>django/core/handlers/asgi.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import asyncio
+2 import logging
+3 import sys
+4 import tempfile
+5 import traceback
+6 from contextlib import aclosing
+7 
+8 from asgiref.sync import ThreadSensitiveContext, sync_to_async
+9 
+10 from django.conf import settings
+11 from django.core import signals
+12 from django.core.exceptions import RequestAborted, RequestDataTooBig
+13 from django.core.handlers import base
+14 from django.http import (
+15     FileResponse,
+16     HttpRequest,
+17     HttpResponse,
+18     HttpResponseBadRequest,
+19     HttpResponseServerError,
+20     QueryDict,
+21     parse_cookie,
+22 )
+23 from django.urls import set_script_prefix
+24 from django.utils.functional import cached_property
+25 
+26 logger = logging.getLogger("django.request")
+27 
+28 
+29 def get_script_prefix(scope):
+30     """
+31     Return the script prefix to use from either the scope or a setting.
+32     """
+33     if settings.FORCE_SCRIPT_NAME:
+34         return settings.FORCE_SCRIPT_NAME
+35     return scope.get("root_path", "") or ""
+36 
+37 
+38 class ASGIRequest(HttpRequest):
+39     """
+40     Custom request subclass that decodes from an ASGI-standard request dict
+41     and wraps request body handling.
+42     """
+43 
+44     # Number of seconds until a Request gives up on trying to read a request
+45     # body and aborts.
+46     body_receive_timeout = 60
+47 
+48     def __init__(self, scope, body_file):
+49         self.scope = scope
+50         self._post_parse_error = False
+51         self._read_started = False
+52         self.resolver_match = None
+53         self.script_name = get_script_prefix(scope)
+54         if self.script_name:
+55             # TODO: Better is-prefix checking, slash handling?
+56             self.path_info = scope["path"].removeprefix(self.script_name)
+57         else:
+58             self.path_info = scope["path"]
+59         # The Django path is different from ASGI scope path args, it should
+60         # combine with script name.
+61         if self.script_name:
+62             self.path = "%s/%s" % (
+63                 self.script_name.rstrip("/"),
+64                 self.path_info.replace("/", "", 1),
+65             )
+66         else:
+67             self.path = scope["path"]
+68         # HTTP basics.
+69         self.method = self.scope["method"].upper()
+70         # Ensure query string is encoded correctly.
+71         query_string = self.scope.get("query_string", "")
+72         if isinstance(query_string, bytes):
+73             query_string = query_string.decode()
+74         self.META = {
+75             "REQUEST_METHOD": self.method,
+76             "QUERY_STRING": query_string,
+77             "SCRIPT_NAME": self.script_name,
+78             "PATH_INFO": self.path_info,
+79             # WSGI-expecting code will need these for a while
+80             "wsgi.multithread": True,
+81             "wsgi.multiprocess": True,
+82         }
+83         if self.scope.get("client"):
+84             self.META["REMOTE_ADDR"] = self.scope["client"][0]
+85             self.META["REMOTE_HOST"] = self.META["REMOTE_ADDR"]
+86             self.META["REMOTE_PORT"] = self.scope["client"][1]
+87         if self.scope.get("server"):
+88             self.META["SERVER_NAME"] = self.scope["server"][0]
+89             self.META["SERVER_PORT"] = str(self.scope["server"][1])
+90         else:
+91             self.META["SERVER_NAME"] = "unknown"
+92             self.META["SERVER_PORT"] = "0"
+93         # Headers go into META.
+94         for name, value in self.scope.get("headers", []):
+95             name = name.decode("latin1")
+96             if name == "content-length":
+97                 corrected_name = "CONTENT_LENGTH"
+98             elif name == "content-type":
+99                 corrected_name = "CONTENT_TYPE"
+100             else:
+101                 corrected_name = "HTTP_%s" % name.upper().replace("-", "_")
+102             # HTTP/2 say only ASCII chars are allowed in headers, but decode
+103             # latin1 just in case.
+104             value = value.decode("latin1")
+105             if corrected_name in self.META:
+106                 value = self.META[corrected_name] + "," + value
+107             self.META[corrected_name] = value
+108         # Pull out request encoding, if provided.
+109         self._set_content_type_params(self.META)
+110         # Directly assign the body file to be our stream.
+111         self._stream = body_file
+112         # Other bits.
+113         self.resolver_match = None
+114 
+115     @cached_property
+116     def GET(self):
+117         return QueryDict(self.META["QUERY_STRING"])
+118 
+119     def _get_scheme(self):
+120         return self.scope.get("scheme") or super()._get_scheme()
+121 
+122     def _get_post(self):
+123         if not hasattr(self, "_post"):
+124             self._load_post_and_files()
+125         return self._post
+126 
+127     def _set_post(self, post):
+128         self._post = post
+129 
+130     def _get_files(self):
+131         if not hasattr(self, "_files"):
+132             self._load_post_and_files()
+133         return self._files
+134 
+135     POST = property(_get_post, _set_post)
+136     FILES = property(_get_files)
+137 
+138     @cached_property
+139     def COOKIES(self):
+140         return parse_cookie(self.META.get("HTTP_COOKIE", ""))
+141 
+142     def close(self):
+143         super().close()
+144         self._stream.close()
+145 
+146 
+147 class ASGIHandler(base.BaseHandler):
+148     """Handler for ASGI requests."""
+149 
+150     request_class = ASGIRequest
+151     # Size to chunk response bodies into for multiple response messages.
+152     chunk_size = 2**16
+153 
+154     def __init__(self):
+155         super().__init__()
+156         self.load_middleware(is_async=True)
+157 
+158     async def __call__(self, scope, receive, send):
+159         """
+160         Async entrypoint - parses the request and hands off to get_response.
+161         """
+162         # Serve only HTTP connections.
+163         # FIXME: Allow to override this.
+164         if scope["type"] != "http":
+165             raise ValueError(
+166                 "Django can only handle ASGI/HTTP connections, not %s." % scope["type"]
+167             )
+168 
+169         async with ThreadSensitiveContext():
+170             await self.handle(scope, receive, send)
+171 
+172     async def handle(self, scope, receive, send):
+173         """
+174         Handles the ASGI request. Called via the __call__ method.
+175         """
+176         # Receive the HTTP request body as a stream object.
+177         try:
+178             body_file = await self.read_body(receive)
+179         except RequestAborted:
+180             return
+181         # Request is complete and can be served.
+182         set_script_prefix(get_script_prefix(scope))
+183         await signals.request_started.asend(sender=self.__class__, scope=scope)
+184         # Get the request and check for basic issues.
+185         request, error_response = self.create_request(scope, body_file)
+186         if request is None:
+187             body_file.close()
+188             await self.send_response(error_response, send)
+189             return
+190         # Try to catch a disconnect while getting response.
+191         tasks = [
+192             asyncio.create_task(self.run_get_response(request)),
+193             asyncio.create_task(self.listen_for_disconnect(receive)),
+194         ]
+195         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+196         done, pending = done.pop(), pending.pop()
+197         # Allow views to handle cancellation.
+198         pending.cancel()
+199         try:
+200             await pending
+201         except asyncio.CancelledError:
+202             # Task re-raised the CancelledError as expected.
+203             pass
+204         try:
+205             response = done.result()
+206         except RequestAborted:
+207             body_file.close()
+208             return
+209         except AssertionError:
+210             body_file.close()
+211             raise
+212         # Send the response.
+213         await self.send_response(response, send)
+214 
+215     async def listen_for_disconnect(self, receive):
+216         """Listen for disconnect from the client."""
+217         message = await receive()
+218         if message["type"] == "http.disconnect":
+219             raise RequestAborted()
+220         # This should never happen.
+221         assert False, "Invalid ASGI message after request body: %s" % message["type"]
+222 
+223     async def run_get_response(self, request):
+224         """Get async response."""
+225         # Use the async mode of BaseHandler.
+226         response = await self.get_response_async(request)
+227         response._handler_class = self.__class__
+228         # Increase chunk size on file responses (ASGI servers handles low-level
+229         # chunking).
+230         if isinstance(response, FileResponse):
+231             response.block_size = self.chunk_size
+232         return response
+233 
+234     async def read_body(self, receive):
+235         """Reads an HTTP body from an ASGI connection."""
+236         # Use the tempfile that auto rolls-over to a disk file as it fills up.
+237         body_file = tempfile.SpooledTemporaryFile(
+238             max_size=settings.FILE_UPLOAD_MAX_MEMORY_SIZE, mode="w+b"
+239         )
+240         while True:
+241             message = await receive()
+242             if message["type"] == "http.disconnect":
+243                 body_file.close()
+244                 # Early client disconnect.
+245                 raise RequestAborted()
+246             # Add a body chunk from the message, if provided.
+247             if "body" in message:
+248                 body_file.write(message["body"])
+249             # Quit out if that's the end.
+250             if not message.get("more_body", False):
+251                 break
+252         body_file.seek(0)
+253         return body_file
+254 
+255     def create_request(self, scope, body_file):
+256         """
+257         Create the Request object and returns either (request, None) or
+258         (None, response) if there is an error response.
+259         """
+260         try:
+261             return self.request_class(scope, body_file), None
+262         except UnicodeDecodeError:
+263             logger.warning(
+264                 "Bad Request (UnicodeDecodeError)",
+265                 exc_info=sys.exc_info(),
+266                 extra={"status_code": 400},
+267             )
+268             return None, HttpResponseBadRequest()
+269         except RequestDataTooBig:
+270             return None, HttpResponse("413 Payload too large", status=413)
+271 
+272     def handle_uncaught_exception(self, request, resolver, exc_info):
+273         """Last-chance handler for exceptions."""
+274         # There's no WSGI server to catch the exception further up
+275         # if this fails, so translate it into a plain text response.
+276         try:
+277             return super().handle_uncaught_exception(request, resolver, exc_info)
+278         except Exception:
+279             return HttpResponseServerError(
+280                 traceback.format_exc() if settings.DEBUG else "Internal Server Error",
+281                 content_type="text/plain",
+282             )
+283 
+284     async def send_response(self, response, send):
+285         """Encode and send a response out over ASGI."""
+286         # Collect cookies into headers. Have to preserve header case as there
+287         # are some non-RFC compliant clients that require e.g. Content-Type.
+288         response_headers = []
+289         for header, value in response.items():
+290             if isinstance(header, str):
+291                 header = header.encode("ascii")
+292             if isinstance(value, str):
+293                 value = value.encode("latin1")
+294             response_headers.append((bytes(header), bytes(value)))
+295         for c in response.cookies.values():
+296             response_headers.append(
+297                 (b"Set-Cookie", c.output(header="").encode("ascii").strip())
+298             )
+299         # Initial response message.
+300         await send(
+301             {
+302                 "type": "http.response.start",
+303                 "status": response.status_code,
+304                 "headers": response_headers,
+305             }
+306         )
+307         # Streaming responses need to be pinned to their iterator.
+308         if response.streaming:
+309             # - Consume via `__aiter__` and not `streaming_content` directly, to
+310             #   allow mapping of a sync iterator.
+311             # - Use aclosing() when consuming aiter.
+312             #   See https://github.com/python/cpython/commit/6e8dcda
+313             async with aclosing(aiter(response)) as content:
+314                 async for part in content:
+315                     for chunk, _ in self.chunk_bytes(part):
+316                         await send(
+317                             {
+318                                 "type": "http.response.body",
+319                                 "body": chunk,
+320                                 # Ignore "more" as there may be more parts; instead,
+321                                 # use an empty final closing message with False.
+322                                 "more_body": True,
+323                             }
+324                         )
+325             # Final closing message.
+326             await send({"type": "http.response.body"})
+327         # Other responses just need chunking.
+328         else:
+329             # Yield chunks of response.
+330             for chunk, last in self.chunk_bytes(response.content):
+331                 await send(
+332                     {
+333                         "type": "http.response.body",
+334                         "body": chunk,
+335                         "more_body": not last,
+336                     }
+337                 )
+338         await sync_to_async(response.close, thread_sensitive=True)()
+339 
+340     @classmethod
+341     def chunk_bytes(cls, data):
+342         """
+343         Chunks some data up so it can be sent in reasonable size messages.
+344         Yields (chunk, last_chunk) tuples.
+345         """
+346         position = 0
+347         if not data:
+348             yield data, True
+349             return
+350         while position < len(data):
+351             yield (
+352                 data[position : position + cls.chunk_size],
+353                 (position + cls.chunk_size) >= len(data),
+354             )
+355             position += cls.chunk_size
+
+</code><intended_behavior>Efficiently recognize and process `http.disconnect` messages at any point during the request lifecycle, not just when reading the body. This is crucial for handling scenarios where clients disconnect prematurely during long-polling or similar long-held request operations. Upon receiving a `http.disconnect` message, the server should cleanly terminate the request handling process without proceeding with further processing or attempting to send a response, as the client has already disconnected. This handling should be implemented in a way that does not interfere with the existing functionality of the code, preserving the normal flow of request processing and response generation when `http.disconnect` messages are not received. Additionally, this behavior implies that error handling and resource cleanup mechanisms must be in place to deal with scenarios of client disconnection effectively, preventing resource leaks or hanging operations within the server.</intended_behavior>]
+2026-01-15 00:51:53.625 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:51:53.625 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:51:53.819 | INFO     | Task django__django-16603 completed successfully.
+2026-01-15 00:51:53.820 | INFO     | No patch generated. You can try running ACR again.
