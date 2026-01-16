@@ -1,0 +1,3525 @@
+2026-01-15 03:45:30.728 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 03:45:33.484 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=406, output_tokens=12, cost=0.004420
+2026-01-15 03:45:46.264 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=586, output_tokens=597, cost=0.023770
+2026-01-15 03:46:03.628 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 03:46:11.934 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=708, output_tokens=372, cost=0.018240
+2026-01-15 03:46:11.943 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 03:46:15.095 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=726, output_tokens=63, cost=0.009150
+2026-01-15 03:46:15.097 | DEBUG    | Extracted a valid json.
+2026-01-15 03:46:15.097 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"FixtureDef\")",
+        "search_method(\"skip\")",
+        "search_method(\"pytest_report_teststatus\")",
+        "search_method(\"summary_report\")",
+        "search_code(\"SKIPPED\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 03:46:15.164 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 03:46:15.164 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 03:46:35.009 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2078, output_tokens=829, cost=0.045650
+2026-01-15 03:46:35.020 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 03:46:45.241 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3123, output_tokens=399, cost=0.043200
+2026-01-15 03:46:45.247 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 03:46:52.223 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=753, output_tokens=264, cost=0.015450
+2026-01-15 03:46:52.224 | DEBUG    | Extracted a valid json.
+2026-01-15 03:46:52.224 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[
+        {
+            "file": "src/_pytest/terminal.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "The method(s) responsible for generating the short test summary (specifically related to handling skipped tests) should be updated or fixed to ensure that whenever a test is skipped due to a fixture condition, the name of the skipped test along with the skip reason is clearly reported. This means enhancing how skipped tests are interpreted and displayed in the summary, ensuring the test names are preserved and displayed alongside their skip reason, rather than just showing the location in the fixture."
+        },
+        {
+            "file": "src/_pytest/skipping.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Enhance or fix the logic within this file that records a skip event to ensure that enough context is preserved about the skip reason and which test it pertains to. Specifically, when a test is skipped from within a fixture, ensure that the linkage between the skip reason and the test name is maintained and made available to the reporting mechanism. This could involve modifying how skip reasons are recorded or how skip events are associated with specific tests in the summary report."
+        }
+    ]
+}
+2026-01-15 03:46:52.231 | DEBUG    | Bug location extracted successfully: [<file>src/_pytest/terminal.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Terminal reporting of the full testing process.
+2 
+3 This is a good source for looking at the various reporting hooks.
+4 """
+5 import argparse
+6 import datetime
+7 import inspect
+8 import platform
+9 import sys
+10 import warnings
+11 from collections import Counter
+12 from functools import partial
+13 from pathlib import Path
+14 from typing import Any
+15 from typing import Callable
+16 from typing import cast
+17 from typing import ClassVar
+18 from typing import Dict
+19 from typing import Generator
+20 from typing import List
+21 from typing import Mapping
+22 from typing import Optional
+23 from typing import Sequence
+24 from typing import Set
+25 from typing import TextIO
+26 from typing import Tuple
+27 from typing import TYPE_CHECKING
+28 from typing import Union
+29 
+30 import attr
+31 import pluggy
+32 
+33 import _pytest._version
+34 from _pytest import nodes
+35 from _pytest import timing
+36 from _pytest._code import ExceptionInfo
+37 from _pytest._code.code import ExceptionRepr
+38 from _pytest._io import TerminalWriter
+39 from _pytest._io.wcwidth import wcswidth
+40 from _pytest.assertion.util import running_on_ci
+41 from _pytest.compat import final
+42 from _pytest.config import _PluggyPlugin
+43 from _pytest.config import Config
+44 from _pytest.config import ExitCode
+45 from _pytest.config import hookimpl
+46 from _pytest.config.argparsing import Parser
+47 from _pytest.nodes import Item
+48 from _pytest.nodes import Node
+49 from _pytest.pathlib import absolutepath
+50 from _pytest.pathlib import bestrelpath
+51 from _pytest.reports import BaseReport
+52 from _pytest.reports import CollectReport
+53 from _pytest.reports import TestReport
+54 
+55 if TYPE_CHECKING:
+56     from typing_extensions import Literal
+57 
+58     from _pytest.main import Session
+59 
+60 
+61 REPORT_COLLECTING_RESOLUTION = 0.5
+62 
+63 KNOWN_TYPES = (
+64     "failed",
+65     "passed",
+66     "skipped",
+67     "deselected",
+68     "xfailed",
+69     "xpassed",
+70     "warnings",
+71     "error",
+72 )
+73 
+74 _REPORTCHARS_DEFAULT = "fE"
+75 
+76 
+77 class MoreQuietAction(argparse.Action):
+78     """A modified copy of the argparse count action which counts down and updates
+79     the legacy quiet attribute at the same time.
+80 
+81     Used to unify verbosity handling.
+82     """
+83 
+84     def __init__(
+85         self,
+86         option_strings: Sequence[str],
+87         dest: str,
+88         default: object = None,
+89         required: bool = False,
+90         help: Optional[str] = None,
+91     ) -> None:
+92         super().__init__(
+93             option_strings=option_strings,
+94             dest=dest,
+95             nargs=0,
+96             default=default,
+97             required=required,
+98             help=help,
+99         )
+100 
+101     def __call__(
+102         self,
+103         parser: argparse.ArgumentParser,
+104         namespace: argparse.Namespace,
+105         values: Union[str, Sequence[object], None],
+106         option_string: Optional[str] = None,
+107     ) -> None:
+108         new_count = getattr(namespace, self.dest, 0) - 1
+109         setattr(namespace, self.dest, new_count)
+110         # todo Deprecate config.quiet
+111         namespace.quiet = getattr(namespace, "quiet", 0) + 1
+112 
+113 
+114 def pytest_addoption(parser: Parser) -> None:
+115     group = parser.getgroup("terminal reporting", "Reporting", after="general")
+116     group._addoption(
+117         "-v",
+118         "--verbose",
+119         action="count",
+120         default=0,
+121         dest="verbose",
+122         help="Increase verbosity",
+123     )
+124     group._addoption(
+125         "--no-header",
+126         action="store_true",
+127         default=False,
+128         dest="no_header",
+129         help="Disable header",
+130     )
+131     group._addoption(
+132         "--no-summary",
+133         action="store_true",
+134         default=False,
+135         dest="no_summary",
+136         help="Disable summary",
+137     )
+138     group._addoption(
+139         "-q",
+140         "--quiet",
+141         action=MoreQuietAction,
+142         default=0,
+143         dest="verbose",
+144         help="Decrease verbosity",
+145     )
+146     group._addoption(
+147         "--verbosity",
+148         dest="verbose",
+149         type=int,
+150         default=0,
+151         help="Set verbosity. Default: 0.",
+152     )
+153     group._addoption(
+154         "-r",
+155         action="store",
+156         dest="reportchars",
+157         default=_REPORTCHARS_DEFAULT,
+158         metavar="chars",
+159         help="Show extra test summary info as specified by chars: (f)ailed, "
+160         "(E)rror, (s)kipped, (x)failed, (X)passed, "
+161         "(p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll. "
+162         "(w)arnings are enabled by default (see --disable-warnings), "
+163         "'N' can be used to reset the list. (default: 'fE').",
+164     )
+165     group._addoption(
+166         "--disable-warnings",
+167         "--disable-pytest-warnings",
+168         default=False,
+169         dest="disable_warnings",
+170         action="store_true",
+171         help="Disable warnings summary",
+172     )
+173     group._addoption(
+174         "-l",
+175         "--showlocals",
+176         action="store_true",
+177         dest="showlocals",
+178         default=False,
+179         help="Show locals in tracebacks (disabled by default)",
+180     )
+181     group._addoption(
+182         "--no-showlocals",
+183         action="store_false",
+184         dest="showlocals",
+185         help="Hide locals in tracebacks (negate --showlocals passed through addopts)",
+186     )
+187     group._addoption(
+188         "--tb",
+189         metavar="style",
+190         action="store",
+191         dest="tbstyle",
+192         default="auto",
+193         choices=["auto", "long", "short", "no", "line", "native"],
+194         help="Traceback print mode (auto/long/short/line/native/no)",
+195     )
+196     group._addoption(
+197         "--show-capture",
+198         action="store",
+199         dest="showcapture",
+200         choices=["no", "stdout", "stderr", "log", "all"],
+201         default="all",
+202         help="Controls how captured stdout/stderr/log is shown on failed tests. "
+203         "Default: all.",
+204     )
+205     group._addoption(
+206         "--fulltrace",
+207         "--full-trace",
+208         action="store_true",
+209         default=False,
+210         help="Don't cut any tracebacks (default is to cut)",
+211     )
+212     group._addoption(
+213         "--color",
+214         metavar="color",
+215         action="store",
+216         dest="color",
+217         default="auto",
+218         choices=["yes", "no", "auto"],
+219         help="Color terminal output (yes/no/auto)",
+220     )
+221     group._addoption(
+222         "--code-highlight",
+223         default="yes",
+224         choices=["yes", "no"],
+225         help="Whether code should be highlighted (only if --color is also enabled). "
+226         "Default: yes.",
+227     )
+228 
+229     parser.addini(
+230         "console_output_style",
+231         help='Console output: "classic", or with additional progress information '
+232         '("progress" (percentage) | "count")',
+233         default="progress",
+234     )
+235 
+236 
+237 def pytest_configure(config: Config) -> None:
+238     reporter = TerminalReporter(config, sys.stdout)
+239     config.pluginmanager.register(reporter, "terminalreporter")
+240     if config.option.debug or config.option.traceconfig:
+241 
+242         def mywriter(tags, args):
+243             msg = " ".join(map(str, args))
+244             reporter.write_line("[traceconfig] " + msg)
+245 
+246         config.trace.root.setprocessor("pytest:config", mywriter)
+247 
+248 
+249 def getreportopt(config: Config) -> str:
+250     reportchars: str = config.option.reportchars
+251 
+252     old_aliases = {"F", "S"}
+253     reportopts = ""
+254     for char in reportchars:
+255         if char in old_aliases:
+256             char = char.lower()
+257         if char == "a":
+258             reportopts = "sxXEf"
+259         elif char == "A":
+260             reportopts = "PpsxXEf"
+261         elif char == "N":
+262             reportopts = ""
+263         elif char not in reportopts:
+264             reportopts += char
+265 
+266     if not config.option.disable_warnings and "w" not in reportopts:
+267         reportopts = "w" + reportopts
+268     elif config.option.disable_warnings and "w" in reportopts:
+269         reportopts = reportopts.replace("w", "")
+270 
+271     return reportopts
+272 
+273 
+274 @hookimpl(trylast=True)  # after _pytest.runner
+275 def pytest_report_teststatus(report: BaseReport) -> Tuple[str, str, str]:
+276     letter = "F"
+277     if report.passed:
+278         letter = "."
+279     elif report.skipped:
+280         letter = "s"
+281 
+282     outcome: str = report.outcome
+283     if report.when in ("collect", "setup", "teardown") and outcome == "failed":
+284         outcome = "error"
+285         letter = "E"
+286 
+287     return outcome, letter, outcome.upper()
+288 
+289 
+290 @attr.s(auto_attribs=True)
+291 class WarningReport:
+292     """Simple structure to hold warnings information captured by ``pytest_warning_recorded``.
+293 
+294     :ivar str message:
+295         User friendly message about the warning.
+296     :ivar str|None nodeid:
+297         nodeid that generated the warning (see ``get_location``).
+298     :ivar tuple fslocation:
+299         File system location of the source of the warning (see ``get_location``).
+300     """
+301 
+302     message: str
+303     nodeid: Optional[str] = None
+304     fslocation: Optional[Tuple[str, int]] = None
+305 
+306     count_towards_summary: ClassVar = True
+307 
+308     def get_location(self, config: Config) -> Optional[str]:
+309         """Return the more user-friendly information about the location of a warning, or None."""
+310         if self.nodeid:
+311             return self.nodeid
+312         if self.fslocation:
+313             filename, linenum = self.fslocation
+314             relpath = bestrelpath(config.invocation_params.dir, absolutepath(filename))
+315             return f"{relpath}:{linenum}"
+316         return None
+317 
+318 
+319 @final
+320 class TerminalReporter:
+321     def __init__(self, config: Config, file: Optional[TextIO] = None) -> None:
+322         import _pytest.config
+323 
+324         self.config = config
+325         self._numcollected = 0
+326         self._session: Optional[Session] = None
+327         self._showfspath: Optional[bool] = None
+328 
+329         self.stats: Dict[str, List[Any]] = {}
+330         self._main_color: Optional[str] = None
+331         self._known_types: Optional[List[str]] = None
+332         self.startpath = config.invocation_params.dir
+333         if file is None:
+334             file = sys.stdout
+335         self._tw = _pytest.config.create_terminal_writer(config, file)
+336         self._screen_width = self._tw.fullwidth
+337         self.currentfspath: Union[None, Path, str, int] = None
+338         self.reportchars = getreportopt(config)
+339         self.hasmarkup = self._tw.hasmarkup
+340         self.isatty = file.isatty()
+341         self._progress_nodeids_reported: Set[str] = set()
+342         self._show_progress_info = self._determine_show_progress_info()
+343         self._collect_report_last_write: Optional[float] = None
+344         self._already_displayed_warnings: Optional[int] = None
+345         self._keyboardinterrupt_memo: Optional[ExceptionRepr] = None
+346 
+347     def _determine_show_progress_info(self) -> "Literal['progress', 'count', False]":
+348         """Return whether we should display progress information based on the current config."""
+349         # do not show progress if we are not capturing output (#3038)
+350         if self.config.getoption("capture", "no") == "no":
+351             return False
+352         # do not show progress if we are showing fixture setup/teardown
+353         if self.config.getoption("setupshow", False):
+354             return False
+355         cfg: str = self.config.getini("console_output_style")
+356         if cfg == "progress":
+357             return "progress"
+358         elif cfg == "count":
+359             return "count"
+360         else:
+361             return False
+362 
+363     @property
+364     def verbosity(self) -> int:
+365         verbosity: int = self.config.option.verbose
+366         return verbosity
+367 
+368     @property
+369     def showheader(self) -> bool:
+370         return self.verbosity >= 0
+371 
+372     @property
+373     def no_header(self) -> bool:
+374         return bool(self.config.option.no_header)
+375 
+376     @property
+377     def no_summary(self) -> bool:
+378         return bool(self.config.option.no_summary)
+379 
+380     @property
+381     def showfspath(self) -> bool:
+382         if self._showfspath is None:
+383             return self.verbosity >= 0
+384         return self._showfspath
+385 
+386     @showfspath.setter
+387     def showfspath(self, value: Optional[bool]) -> None:
+388         self._showfspath = value
+389 
+390     @property
+391     def showlongtestinfo(self) -> bool:
+392         return self.verbosity > 0
+393 
+394     def hasopt(self, char: str) -> bool:
+395         char = {"xfailed": "x", "skipped": "s"}.get(char, char)
+396         return char in self.reportchars
+397 
+398     def write_fspath_result(self, nodeid: str, res, **markup: bool) -> None:
+399         fspath = self.config.rootpath / nodeid.split("::")[0]
+400         if self.currentfspath is None or fspath != self.currentfspath:
+401             if self.currentfspath is not None and self._show_progress_info:
+402                 self._write_progress_information_filling_space()
+403             self.currentfspath = fspath
+404             relfspath = bestrelpath(self.startpath, fspath)
+405             self._tw.line()
+406             self._tw.write(relfspath + " ")
+407         self._tw.write(res, flush=True, **markup)
+408 
+409     def write_ensure_prefix(self, prefix: str, extra: str = "", **kwargs) -> None:
+410         if self.currentfspath != prefix:
+411             self._tw.line()
+412             self.currentfspath = prefix
+413             self._tw.write(prefix)
+414         if extra:
+415             self._tw.write(extra, **kwargs)
+416             self.currentfspath = -2
+417 
+418     def ensure_newline(self) -> None:
+419         if self.currentfspath:
+420             self._tw.line()
+421             self.currentfspath = None
+422 
+423     def write(self, content: str, *, flush: bool = False, **markup: bool) -> None:
+424         self._tw.write(content, flush=flush, **markup)
+425 
+426     def flush(self) -> None:
+427         self._tw.flush()
+428 
+429     def write_line(self, line: Union[str, bytes], **markup: bool) -> None:
+430         if not isinstance(line, str):
+431             line = str(line, errors="replace")
+432         self.ensure_newline()
+433         self._tw.line(line, **markup)
+434 
+435     def rewrite(self, line: str, **markup: bool) -> None:
+436         """Rewinds the terminal cursor to the beginning and writes the given line.
+437 
+438         :param erase:
+439             If True, will also add spaces until the full terminal width to ensure
+440             previous lines are properly erased.
+441 
+442         The rest of the keyword arguments are markup instructions.
+443         """
+444         erase = markup.pop("erase", False)
+445         if erase:
+446             fill_count = self._tw.fullwidth - len(line) - 1
+447             fill = " " * fill_count
+448         else:
+449             fill = ""
+450         line = str(line)
+451         self._tw.write("\r" + line + fill, **markup)
+452 
+453     def write_sep(
+454         self,
+455         sep: str,
+456         title: Optional[str] = None,
+457         fullwidth: Optional[int] = None,
+458         **markup: bool,
+459     ) -> None:
+460         self.ensure_newline()
+461         self._tw.sep(sep, title, fullwidth, **markup)
+462 
+463     def section(self, title: str, sep: str = "=", **kw: bool) -> None:
+464         self._tw.sep(sep, title, **kw)
+465 
+466     def line(self, msg: str, **kw: bool) -> None:
+467         self._tw.line(msg, **kw)
+468 
+469     def _add_stats(self, category: str, items: Sequence[Any]) -> None:
+470         set_main_color = category not in self.stats
+471         self.stats.setdefault(category, []).extend(items)
+472         if set_main_color:
+473             self._set_main_color()
+474 
+475     def pytest_internalerror(self, excrepr: ExceptionRepr) -> bool:
+476         for line in str(excrepr).split("\n"):
+477             self.write_line("INTERNALERROR> " + line)
+478         return True
+479 
+480     def pytest_warning_recorded(
+481         self,
+482         warning_message: warnings.WarningMessage,
+483         nodeid: str,
+484     ) -> None:
+485         from _pytest.warnings import warning_record_to_str
+486 
+487         fslocation = warning_message.filename, warning_message.lineno
+488         message = warning_record_to_str(warning_message)
+489 
+490         warning_report = WarningReport(
+491             fslocation=fslocation, message=message, nodeid=nodeid
+492         )
+493         self._add_stats("warnings", [warning_report])
+494 
+495     def pytest_plugin_registered(self, plugin: _PluggyPlugin) -> None:
+496         if self.config.option.traceconfig:
+497             msg = f"PLUGIN registered: {plugin}"
+498             # XXX This event may happen during setup/teardown time
+499             #     which unfortunately captures our output here
+500             #     which garbles our output if we use self.write_line.
+501             self.write_line(msg)
+502 
+503     def pytest_deselected(self, items: Sequence[Item]) -> None:
+504         self._add_stats("deselected", items)
+505 
+506     def pytest_runtest_logstart(
+507         self, nodeid: str, location: Tuple[str, Optional[int], str]
+508     ) -> None:
+509         # Ensure that the path is printed before the
+510         # 1st test of a module starts running.
+511         if self.showlongtestinfo:
+512             line = self._locationline(nodeid, *location)
+513             self.write_ensure_prefix(line, "")
+514             self.flush()
+515         elif self.showfspath:
+516             self.write_fspath_result(nodeid, "")
+517             self.flush()
+518 
+519     def pytest_runtest_logreport(self, report: TestReport) -> None:
+520         self._tests_ran = True
+521         rep = report
+522         res: Tuple[
+523             str, str, Union[str, Tuple[str, Mapping[str, bool]]]
+524         ] = self.config.hook.pytest_report_teststatus(report=rep, config=self.config)
+525         category, letter, word = res
+526         if not isinstance(word, tuple):
+527             markup = None
+528         else:
+529             word, markup = word
+530         self._add_stats(category, [rep])
+531         if not letter and not word:
+532             # Probably passed setup/teardown.
+533             return
+534         running_xdist = hasattr(rep, "node")
+535         if markup is None:
+536             was_xfail = hasattr(report, "wasxfail")
+537             if rep.passed and not was_xfail:
+538                 markup = {"green": True}
+539             elif rep.passed and was_xfail:
+540                 markup = {"yellow": True}
+541             elif rep.failed:
+542                 markup = {"red": True}
+543             elif rep.skipped:
+544                 markup = {"yellow": True}
+545             else:
+546                 markup = {}
+547         if self.verbosity <= 0:
+548             self._tw.write(letter, **markup)
+549         else:
+550             self._progress_nodeids_reported.add(rep.nodeid)
+551             line = self._locationline(rep.nodeid, *rep.location)
+552             if not running_xdist:
+553                 self.write_ensure_prefix(line, word, **markup)
+554                 if rep.skipped or hasattr(report, "wasxfail"):
+555                     reason = _get_raw_skip_reason(rep)
+556                     if self.config.option.verbose < 2:
+557                         available_width = (
+558                             (self._tw.fullwidth - self._tw.width_of_current_line)
+559                             - len(" [100%]")
+560                             - 1
+561                         )
+562                         formatted_reason = _format_trimmed(
+563                             " ({})", reason, available_width
+564                         )
+565                     else:
+566                         formatted_reason = f" ({reason})"
+567 
+568                     if reason and formatted_reason is not None:
+569                         self._tw.write(formatted_reason)
+570                 if self._show_progress_info:
+571                     self._write_progress_information_filling_space()
+572             else:
+573                 self.ensure_newline()
+574                 self._tw.write("[%s]" % rep.node.gateway.id)
+575                 if self._show_progress_info:
+576                     self._tw.write(
+577                         self._get_progress_information_message() + " ", cyan=True
+578                     )
+579                 else:
+580                     self._tw.write(" ")
+581                 self._tw.write(word, **markup)
+582                 self._tw.write(" " + line)
+583                 self.currentfspath = -2
+584         self.flush()
+585 
+586     @property
+587     def _is_last_item(self) -> bool:
+588         assert self._session is not None
+589         return len(self._progress_nodeids_reported) == self._session.testscollected
+590 
+591     def pytest_runtest_logfinish(self, nodeid: str) -> None:
+592         assert self._session
+593         if self.verbosity <= 0 and self._show_progress_info:
+594             if self._show_progress_info == "count":
+595                 num_tests = self._session.testscollected
+596                 progress_length = len(f" [{num_tests}/{num_tests}]")
+597             else:
+598                 progress_length = len(" [100%]")
+599 
+600             self._progress_nodeids_reported.add(nodeid)
+601 
+602             if self._is_last_item:
+603                 self._write_progress_information_filling_space()
+604             else:
+605                 main_color, _ = self._get_main_color()
+606                 w = self._width_of_current_line
+607                 past_edge = w + progress_length + 1 >= self._screen_width
+608                 if past_edge:
+609                     msg = self._get_progress_information_message()
+610                     self._tw.write(msg + "\n", **{main_color: True})
+611 
+612     def _get_progress_information_message(self) -> str:
+613         assert self._session
+614         collected = self._session.testscollected
+615         if self._show_progress_info == "count":
+616             if collected:
+617                 progress = self._progress_nodeids_reported
+618                 counter_format = f"{{:{len(str(collected))}d}}"
+619                 format_string = f" [{counter_format}/{{}}]"
+620                 return format_string.format(len(progress), collected)
+621             return f" [ {collected} / {collected} ]"
+622         else:
+623             if collected:
+624                 return " [{:3d}%]".format(
+625                     len(self._progress_nodeids_reported) * 100 // collected
+626                 )
+627             return " [100%]"
+628 
+629     def _write_progress_information_filling_space(self) -> None:
+630         color, _ = self._get_main_color()
+631         msg = self._get_progress_information_message()
+632         w = self._width_of_current_line
+633         fill = self._tw.fullwidth - w - 1
+634         self.write(msg.rjust(fill), flush=True, **{color: True})
+635 
+636     @property
+637     def _width_of_current_line(self) -> int:
+638         """Return the width of the current line."""
+639         return self._tw.width_of_current_line
+640 
+641     def pytest_collection(self) -> None:
+642         if self.isatty:
+643             if self.config.option.verbose >= 0:
+644                 self.write("collecting ... ", flush=True, bold=True)
+645                 self._collect_report_last_write = timing.time()
+646         elif self.config.option.verbose >= 1:
+647             self.write("collecting ... ", flush=True, bold=True)
+648 
+649     def pytest_collectreport(self, report: CollectReport) -> None:
+650         if report.failed:
+651             self._add_stats("error", [report])
+652         elif report.skipped:
+653             self._add_stats("skipped", [report])
+654         items = [x for x in report.result if isinstance(x, Item)]
+655         self._numcollected += len(items)
+656         if self.isatty:
+657             self.report_collect()
+658 
+659     def report_collect(self, final: bool = False) -> None:
+660         if self.config.option.verbose < 0:
+661             return
+662 
+663         if not final:
+664             # Only write "collecting" report every 0.5s.
+665             t = timing.time()
+666             if (
+667                 self._collect_report_last_write is not None
+668                 and self._collect_report_last_write > t - REPORT_COLLECTING_RESOLUTION
+669             ):
+670                 return
+671             self._collect_report_last_write = t
+672 
+673         errors = len(self.stats.get("error", []))
+674         skipped = len(self.stats.get("skipped", []))
+675         deselected = len(self.stats.get("deselected", []))
+676         selected = self._numcollected - deselected
+677         line = "collected " if final else "collecting "
+678         line += (
+679             str(self._numcollected) + " item" + ("" if self._numcollected == 1 else "s")
+680         )
+681         if errors:
+682             line += " / %d error%s" % (errors, "s" if errors != 1 else "")
+683         if deselected:
+684             line += " / %d deselected" % deselected
+685         if skipped:
+686             line += " / %d skipped" % skipped
+687         if self._numcollected > selected:
+688             line += " / %d selected" % selected
+689         if self.isatty:
+690             self.rewrite(line, bold=True, erase=True)
+691             if final:
+692                 self.write("\n")
+693         else:
+694             self.write_line(line)
+695 
+696     @hookimpl(trylast=True)
+697     def pytest_sessionstart(self, session: "Session") -> None:
+698         self._session = session
+699         self._sessionstarttime = timing.time()
+700         if not self.showheader:
+701             return
+702         self.write_sep("=", "test session starts", bold=True)
+703         verinfo = platform.python_version()
+704         if not self.no_header:
+705             msg = f"platform {sys.platform} -- Python {verinfo}"
+706             pypy_version_info = getattr(sys, "pypy_version_info", None)
+707             if pypy_version_info:
+708                 verinfo = ".".join(map(str, pypy_version_info[:3]))
+709                 msg += f"[pypy-{verinfo}-{pypy_version_info[3]}]"
+710             msg += ", pytest-{}, pluggy-{}".format(
+711                 _pytest._version.version, pluggy.__version__
+712             )
+713             if (
+714                 self.verbosity > 0
+715                 or self.config.option.debug
+716                 or getattr(self.config.option, "pastebin", None)
+717             ):
+718                 msg += " -- " + str(sys.executable)
+719             self.write_line(msg)
+720             lines = self.config.hook.pytest_report_header(
+721                 config=self.config, start_path=self.startpath
+722             )
+723             self._write_report_lines_from_hooks(lines)
+724 
+725     def _write_report_lines_from_hooks(
+726         self, lines: Sequence[Union[str, Sequence[str]]]
+727     ) -> None:
+728         for line_or_lines in reversed(lines):
+729             if isinstance(line_or_lines, str):
+730                 self.write_line(line_or_lines)
+731             else:
+732                 for line in line_or_lines:
+733                     self.write_line(line)
+734 
+735     def pytest_report_header(self, config: Config) -> List[str]:
+736         line = "rootdir: %s" % config.rootpath
+737 
+738         if config.inipath:
+739             line += ", configfile: " + bestrelpath(config.rootpath, config.inipath)
+740 
+741         if config.args_source == Config.ArgsSource.TESTPATHS:
+742             testpaths: List[str] = config.getini("testpaths")
+743             line += ", testpaths: {}".format(", ".join(testpaths))
+744 
+745         result = [line]
+746 
+747         plugininfo = config.pluginmanager.list_plugin_distinfo()
+748         if plugininfo:
+749             result.append("plugins: %s" % ", ".join(_plugin_nameversions(plugininfo)))
+750         return result
+751 
+752     def pytest_collection_finish(self, session: "Session") -> None:
+753         self.report_collect(True)
+754 
+755         lines = self.config.hook.pytest_report_collectionfinish(
+756             config=self.config,
+757             start_path=self.startpath,
+758             items=session.items,
+759         )
+760         self._write_report_lines_from_hooks(lines)
+761 
+762         if self.config.getoption("collectonly"):
+763             if session.items:
+764                 if self.config.option.verbose > -1:
+765                     self._tw.line("")
+766                 self._printcollecteditems(session.items)
+767 
+768             failed = self.stats.get("failed")
+769             if failed:
+770                 self._tw.sep("!", "collection failures")
+771                 for rep in failed:
+772                     rep.toterminal(self._tw)
+773 
+774     def _printcollecteditems(self, items: Sequence[Item]) -> None:
+775         if self.config.option.verbose < 0:
+776             if self.config.option.verbose < -1:
+777                 counts = Counter(item.nodeid.split("::", 1)[0] for item in items)
+778                 for name, count in sorted(counts.items()):
+779                     self._tw.line("%s: %d" % (name, count))
+780             else:
+781                 for item in items:
+782                     self._tw.line(item.nodeid)
+783             return
+784         stack: List[Node] = []
+785         indent = ""
+786         for item in items:
+787             needed_collectors = item.listchain()[1:]  # strip root node
+788             while stack:
+789                 if stack == needed_collectors[: len(stack)]:
+790                     break
+791                 stack.pop()
+792             for col in needed_collectors[len(stack) :]:
+793                 stack.append(col)
+794                 indent = (len(stack) - 1) * "  "
+795                 self._tw.line(f"{indent}{col}")
+796                 if self.config.option.verbose >= 1:
+797                     obj = getattr(col, "obj", None)
+798                     doc = inspect.getdoc(obj) if obj else None
+799                     if doc:
+800                         for line in doc.splitlines():
+801                             self._tw.line("{}{}".format(indent + "  ", line))
+802 
+803     @hookimpl(hookwrapper=True)
+804     def pytest_sessionfinish(
+805         self, session: "Session", exitstatus: Union[int, ExitCode]
+806     ):
+807         outcome = yield
+808         outcome.get_result()
+809         self._tw.line("")
+810         summary_exit_codes = (
+811             ExitCode.OK,
+812             ExitCode.TESTS_FAILED,
+813             ExitCode.INTERRUPTED,
+814             ExitCode.USAGE_ERROR,
+815             ExitCode.NO_TESTS_COLLECTED,
+816         )
+817         if exitstatus in summary_exit_codes and not self.no_summary:
+818             self.config.hook.pytest_terminal_summary(
+819                 terminalreporter=self, exitstatus=exitstatus, config=self.config
+820             )
+821         if session.shouldfail:
+822             self.write_sep("!", str(session.shouldfail), red=True)
+823         if exitstatus == ExitCode.INTERRUPTED:
+824             self._report_keyboardinterrupt()
+825             self._keyboardinterrupt_memo = None
+826         elif session.shouldstop:
+827             self.write_sep("!", str(session.shouldstop), red=True)
+828         self.summary_stats()
+829 
+830     @hookimpl(hookwrapper=True)
+831     def pytest_terminal_summary(self) -> Generator[None, None, None]:
+832         self.summary_errors()
+833         self.summary_failures()
+834         self.summary_warnings()
+835         self.summary_passes()
+836         yield
+837         self.short_test_summary()
+838         # Display any extra warnings from teardown here (if any).
+839         self.summary_warnings()
+840 
+841     def pytest_keyboard_interrupt(self, excinfo: ExceptionInfo[BaseException]) -> None:
+842         self._keyboardinterrupt_memo = excinfo.getrepr(funcargs=True)
+843 
+844     def pytest_unconfigure(self) -> None:
+845         if self._keyboardinterrupt_memo is not None:
+846             self._report_keyboardinterrupt()
+847 
+848     def _report_keyboardinterrupt(self) -> None:
+849         excrepr = self._keyboardinterrupt_memo
+850         assert excrepr is not None
+851         assert excrepr.reprcrash is not None
+852         msg = excrepr.reprcrash.message
+853         self.write_sep("!", msg)
+854         if "KeyboardInterrupt" in msg:
+855             if self.config.option.fulltrace:
+856                 excrepr.toterminal(self._tw)
+857             else:
+858                 excrepr.reprcrash.toterminal(self._tw)
+859                 self._tw.line(
+860                     "(to show a full traceback on KeyboardInterrupt use --full-trace)",
+861                     yellow=True,
+862                 )
+863 
+864     def _locationline(
+865         self, nodeid: str, fspath: str, lineno: Optional[int], domain: str
+866     ) -> str:
+867         def mkrel(nodeid: str) -> str:
+868             line = self.config.cwd_relative_nodeid(nodeid)
+869             if domain and line.endswith(domain):
+870                 line = line[: -len(domain)]
+871                 values = domain.split("[")
+872                 values[0] = values[0].replace(".", "::")  # don't replace '.' in params
+873                 line += "[".join(values)
+874             return line
+875 
+876         # collect_fspath comes from testid which has a "/"-normalized path.
+877         if fspath:
+878             res = mkrel(nodeid)
+879             if self.verbosity >= 2 and nodeid.split("::")[0] != fspath.replace(
+880                 "\\", nodes.SEP
+881             ):
+882                 res += " <- " + bestrelpath(self.startpath, Path(fspath))
+883         else:
+884             res = "[location]"
+885         return res + " "
+886 
+887     def _getfailureheadline(self, rep):
+888         head_line = rep.head_line
+889         if head_line:
+890             return head_line
+891         return "test session"  # XXX?
+892 
+893     def _getcrashline(self, rep):
+894         try:
+895             return str(rep.longrepr.reprcrash)
+896         except AttributeError:
+897             try:
+898                 return str(rep.longrepr)[:50]
+899             except AttributeError:
+900                 return ""
+901 
+902     #
+903     # Summaries for sessionfinish.
+904     #
+905     def getreports(self, name: str):
+906         return [x for x in self.stats.get(name, ()) if not hasattr(x, "_pdbshown")]
+907 
+908     def summary_warnings(self) -> None:
+909         if self.hasopt("w"):
+910             all_warnings: Optional[List[WarningReport]] = self.stats.get("warnings")
+911             if not all_warnings:
+912                 return
+913 
+914             final = self._already_displayed_warnings is not None
+915             if final:
+916                 warning_reports = all_warnings[self._already_displayed_warnings :]
+917             else:
+918                 warning_reports = all_warnings
+919             self._already_displayed_warnings = len(warning_reports)
+920             if not warning_reports:
+921                 return
+922 
+923             reports_grouped_by_message: Dict[str, List[WarningReport]] = {}
+924             for wr in warning_reports:
+925                 reports_grouped_by_message.setdefault(wr.message, []).append(wr)
+926 
+927             def collapsed_location_report(reports: List[WarningReport]) -> str:
+928                 locations = []
+929                 for w in reports:
+930                     location = w.get_location(self.config)
+931                     if location:
+932                         locations.append(location)
+933 
+934                 if len(locations) < 10:
+935                     return "\n".join(map(str, locations))
+936 
+937                 counts_by_filename = Counter(
+938                     str(loc).split("::", 1)[0] for loc in locations
+939                 )
+940                 return "\n".join(
+941                     "{}: {} warning{}".format(k, v, "s" if v > 1 else "")
+942                     for k, v in counts_by_filename.items()
+943                 )
+944 
+945             title = "warnings summary (final)" if final else "warnings summary"
+946             self.write_sep("=", title, yellow=True, bold=False)
+947             for message, message_reports in reports_grouped_by_message.items():
+948                 maybe_location = collapsed_location_report(message_reports)
+949                 if maybe_location:
+950                     self._tw.line(maybe_location)
+951                     lines = message.splitlines()
+952                     indented = "\n".join("  " + x for x in lines)
+953                     message = indented.rstrip()
+954                 else:
+955                     message = message.rstrip()
+956                 self._tw.line(message)
+957                 self._tw.line()
+958             self._tw.line(
+959                 "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+960             )
+961 
+962     def summary_passes(self) -> None:
+963         if self.config.option.tbstyle != "no":
+964             if self.hasopt("P"):
+965                 reports: List[TestReport] = self.getreports("passed")
+966                 if not reports:
+967                     return
+968                 self.write_sep("=", "PASSES")
+969                 for rep in reports:
+970                     if rep.sections:
+971                         msg = self._getfailureheadline(rep)
+972                         self.write_sep("_", msg, green=True, bold=True)
+973                         self._outrep_summary(rep)
+974                     self._handle_teardown_sections(rep.nodeid)
+975 
+976     def _get_teardown_reports(self, nodeid: str) -> List[TestReport]:
+977         reports = self.getreports("")
+978         return [
+979             report
+980             for report in reports
+981             if report.when == "teardown" and report.nodeid == nodeid
+982         ]
+983 
+984     def _handle_teardown_sections(self, nodeid: str) -> None:
+985         for report in self._get_teardown_reports(nodeid):
+986             self.print_teardown_sections(report)
+987 
+988     def print_teardown_sections(self, rep: TestReport) -> None:
+989         showcapture = self.config.option.showcapture
+990         if showcapture == "no":
+991             return
+992         for secname, content in rep.sections:
+993             if showcapture != "all" and showcapture not in secname:
+994                 continue
+995             if "teardown" in secname:
+996                 self._tw.sep("-", secname)
+997                 if content[-1:] == "\n":
+998                     content = content[:-1]
+999                 self._tw.line(content)
+1000 
+1001     def summary_failures(self) -> None:
+1002         if self.config.option.tbstyle != "no":
+1003             reports: List[BaseReport] = self.getreports("failed")
+1004             if not reports:
+1005                 return
+1006             self.write_sep("=", "FAILURES")
+1007             if self.config.option.tbstyle == "line":
+1008                 for rep in reports:
+1009                     line = self._getcrashline(rep)
+1010                     self.write_line(line)
+1011             else:
+1012                 for rep in reports:
+1013                     msg = self._getfailureheadline(rep)
+1014                     self.write_sep("_", msg, red=True, bold=True)
+1015                     self._outrep_summary(rep)
+1016                     self._handle_teardown_sections(rep.nodeid)
+1017 
+1018     def summary_errors(self) -> None:
+1019         if self.config.option.tbstyle != "no":
+1020             reports: List[BaseReport] = self.getreports("error")
+1021             if not reports:
+1022                 return
+1023             self.write_sep("=", "ERRORS")
+1024             for rep in self.stats["error"]:
+1025                 msg = self._getfailureheadline(rep)
+1026                 if rep.when == "collect":
+1027                     msg = "ERROR collecting " + msg
+1028                 else:
+1029                     msg = f"ERROR at {rep.when} of {msg}"
+1030                 self.write_sep("_", msg, red=True, bold=True)
+1031                 self._outrep_summary(rep)
+1032 
+1033     def _outrep_summary(self, rep: BaseReport) -> None:
+1034         rep.toterminal(self._tw)
+1035         showcapture = self.config.option.showcapture
+1036         if showcapture == "no":
+1037             return
+1038         for secname, content in rep.sections:
+1039             if showcapture != "all" and showcapture not in secname:
+1040                 continue
+1041             self._tw.sep("-", secname)
+1042             if content[-1:] == "\n":
+1043                 content = content[:-1]
+1044             self._tw.line(content)
+1045 
+1046     def summary_stats(self) -> None:
+1047         if self.verbosity < -1:
+1048             return
+1049 
+1050         session_duration = timing.time() - self._sessionstarttime
+1051         (parts, main_color) = self.build_summary_stats_line()
+1052         line_parts = []
+1053 
+1054         display_sep = self.verbosity >= 0
+1055         if display_sep:
+1056             fullwidth = self._tw.fullwidth
+1057         for text, markup in parts:
+1058             with_markup = self._tw.markup(text, **markup)
+1059             if display_sep:
+1060                 fullwidth += len(with_markup) - len(text)
+1061             line_parts.append(with_markup)
+1062         msg = ", ".join(line_parts)
+1063 
+1064         main_markup = {main_color: True}
+1065         duration = f" in {format_session_duration(session_duration)}"
+1066         duration_with_markup = self._tw.markup(duration, **main_markup)
+1067         if display_sep:
+1068             fullwidth += len(duration_with_markup) - len(duration)
+1069         msg += duration_with_markup
+1070 
+1071         if display_sep:
+1072             markup_for_end_sep = self._tw.markup("", **main_markup)
+1073             if markup_for_end_sep.endswith("\x1b[0m"):
+1074                 markup_for_end_sep = markup_for_end_sep[:-4]
+1075             fullwidth += len(markup_for_end_sep)
+1076             msg += markup_for_end_sep
+1077 
+1078         if display_sep:
+1079             self.write_sep("=", msg, fullwidth=fullwidth, **main_markup)
+1080         else:
+1081             self.write_line(msg, **main_markup)
+1082 
+1083     def short_test_summary(self) -> None:
+1084         if not self.reportchars:
+1085             return
+1086 
+1087         def show_simple(lines: List[str], *, stat: str) -> None:
+1088             failed = self.stats.get(stat, [])
+1089             if not failed:
+1090                 return
+1091             config = self.config
+1092             for rep in failed:
+1093                 color = _color_for_type.get(stat, _color_for_type_default)
+1094                 line = _get_line_with_reprcrash_message(
+1095                     config, rep, self._tw, {color: True}
+1096                 )
+1097                 lines.append(line)
+1098 
+1099         def show_xfailed(lines: List[str]) -> None:
+1100             xfailed = self.stats.get("xfailed", [])
+1101             for rep in xfailed:
+1102                 verbose_word = rep._get_verbose_word(self.config)
+1103                 markup_word = self._tw.markup(
+1104                     verbose_word, **{_color_for_type["warnings"]: True}
+1105                 )
+1106                 nodeid = _get_node_id_with_markup(self._tw, self.config, rep)
+1107                 line = f"{markup_word} {nodeid}"
+1108                 reason = rep.wasxfail
+1109                 if reason:
+1110                     line += " - " + str(reason)
+1111 
+1112                 lines.append(line)
+1113 
+1114         def show_xpassed(lines: List[str]) -> None:
+1115             xpassed = self.stats.get("xpassed", [])
+1116             for rep in xpassed:
+1117                 verbose_word = rep._get_verbose_word(self.config)
+1118                 markup_word = self._tw.markup(
+1119                     verbose_word, **{_color_for_type["warnings"]: True}
+1120                 )
+1121                 nodeid = _get_node_id_with_markup(self._tw, self.config, rep)
+1122                 reason = rep.wasxfail
+1123                 lines.append(f"{markup_word} {nodeid} {reason}")
+1124 
+1125         def show_skipped(lines: List[str]) -> None:
+1126             skipped: List[CollectReport] = self.stats.get("skipped", [])
+1127             fskips = _folded_skips(self.startpath, skipped) if skipped else []
+1128             if not fskips:
+1129                 return
+1130             verbose_word = skipped[0]._get_verbose_word(self.config)
+1131             markup_word = self._tw.markup(
+1132                 verbose_word, **{_color_for_type["warnings"]: True}
+1133             )
+1134             prefix = "Skipped: "
+1135             for num, fspath, lineno, reason in fskips:
+1136                 if reason.startswith(prefix):
+1137                     reason = reason[len(prefix) :]
+1138                 if lineno is not None:
+1139                     lines.append(
+1140                         "%s [%d] %s:%d: %s" % (markup_word, num, fspath, lineno, reason)
+1141                     )
+1142                 else:
+1143                     lines.append("%s [%d] %s: %s" % (markup_word, num, fspath, reason))
+1144 
+1145         REPORTCHAR_ACTIONS: Mapping[str, Callable[[List[str]], None]] = {
+1146             "x": show_xfailed,
+1147             "X": show_xpassed,
+1148             "f": partial(show_simple, stat="failed"),
+1149             "s": show_skipped,
+1150             "p": partial(show_simple, stat="passed"),
+1151             "E": partial(show_simple, stat="error"),
+1152         }
+1153 
+1154         lines: List[str] = []
+1155         for char in self.reportchars:
+1156             action = REPORTCHAR_ACTIONS.get(char)
+1157             if action:  # skipping e.g. "P" (passed with output) here.
+1158                 action(lines)
+1159 
+1160         if lines:
+1161             self.write_sep("=", "short test summary info", cyan=True, bold=True)
+1162             for line in lines:
+1163                 self.write_line(line)
+1164 
+1165     def _get_main_color(self) -> Tuple[str, List[str]]:
+1166         if self._main_color is None or self._known_types is None or self._is_last_item:
+1167             self._set_main_color()
+1168             assert self._main_color
+1169             assert self._known_types
+1170         return self._main_color, self._known_types
+1171 
+1172     def _determine_main_color(self, unknown_type_seen: bool) -> str:
+1173         stats = self.stats
+1174         if "failed" in stats or "error" in stats:
+1175             main_color = "red"
+1176         elif "warnings" in stats or "xpassed" in stats or unknown_type_seen:
+1177             main_color = "yellow"
+1178         elif "passed" in stats or not self._is_last_item:
+1179             main_color = "green"
+1180         else:
+1181             main_color = "yellow"
+1182         return main_color
+1183 
+1184     def _set_main_color(self) -> None:
+1185         unknown_types: List[str] = []
+1186         for found_type in self.stats.keys():
+1187             if found_type:  # setup/teardown reports have an empty key, ignore them
+1188                 if found_type not in KNOWN_TYPES and found_type not in unknown_types:
+1189                     unknown_types.append(found_type)
+1190         self._known_types = list(KNOWN_TYPES) + unknown_types
+1191         self._main_color = self._determine_main_color(bool(unknown_types))
+1192 
+1193     def build_summary_stats_line(self) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1194         """
+1195         Build the parts used in the last summary stats line.
+1196 
+1197         The summary stats line is the line shown at the end, "=== 12 passed, 2 errors in Xs===".
+1198 
+1199         This function builds a list of the "parts" that make up for the text in that line, in
+1200         the example above it would be:
+1201 
+1202             [
+1203                 ("12 passed", {"green": True}),
+1204                 ("2 errors", {"red": True}
+1205             ]
+1206 
+1207         That last dict for each line is a "markup dictionary", used by TerminalWriter to
+1208         color output.
+1209 
+1210         The final color of the line is also determined by this function, and is the second
+1211         element of the returned tuple.
+1212         """
+1213         if self.config.getoption("collectonly"):
+1214             return self._build_collect_only_summary_stats_line()
+1215         else:
+1216             return self._build_normal_summary_stats_line()
+1217 
+1218     def _get_reports_to_display(self, key: str) -> List[Any]:
+1219         """Get test/collection reports for the given status key, such as `passed` or `error`."""
+1220         reports = self.stats.get(key, [])
+1221         return [x for x in reports if getattr(x, "count_towards_summary", True)]
+1222 
+1223     def _build_normal_summary_stats_line(
+1224         self,
+1225     ) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1226         main_color, known_types = self._get_main_color()
+1227         parts = []
+1228 
+1229         for key in known_types:
+1230             reports = self._get_reports_to_display(key)
+1231             if reports:
+1232                 count = len(reports)
+1233                 color = _color_for_type.get(key, _color_for_type_default)
+1234                 markup = {color: True, "bold": color == main_color}
+1235                 parts.append(("%d %s" % pluralize(count, key), markup))
+1236 
+1237         if not parts:
+1238             parts = [("no tests ran", {_color_for_type_default: True})]
+1239 
+1240         return parts, main_color
+1241 
+1242     def _build_collect_only_summary_stats_line(
+1243         self,
+1244     ) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1245         deselected = len(self._get_reports_to_display("deselected"))
+1246         errors = len(self._get_reports_to_display("error"))
+1247 
+1248         if self._numcollected == 0:
+1249             parts = [("no tests collected", {"yellow": True})]
+1250             main_color = "yellow"
+1251 
+1252         elif deselected == 0:
+1253             main_color = "green"
+1254             collected_output = "%d %s collected" % pluralize(self._numcollected, "test")
+1255             parts = [(collected_output, {main_color: True})]
+1256         else:
+1257             all_tests_were_deselected = self._numcollected == deselected
+1258             if all_tests_were_deselected:
+1259                 main_color = "yellow"
+1260                 collected_output = f"no tests collected ({deselected} deselected)"
+1261             else:
+1262                 main_color = "green"
+1263                 selected = self._numcollected - deselected
+1264                 collected_output = f"{selected}/{self._numcollected} tests collected ({deselected} deselected)"
+1265 
+1266             parts = [(collected_output, {main_color: True})]
+1267 
+1268         if errors:
+1269             main_color = _color_for_type["error"]
+1270             parts += [("%d %s" % pluralize(errors, "error"), {main_color: True})]
+1271 
+1272         return parts, main_color
+1273 
+1274 
+1275 def _get_node_id_with_markup(tw: TerminalWriter, config: Config, rep: BaseReport):
+1276     nodeid = config.cwd_relative_nodeid(rep.nodeid)
+1277     path, *parts = nodeid.split("::")
+1278     if parts:
+1279         parts_markup = tw.markup("::".join(parts), bold=True)
+1280         return path + "::" + parts_markup
+1281     else:
+1282         return path
+1283 
+1284 
+1285 def _format_trimmed(format: str, msg: str, available_width: int) -> Optional[str]:
+1286     """Format msg into format, ellipsizing it if doesn't fit in available_width.
+1287 
+1288     Returns None if even the ellipsis can't fit.
+1289     """
+1290     # Only use the first line.
+1291     i = msg.find("\n")
+1292     if i != -1:
+1293         msg = msg[:i]
+1294 
+1295     ellipsis = "..."
+1296     format_width = wcswidth(format.format(""))
+1297     if format_width + len(ellipsis) > available_width:
+1298         return None
+1299 
+1300     if format_width + wcswidth(msg) > available_width:
+1301         available_width -= len(ellipsis)
+1302         msg = msg[:available_width]
+1303         while format_width + wcswidth(msg) > available_width:
+1304             msg = msg[:-1]
+1305         msg += ellipsis
+1306 
+1307     return format.format(msg)
+1308 
+1309 
+1310 def _get_line_with_reprcrash_message(
+1311     config: Config, rep: BaseReport, tw: TerminalWriter, word_markup: Dict[str, bool]
+1312 ) -> str:
+1313     """Get summary line for a report, trying to add reprcrash message."""
+1314     verbose_word = rep._get_verbose_word(config)
+1315     word = tw.markup(verbose_word, **word_markup)
+1316     node = _get_node_id_with_markup(tw, config, rep)
+1317 
+1318     line = f"{word} {node}"
+1319     line_width = wcswidth(line)
+1320 
+1321     try:
+1322         # Type ignored intentionally -- possible AttributeError expected.
+1323         msg = rep.longrepr.reprcrash.message  # type: ignore[union-attr]
+1324     except AttributeError:
+1325         pass
+1326     else:
+1327         if not running_on_ci():
+1328             available_width = tw.fullwidth - line_width
+1329             msg = _format_trimmed(" - {}", msg, available_width)
+1330         else:
+1331             msg = f" - {msg}"
+1332         if msg is not None:
+1333             line += msg
+1334 
+1335     return line
+1336 
+1337 
+1338 def _folded_skips(
+1339     startpath: Path,
+1340     skipped: Sequence[CollectReport],
+1341 ) -> List[Tuple[int, str, Optional[int], str]]:
+1342     d: Dict[Tuple[str, Optional[int], str], List[CollectReport]] = {}
+1343     for event in skipped:
+1344         assert event.longrepr is not None
+1345         assert isinstance(event.longrepr, tuple), (event, event.longrepr)
+1346         assert len(event.longrepr) == 3, (event, event.longrepr)
+1347         fspath, lineno, reason = event.longrepr
+1348         # For consistency, report all fspaths in relative form.
+1349         fspath = bestrelpath(startpath, Path(fspath))
+1350         keywords = getattr(event, "keywords", {})
+1351         # Folding reports with global pytestmark variable.
+1352         # This is a workaround, because for now we cannot identify the scope of a skip marker
+1353         # TODO: Revisit after marks scope would be fixed.
+1354         if (
+1355             event.when == "setup"
+1356             and "skip" in keywords
+1357             and "pytestmark" not in keywords
+1358         ):
+1359             key: Tuple[str, Optional[int], str] = (fspath, None, reason)
+1360         else:
+1361             key = (fspath, lineno, reason)
+1362         d.setdefault(key, []).append(event)
+1363     values: List[Tuple[int, str, Optional[int], str]] = []
+1364     for key, events in d.items():
+1365         values.append((len(events), *key))
+1366     return values
+1367 
+1368 
+1369 _color_for_type = {
+1370     "failed": "red",
+1371     "error": "red",
+1372     "warnings": "yellow",
+1373     "passed": "green",
+1374 }
+1375 _color_for_type_default = "yellow"
+1376 
+1377 
+1378 def pluralize(count: int, noun: str) -> Tuple[int, str]:
+1379     # No need to pluralize words such as `failed` or `passed`.
+1380     if noun not in ["error", "warnings", "test"]:
+1381         return count, noun
+1382 
+1383     # The `warnings` key is plural. To avoid API breakage, we keep it that way but
+1384     # set it to singular here so we can determine plurality in the same way as we do
+1385     # for `error`.
+1386     noun = noun.replace("warnings", "warning")
+1387 
+1388     return count, noun + "s" if count != 1 else noun
+1389 
+1390 
+1391 def _plugin_nameversions(plugininfo) -> List[str]:
+1392     values: List[str] = []
+1393     for plugin, dist in plugininfo:
+1394         # Gets us name and version!
+1395         name = "{dist.project_name}-{dist.version}".format(dist=dist)
+1396         # Questionable convenience, but it keeps things short.
+1397         if name.startswith("pytest-"):
+1398             name = name[7:]
+1399         # We decided to print python package names they can have more than one plugin.
+1400         if name not in values:
+1401             values.append(name)
+1402     return values
+1403 
+1404 
+1405 def format_session_duration(seconds: float) -> str:
+1406     """Format the given seconds in a human readable manner to show in the final summary."""
+1407     if seconds < 60:
+1408         return f"{seconds:.2f}s"
+1409     else:
+1410         dt = datetime.timedelta(seconds=int(seconds))
+1411         return f"{seconds:.2f}s ({dt})"
+1412 
+1413 
+1414 def _get_raw_skip_reason(report: TestReport) -> str:
+1415     """Get the reason string of a skip/xfail/xpass test report.
+1416 
+1417     The string is just the part given by the user.
+1418     """
+1419     if hasattr(report, "wasxfail"):
+1420         reason = cast(str, report.wasxfail)
+1421         if reason.startswith("reason: "):
+1422             reason = reason[len("reason: ") :]
+1423         return reason
+1424     else:
+1425         assert report.skipped
+1426         assert isinstance(report.longrepr, tuple)
+1427         _, _, reason = report.longrepr
+1428         if reason.startswith("Skipped: "):
+1429             reason = reason[len("Skipped: ") :]
+1430         elif reason == "Skipped":
+1431             reason = ""
+1432         return reason
+
+</code><intended_behavior>The method(s) responsible for generating the short test summary (specifically related to handling skipped tests) should be updated or fixed to ensure that whenever a test is skipped due to a fixture condition, the name of the skipped test along with the skip reason is clearly reported. This means enhancing how skipped tests are interpreted and displayed in the summary, ensuring the test names are preserved and displayed alongside their skip reason, rather than just showing the location in the fixture.</intended_behavior>, <file>src/_pytest/skipping.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Support for skip/xfail functions and markers."""
+2 import os
+3 import platform
+4 import sys
+5 import traceback
+6 from collections.abc import Mapping
+7 from typing import Generator
+8 from typing import Optional
+9 from typing import Tuple
+10 from typing import Type
+11 
+12 import attr
+13 
+14 from _pytest.config import Config
+15 from _pytest.config import hookimpl
+16 from _pytest.config.argparsing import Parser
+17 from _pytest.mark.structures import Mark
+18 from _pytest.nodes import Item
+19 from _pytest.outcomes import fail
+20 from _pytest.outcomes import skip
+21 from _pytest.outcomes import xfail
+22 from _pytest.reports import BaseReport
+23 from _pytest.runner import CallInfo
+24 from _pytest.stash import StashKey
+25 
+26 
+27 def pytest_addoption(parser: Parser) -> None:
+28     group = parser.getgroup("general")
+29     group.addoption(
+30         "--runxfail",
+31         action="store_true",
+32         dest="runxfail",
+33         default=False,
+34         help="Report the results of xfail tests as if they were not marked",
+35     )
+36 
+37     parser.addini(
+38         "xfail_strict",
+39         "Default for the strict parameter of xfail "
+40         "markers when not given explicitly (default: False)",
+41         default=False,
+42         type="bool",
+43     )
+44 
+45 
+46 def pytest_configure(config: Config) -> None:
+47     if config.option.runxfail:
+48         # yay a hack
+49         import pytest
+50 
+51         old = pytest.xfail
+52         config.add_cleanup(lambda: setattr(pytest, "xfail", old))
+53 
+54         def nop(*args, **kwargs):
+55             pass
+56 
+57         nop.Exception = xfail.Exception  # type: ignore[attr-defined]
+58         setattr(pytest, "xfail", nop)
+59 
+60     config.addinivalue_line(
+61         "markers",
+62         "skip(reason=None): skip the given test function with an optional reason. "
+63         'Example: skip(reason="no way of currently testing this") skips the '
+64         "test.",
+65     )
+66     config.addinivalue_line(
+67         "markers",
+68         "skipif(condition, ..., *, reason=...): "
+69         "skip the given test function if any of the conditions evaluate to True. "
+70         "Example: skipif(sys.platform == 'win32') skips the test if we are on the win32 platform. "
+71         "See https://docs.pytest.org/en/stable/reference/reference.html#pytest-mark-skipif",
+72     )
+73     config.addinivalue_line(
+74         "markers",
+75         "xfail(condition, ..., *, reason=..., run=True, raises=None, strict=xfail_strict): "
+76         "mark the test function as an expected failure if any of the conditions "
+77         "evaluate to True. Optionally specify a reason for better reporting "
+78         "and run=False if you don't even want to execute the test function. "
+79         "If only specific exception(s) are expected, you can list them in "
+80         "raises, and if the test fails in other ways, it will be reported as "
+81         "a true failure. See https://docs.pytest.org/en/stable/reference/reference.html#pytest-mark-xfail",
+82     )
+83 
+84 
+85 def evaluate_condition(item: Item, mark: Mark, condition: object) -> Tuple[bool, str]:
+86     """Evaluate a single skipif/xfail condition.
+87 
+88     If an old-style string condition is given, it is eval()'d, otherwise the
+89     condition is bool()'d. If this fails, an appropriately formatted pytest.fail
+90     is raised.
+91 
+92     Returns (result, reason). The reason is only relevant if the result is True.
+93     """
+94     # String condition.
+95     if isinstance(condition, str):
+96         globals_ = {
+97             "os": os,
+98             "sys": sys,
+99             "platform": platform,
+100             "config": item.config,
+101         }
+102         for dictionary in reversed(
+103             item.ihook.pytest_markeval_namespace(config=item.config)
+104         ):
+105             if not isinstance(dictionary, Mapping):
+106                 raise ValueError(
+107                     "pytest_markeval_namespace() needs to return a dict, got {!r}".format(
+108                         dictionary
+109                     )
+110                 )
+111             globals_.update(dictionary)
+112         if hasattr(item, "obj"):
+113             globals_.update(item.obj.__globals__)  # type: ignore[attr-defined]
+114         try:
+115             filename = f"<{mark.name} condition>"
+116             condition_code = compile(condition, filename, "eval")
+117             result = eval(condition_code, globals_)
+118         except SyntaxError as exc:
+119             msglines = [
+120                 "Error evaluating %r condition" % mark.name,
+121                 "    " + condition,
+122                 "    " + " " * (exc.offset or 0) + "^",
+123                 "SyntaxError: invalid syntax",
+124             ]
+125             fail("\n".join(msglines), pytrace=False)
+126         except Exception as exc:
+127             msglines = [
+128                 "Error evaluating %r condition" % mark.name,
+129                 "    " + condition,
+130                 *traceback.format_exception_only(type(exc), exc),
+131             ]
+132             fail("\n".join(msglines), pytrace=False)
+133 
+134     # Boolean condition.
+135     else:
+136         try:
+137             result = bool(condition)
+138         except Exception as exc:
+139             msglines = [
+140                 "Error evaluating %r condition as a boolean" % mark.name,
+141                 *traceback.format_exception_only(type(exc), exc),
+142             ]
+143             fail("\n".join(msglines), pytrace=False)
+144 
+145     reason = mark.kwargs.get("reason", None)
+146     if reason is None:
+147         if isinstance(condition, str):
+148             reason = "condition: " + condition
+149         else:
+150             # XXX better be checked at collection time
+151             msg = (
+152                 "Error evaluating %r: " % mark.name
+153                 + "you need to specify reason=STRING when using booleans as conditions."
+154             )
+155             fail(msg, pytrace=False)
+156 
+157     return result, reason
+158 
+159 
+160 @attr.s(slots=True, frozen=True, auto_attribs=True)
+161 class Skip:
+162     """The result of evaluate_skip_marks()."""
+163 
+164     reason: str = "unconditional skip"
+165 
+166 
+167 def evaluate_skip_marks(item: Item) -> Optional[Skip]:
+168     """Evaluate skip and skipif marks on item, returning Skip if triggered."""
+169     for mark in item.iter_markers(name="skipif"):
+170         if "condition" not in mark.kwargs:
+171             conditions = mark.args
+172         else:
+173             conditions = (mark.kwargs["condition"],)
+174 
+175         # Unconditional.
+176         if not conditions:
+177             reason = mark.kwargs.get("reason", "")
+178             return Skip(reason)
+179 
+180         # If any of the conditions are true.
+181         for condition in conditions:
+182             result, reason = evaluate_condition(item, mark, condition)
+183             if result:
+184                 return Skip(reason)
+185 
+186     for mark in item.iter_markers(name="skip"):
+187         try:
+188             return Skip(*mark.args, **mark.kwargs)
+189         except TypeError as e:
+190             raise TypeError(str(e) + " - maybe you meant pytest.mark.skipif?") from None
+191 
+192     return None
+193 
+194 
+195 @attr.s(slots=True, frozen=True, auto_attribs=True)
+196 class Xfail:
+197     """The result of evaluate_xfail_marks()."""
+198 
+199     reason: str
+200     run: bool
+201     strict: bool
+202     raises: Optional[Tuple[Type[BaseException], ...]]
+203 
+204 
+205 def evaluate_xfail_marks(item: Item) -> Optional[Xfail]:
+206     """Evaluate xfail marks on item, returning Xfail if triggered."""
+207     for mark in item.iter_markers(name="xfail"):
+208         run = mark.kwargs.get("run", True)
+209         strict = mark.kwargs.get("strict", item.config.getini("xfail_strict"))
+210         raises = mark.kwargs.get("raises", None)
+211         if "condition" not in mark.kwargs:
+212             conditions = mark.args
+213         else:
+214             conditions = (mark.kwargs["condition"],)
+215 
+216         # Unconditional.
+217         if not conditions:
+218             reason = mark.kwargs.get("reason", "")
+219             return Xfail(reason, run, strict, raises)
+220 
+221         # If any of the conditions are true.
+222         for condition in conditions:
+223             result, reason = evaluate_condition(item, mark, condition)
+224             if result:
+225                 return Xfail(reason, run, strict, raises)
+226 
+227     return None
+228 
+229 
+230 # Saves the xfail mark evaluation. Can be refreshed during call if None.
+231 xfailed_key = StashKey[Optional[Xfail]]()
+232 
+233 
+234 @hookimpl(tryfirst=True)
+235 def pytest_runtest_setup(item: Item) -> None:
+236     skipped = evaluate_skip_marks(item)
+237     if skipped:
+238         raise skip.Exception(skipped.reason, _use_item_location=True)
+239 
+240     item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+241     if xfailed and not item.config.option.runxfail and not xfailed.run:
+242         xfail("[NOTRUN] " + xfailed.reason)
+243 
+244 
+245 @hookimpl(hookwrapper=True)
+246 def pytest_runtest_call(item: Item) -> Generator[None, None, None]:
+247     xfailed = item.stash.get(xfailed_key, None)
+248     if xfailed is None:
+249         item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+250 
+251     if xfailed and not item.config.option.runxfail and not xfailed.run:
+252         xfail("[NOTRUN] " + xfailed.reason)
+253 
+254     yield
+255 
+256     # The test run may have added an xfail mark dynamically.
+257     xfailed = item.stash.get(xfailed_key, None)
+258     if xfailed is None:
+259         item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+260 
+261 
+262 @hookimpl(hookwrapper=True)
+263 def pytest_runtest_makereport(item: Item, call: CallInfo[None]):
+264     outcome = yield
+265     rep = outcome.get_result()
+266     xfailed = item.stash.get(xfailed_key, None)
+267     if item.config.option.runxfail:
+268         pass  # don't interfere
+269     elif call.excinfo and isinstance(call.excinfo.value, xfail.Exception):
+270         assert call.excinfo.value.msg is not None
+271         rep.wasxfail = "reason: " + call.excinfo.value.msg
+272         rep.outcome = "skipped"
+273     elif not rep.skipped and xfailed:
+274         if call.excinfo:
+275             raises = xfailed.raises
+276             if raises is not None and not isinstance(call.excinfo.value, raises):
+277                 rep.outcome = "failed"
+278             else:
+279                 rep.outcome = "skipped"
+280                 rep.wasxfail = xfailed.reason
+281         elif call.when == "call":
+282             if xfailed.strict:
+283                 rep.outcome = "failed"
+284                 rep.longrepr = "[XPASS(strict)] " + xfailed.reason
+285             else:
+286                 rep.outcome = "passed"
+287                 rep.wasxfail = xfailed.reason
+288 
+289 
+290 def pytest_report_teststatus(report: BaseReport) -> Optional[Tuple[str, str, str]]:
+291     if hasattr(report, "wasxfail"):
+292         if report.skipped:
+293             return "xfailed", "x", "XFAIL"
+294         elif report.passed:
+295             return "xpassed", "X", "XPASS"
+296     return None
+
+</code><intended_behavior>Enhance or fix the logic within this file that records a skip event to ensure that enough context is preserved about the skip reason and which test it pertains to. Specifically, when a test is skipped from within a fixture, ensure that the linkage between the skip reason and the test name is maintained and made available to the reporting mechanism. This could involve modifying how skip reasons are recorded or how skip events are associated with specific tests in the summary report.</intended_behavior>]
+2026-01-15 03:46:52.231 | INFO     | Search completed. Bug locations: [<file>src/_pytest/terminal.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Terminal reporting of the full testing process.
+2 
+3 This is a good source for looking at the various reporting hooks.
+4 """
+5 import argparse
+6 import datetime
+7 import inspect
+8 import platform
+9 import sys
+10 import warnings
+11 from collections import Counter
+12 from functools import partial
+13 from pathlib import Path
+14 from typing import Any
+15 from typing import Callable
+16 from typing import cast
+17 from typing import ClassVar
+18 from typing import Dict
+19 from typing import Generator
+20 from typing import List
+21 from typing import Mapping
+22 from typing import Optional
+23 from typing import Sequence
+24 from typing import Set
+25 from typing import TextIO
+26 from typing import Tuple
+27 from typing import TYPE_CHECKING
+28 from typing import Union
+29 
+30 import attr
+31 import pluggy
+32 
+33 import _pytest._version
+34 from _pytest import nodes
+35 from _pytest import timing
+36 from _pytest._code import ExceptionInfo
+37 from _pytest._code.code import ExceptionRepr
+38 from _pytest._io import TerminalWriter
+39 from _pytest._io.wcwidth import wcswidth
+40 from _pytest.assertion.util import running_on_ci
+41 from _pytest.compat import final
+42 from _pytest.config import _PluggyPlugin
+43 from _pytest.config import Config
+44 from _pytest.config import ExitCode
+45 from _pytest.config import hookimpl
+46 from _pytest.config.argparsing import Parser
+47 from _pytest.nodes import Item
+48 from _pytest.nodes import Node
+49 from _pytest.pathlib import absolutepath
+50 from _pytest.pathlib import bestrelpath
+51 from _pytest.reports import BaseReport
+52 from _pytest.reports import CollectReport
+53 from _pytest.reports import TestReport
+54 
+55 if TYPE_CHECKING:
+56     from typing_extensions import Literal
+57 
+58     from _pytest.main import Session
+59 
+60 
+61 REPORT_COLLECTING_RESOLUTION = 0.5
+62 
+63 KNOWN_TYPES = (
+64     "failed",
+65     "passed",
+66     "skipped",
+67     "deselected",
+68     "xfailed",
+69     "xpassed",
+70     "warnings",
+71     "error",
+72 )
+73 
+74 _REPORTCHARS_DEFAULT = "fE"
+75 
+76 
+77 class MoreQuietAction(argparse.Action):
+78     """A modified copy of the argparse count action which counts down and updates
+79     the legacy quiet attribute at the same time.
+80 
+81     Used to unify verbosity handling.
+82     """
+83 
+84     def __init__(
+85         self,
+86         option_strings: Sequence[str],
+87         dest: str,
+88         default: object = None,
+89         required: bool = False,
+90         help: Optional[str] = None,
+91     ) -> None:
+92         super().__init__(
+93             option_strings=option_strings,
+94             dest=dest,
+95             nargs=0,
+96             default=default,
+97             required=required,
+98             help=help,
+99         )
+100 
+101     def __call__(
+102         self,
+103         parser: argparse.ArgumentParser,
+104         namespace: argparse.Namespace,
+105         values: Union[str, Sequence[object], None],
+106         option_string: Optional[str] = None,
+107     ) -> None:
+108         new_count = getattr(namespace, self.dest, 0) - 1
+109         setattr(namespace, self.dest, new_count)
+110         # todo Deprecate config.quiet
+111         namespace.quiet = getattr(namespace, "quiet", 0) + 1
+112 
+113 
+114 def pytest_addoption(parser: Parser) -> None:
+115     group = parser.getgroup("terminal reporting", "Reporting", after="general")
+116     group._addoption(
+117         "-v",
+118         "--verbose",
+119         action="count",
+120         default=0,
+121         dest="verbose",
+122         help="Increase verbosity",
+123     )
+124     group._addoption(
+125         "--no-header",
+126         action="store_true",
+127         default=False,
+128         dest="no_header",
+129         help="Disable header",
+130     )
+131     group._addoption(
+132         "--no-summary",
+133         action="store_true",
+134         default=False,
+135         dest="no_summary",
+136         help="Disable summary",
+137     )
+138     group._addoption(
+139         "-q",
+140         "--quiet",
+141         action=MoreQuietAction,
+142         default=0,
+143         dest="verbose",
+144         help="Decrease verbosity",
+145     )
+146     group._addoption(
+147         "--verbosity",
+148         dest="verbose",
+149         type=int,
+150         default=0,
+151         help="Set verbosity. Default: 0.",
+152     )
+153     group._addoption(
+154         "-r",
+155         action="store",
+156         dest="reportchars",
+157         default=_REPORTCHARS_DEFAULT,
+158         metavar="chars",
+159         help="Show extra test summary info as specified by chars: (f)ailed, "
+160         "(E)rror, (s)kipped, (x)failed, (X)passed, "
+161         "(p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll. "
+162         "(w)arnings are enabled by default (see --disable-warnings), "
+163         "'N' can be used to reset the list. (default: 'fE').",
+164     )
+165     group._addoption(
+166         "--disable-warnings",
+167         "--disable-pytest-warnings",
+168         default=False,
+169         dest="disable_warnings",
+170         action="store_true",
+171         help="Disable warnings summary",
+172     )
+173     group._addoption(
+174         "-l",
+175         "--showlocals",
+176         action="store_true",
+177         dest="showlocals",
+178         default=False,
+179         help="Show locals in tracebacks (disabled by default)",
+180     )
+181     group._addoption(
+182         "--no-showlocals",
+183         action="store_false",
+184         dest="showlocals",
+185         help="Hide locals in tracebacks (negate --showlocals passed through addopts)",
+186     )
+187     group._addoption(
+188         "--tb",
+189         metavar="style",
+190         action="store",
+191         dest="tbstyle",
+192         default="auto",
+193         choices=["auto", "long", "short", "no", "line", "native"],
+194         help="Traceback print mode (auto/long/short/line/native/no)",
+195     )
+196     group._addoption(
+197         "--show-capture",
+198         action="store",
+199         dest="showcapture",
+200         choices=["no", "stdout", "stderr", "log", "all"],
+201         default="all",
+202         help="Controls how captured stdout/stderr/log is shown on failed tests. "
+203         "Default: all.",
+204     )
+205     group._addoption(
+206         "--fulltrace",
+207         "--full-trace",
+208         action="store_true",
+209         default=False,
+210         help="Don't cut any tracebacks (default is to cut)",
+211     )
+212     group._addoption(
+213         "--color",
+214         metavar="color",
+215         action="store",
+216         dest="color",
+217         default="auto",
+218         choices=["yes", "no", "auto"],
+219         help="Color terminal output (yes/no/auto)",
+220     )
+221     group._addoption(
+222         "--code-highlight",
+223         default="yes",
+224         choices=["yes", "no"],
+225         help="Whether code should be highlighted (only if --color is also enabled). "
+226         "Default: yes.",
+227     )
+228 
+229     parser.addini(
+230         "console_output_style",
+231         help='Console output: "classic", or with additional progress information '
+232         '("progress" (percentage) | "count")',
+233         default="progress",
+234     )
+235 
+236 
+237 def pytest_configure(config: Config) -> None:
+238     reporter = TerminalReporter(config, sys.stdout)
+239     config.pluginmanager.register(reporter, "terminalreporter")
+240     if config.option.debug or config.option.traceconfig:
+241 
+242         def mywriter(tags, args):
+243             msg = " ".join(map(str, args))
+244             reporter.write_line("[traceconfig] " + msg)
+245 
+246         config.trace.root.setprocessor("pytest:config", mywriter)
+247 
+248 
+249 def getreportopt(config: Config) -> str:
+250     reportchars: str = config.option.reportchars
+251 
+252     old_aliases = {"F", "S"}
+253     reportopts = ""
+254     for char in reportchars:
+255         if char in old_aliases:
+256             char = char.lower()
+257         if char == "a":
+258             reportopts = "sxXEf"
+259         elif char == "A":
+260             reportopts = "PpsxXEf"
+261         elif char == "N":
+262             reportopts = ""
+263         elif char not in reportopts:
+264             reportopts += char
+265 
+266     if not config.option.disable_warnings and "w" not in reportopts:
+267         reportopts = "w" + reportopts
+268     elif config.option.disable_warnings and "w" in reportopts:
+269         reportopts = reportopts.replace("w", "")
+270 
+271     return reportopts
+272 
+273 
+274 @hookimpl(trylast=True)  # after _pytest.runner
+275 def pytest_report_teststatus(report: BaseReport) -> Tuple[str, str, str]:
+276     letter = "F"
+277     if report.passed:
+278         letter = "."
+279     elif report.skipped:
+280         letter = "s"
+281 
+282     outcome: str = report.outcome
+283     if report.when in ("collect", "setup", "teardown") and outcome == "failed":
+284         outcome = "error"
+285         letter = "E"
+286 
+287     return outcome, letter, outcome.upper()
+288 
+289 
+290 @attr.s(auto_attribs=True)
+291 class WarningReport:
+292     """Simple structure to hold warnings information captured by ``pytest_warning_recorded``.
+293 
+294     :ivar str message:
+295         User friendly message about the warning.
+296     :ivar str|None nodeid:
+297         nodeid that generated the warning (see ``get_location``).
+298     :ivar tuple fslocation:
+299         File system location of the source of the warning (see ``get_location``).
+300     """
+301 
+302     message: str
+303     nodeid: Optional[str] = None
+304     fslocation: Optional[Tuple[str, int]] = None
+305 
+306     count_towards_summary: ClassVar = True
+307 
+308     def get_location(self, config: Config) -> Optional[str]:
+309         """Return the more user-friendly information about the location of a warning, or None."""
+310         if self.nodeid:
+311             return self.nodeid
+312         if self.fslocation:
+313             filename, linenum = self.fslocation
+314             relpath = bestrelpath(config.invocation_params.dir, absolutepath(filename))
+315             return f"{relpath}:{linenum}"
+316         return None
+317 
+318 
+319 @final
+320 class TerminalReporter:
+321     def __init__(self, config: Config, file: Optional[TextIO] = None) -> None:
+322         import _pytest.config
+323 
+324         self.config = config
+325         self._numcollected = 0
+326         self._session: Optional[Session] = None
+327         self._showfspath: Optional[bool] = None
+328 
+329         self.stats: Dict[str, List[Any]] = {}
+330         self._main_color: Optional[str] = None
+331         self._known_types: Optional[List[str]] = None
+332         self.startpath = config.invocation_params.dir
+333         if file is None:
+334             file = sys.stdout
+335         self._tw = _pytest.config.create_terminal_writer(config, file)
+336         self._screen_width = self._tw.fullwidth
+337         self.currentfspath: Union[None, Path, str, int] = None
+338         self.reportchars = getreportopt(config)
+339         self.hasmarkup = self._tw.hasmarkup
+340         self.isatty = file.isatty()
+341         self._progress_nodeids_reported: Set[str] = set()
+342         self._show_progress_info = self._determine_show_progress_info()
+343         self._collect_report_last_write: Optional[float] = None
+344         self._already_displayed_warnings: Optional[int] = None
+345         self._keyboardinterrupt_memo: Optional[ExceptionRepr] = None
+346 
+347     def _determine_show_progress_info(self) -> "Literal['progress', 'count', False]":
+348         """Return whether we should display progress information based on the current config."""
+349         # do not show progress if we are not capturing output (#3038)
+350         if self.config.getoption("capture", "no") == "no":
+351             return False
+352         # do not show progress if we are showing fixture setup/teardown
+353         if self.config.getoption("setupshow", False):
+354             return False
+355         cfg: str = self.config.getini("console_output_style")
+356         if cfg == "progress":
+357             return "progress"
+358         elif cfg == "count":
+359             return "count"
+360         else:
+361             return False
+362 
+363     @property
+364     def verbosity(self) -> int:
+365         verbosity: int = self.config.option.verbose
+366         return verbosity
+367 
+368     @property
+369     def showheader(self) -> bool:
+370         return self.verbosity >= 0
+371 
+372     @property
+373     def no_header(self) -> bool:
+374         return bool(self.config.option.no_header)
+375 
+376     @property
+377     def no_summary(self) -> bool:
+378         return bool(self.config.option.no_summary)
+379 
+380     @property
+381     def showfspath(self) -> bool:
+382         if self._showfspath is None:
+383             return self.verbosity >= 0
+384         return self._showfspath
+385 
+386     @showfspath.setter
+387     def showfspath(self, value: Optional[bool]) -> None:
+388         self._showfspath = value
+389 
+390     @property
+391     def showlongtestinfo(self) -> bool:
+392         return self.verbosity > 0
+393 
+394     def hasopt(self, char: str) -> bool:
+395         char = {"xfailed": "x", "skipped": "s"}.get(char, char)
+396         return char in self.reportchars
+397 
+398     def write_fspath_result(self, nodeid: str, res, **markup: bool) -> None:
+399         fspath = self.config.rootpath / nodeid.split("::")[0]
+400         if self.currentfspath is None or fspath != self.currentfspath:
+401             if self.currentfspath is not None and self._show_progress_info:
+402                 self._write_progress_information_filling_space()
+403             self.currentfspath = fspath
+404             relfspath = bestrelpath(self.startpath, fspath)
+405             self._tw.line()
+406             self._tw.write(relfspath + " ")
+407         self._tw.write(res, flush=True, **markup)
+408 
+409     def write_ensure_prefix(self, prefix: str, extra: str = "", **kwargs) -> None:
+410         if self.currentfspath != prefix:
+411             self._tw.line()
+412             self.currentfspath = prefix
+413             self._tw.write(prefix)
+414         if extra:
+415             self._tw.write(extra, **kwargs)
+416             self.currentfspath = -2
+417 
+418     def ensure_newline(self) -> None:
+419         if self.currentfspath:
+420             self._tw.line()
+421             self.currentfspath = None
+422 
+423     def write(self, content: str, *, flush: bool = False, **markup: bool) -> None:
+424         self._tw.write(content, flush=flush, **markup)
+425 
+426     def flush(self) -> None:
+427         self._tw.flush()
+428 
+429     def write_line(self, line: Union[str, bytes], **markup: bool) -> None:
+430         if not isinstance(line, str):
+431             line = str(line, errors="replace")
+432         self.ensure_newline()
+433         self._tw.line(line, **markup)
+434 
+435     def rewrite(self, line: str, **markup: bool) -> None:
+436         """Rewinds the terminal cursor to the beginning and writes the given line.
+437 
+438         :param erase:
+439             If True, will also add spaces until the full terminal width to ensure
+440             previous lines are properly erased.
+441 
+442         The rest of the keyword arguments are markup instructions.
+443         """
+444         erase = markup.pop("erase", False)
+445         if erase:
+446             fill_count = self._tw.fullwidth - len(line) - 1
+447             fill = " " * fill_count
+448         else:
+449             fill = ""
+450         line = str(line)
+451         self._tw.write("\r" + line + fill, **markup)
+452 
+453     def write_sep(
+454         self,
+455         sep: str,
+456         title: Optional[str] = None,
+457         fullwidth: Optional[int] = None,
+458         **markup: bool,
+459     ) -> None:
+460         self.ensure_newline()
+461         self._tw.sep(sep, title, fullwidth, **markup)
+462 
+463     def section(self, title: str, sep: str = "=", **kw: bool) -> None:
+464         self._tw.sep(sep, title, **kw)
+465 
+466     def line(self, msg: str, **kw: bool) -> None:
+467         self._tw.line(msg, **kw)
+468 
+469     def _add_stats(self, category: str, items: Sequence[Any]) -> None:
+470         set_main_color = category not in self.stats
+471         self.stats.setdefault(category, []).extend(items)
+472         if set_main_color:
+473             self._set_main_color()
+474 
+475     def pytest_internalerror(self, excrepr: ExceptionRepr) -> bool:
+476         for line in str(excrepr).split("\n"):
+477             self.write_line("INTERNALERROR> " + line)
+478         return True
+479 
+480     def pytest_warning_recorded(
+481         self,
+482         warning_message: warnings.WarningMessage,
+483         nodeid: str,
+484     ) -> None:
+485         from _pytest.warnings import warning_record_to_str
+486 
+487         fslocation = warning_message.filename, warning_message.lineno
+488         message = warning_record_to_str(warning_message)
+489 
+490         warning_report = WarningReport(
+491             fslocation=fslocation, message=message, nodeid=nodeid
+492         )
+493         self._add_stats("warnings", [warning_report])
+494 
+495     def pytest_plugin_registered(self, plugin: _PluggyPlugin) -> None:
+496         if self.config.option.traceconfig:
+497             msg = f"PLUGIN registered: {plugin}"
+498             # XXX This event may happen during setup/teardown time
+499             #     which unfortunately captures our output here
+500             #     which garbles our output if we use self.write_line.
+501             self.write_line(msg)
+502 
+503     def pytest_deselected(self, items: Sequence[Item]) -> None:
+504         self._add_stats("deselected", items)
+505 
+506     def pytest_runtest_logstart(
+507         self, nodeid: str, location: Tuple[str, Optional[int], str]
+508     ) -> None:
+509         # Ensure that the path is printed before the
+510         # 1st test of a module starts running.
+511         if self.showlongtestinfo:
+512             line = self._locationline(nodeid, *location)
+513             self.write_ensure_prefix(line, "")
+514             self.flush()
+515         elif self.showfspath:
+516             self.write_fspath_result(nodeid, "")
+517             self.flush()
+518 
+519     def pytest_runtest_logreport(self, report: TestReport) -> None:
+520         self._tests_ran = True
+521         rep = report
+522         res: Tuple[
+523             str, str, Union[str, Tuple[str, Mapping[str, bool]]]
+524         ] = self.config.hook.pytest_report_teststatus(report=rep, config=self.config)
+525         category, letter, word = res
+526         if not isinstance(word, tuple):
+527             markup = None
+528         else:
+529             word, markup = word
+530         self._add_stats(category, [rep])
+531         if not letter and not word:
+532             # Probably passed setup/teardown.
+533             return
+534         running_xdist = hasattr(rep, "node")
+535         if markup is None:
+536             was_xfail = hasattr(report, "wasxfail")
+537             if rep.passed and not was_xfail:
+538                 markup = {"green": True}
+539             elif rep.passed and was_xfail:
+540                 markup = {"yellow": True}
+541             elif rep.failed:
+542                 markup = {"red": True}
+543             elif rep.skipped:
+544                 markup = {"yellow": True}
+545             else:
+546                 markup = {}
+547         if self.verbosity <= 0:
+548             self._tw.write(letter, **markup)
+549         else:
+550             self._progress_nodeids_reported.add(rep.nodeid)
+551             line = self._locationline(rep.nodeid, *rep.location)
+552             if not running_xdist:
+553                 self.write_ensure_prefix(line, word, **markup)
+554                 if rep.skipped or hasattr(report, "wasxfail"):
+555                     reason = _get_raw_skip_reason(rep)
+556                     if self.config.option.verbose < 2:
+557                         available_width = (
+558                             (self._tw.fullwidth - self._tw.width_of_current_line)
+559                             - len(" [100%]")
+560                             - 1
+561                         )
+562                         formatted_reason = _format_trimmed(
+563                             " ({})", reason, available_width
+564                         )
+565                     else:
+566                         formatted_reason = f" ({reason})"
+567 
+568                     if reason and formatted_reason is not None:
+569                         self._tw.write(formatted_reason)
+570                 if self._show_progress_info:
+571                     self._write_progress_information_filling_space()
+572             else:
+573                 self.ensure_newline()
+574                 self._tw.write("[%s]" % rep.node.gateway.id)
+575                 if self._show_progress_info:
+576                     self._tw.write(
+577                         self._get_progress_information_message() + " ", cyan=True
+578                     )
+579                 else:
+580                     self._tw.write(" ")
+581                 self._tw.write(word, **markup)
+582                 self._tw.write(" " + line)
+583                 self.currentfspath = -2
+584         self.flush()
+585 
+586     @property
+587     def _is_last_item(self) -> bool:
+588         assert self._session is not None
+589         return len(self._progress_nodeids_reported) == self._session.testscollected
+590 
+591     def pytest_runtest_logfinish(self, nodeid: str) -> None:
+592         assert self._session
+593         if self.verbosity <= 0 and self._show_progress_info:
+594             if self._show_progress_info == "count":
+595                 num_tests = self._session.testscollected
+596                 progress_length = len(f" [{num_tests}/{num_tests}]")
+597             else:
+598                 progress_length = len(" [100%]")
+599 
+600             self._progress_nodeids_reported.add(nodeid)
+601 
+602             if self._is_last_item:
+603                 self._write_progress_information_filling_space()
+604             else:
+605                 main_color, _ = self._get_main_color()
+606                 w = self._width_of_current_line
+607                 past_edge = w + progress_length + 1 >= self._screen_width
+608                 if past_edge:
+609                     msg = self._get_progress_information_message()
+610                     self._tw.write(msg + "\n", **{main_color: True})
+611 
+612     def _get_progress_information_message(self) -> str:
+613         assert self._session
+614         collected = self._session.testscollected
+615         if self._show_progress_info == "count":
+616             if collected:
+617                 progress = self._progress_nodeids_reported
+618                 counter_format = f"{{:{len(str(collected))}d}}"
+619                 format_string = f" [{counter_format}/{{}}]"
+620                 return format_string.format(len(progress), collected)
+621             return f" [ {collected} / {collected} ]"
+622         else:
+623             if collected:
+624                 return " [{:3d}%]".format(
+625                     len(self._progress_nodeids_reported) * 100 // collected
+626                 )
+627             return " [100%]"
+628 
+629     def _write_progress_information_filling_space(self) -> None:
+630         color, _ = self._get_main_color()
+631         msg = self._get_progress_information_message()
+632         w = self._width_of_current_line
+633         fill = self._tw.fullwidth - w - 1
+634         self.write(msg.rjust(fill), flush=True, **{color: True})
+635 
+636     @property
+637     def _width_of_current_line(self) -> int:
+638         """Return the width of the current line."""
+639         return self._tw.width_of_current_line
+640 
+641     def pytest_collection(self) -> None:
+642         if self.isatty:
+643             if self.config.option.verbose >= 0:
+644                 self.write("collecting ... ", flush=True, bold=True)
+645                 self._collect_report_last_write = timing.time()
+646         elif self.config.option.verbose >= 1:
+647             self.write("collecting ... ", flush=True, bold=True)
+648 
+649     def pytest_collectreport(self, report: CollectReport) -> None:
+650         if report.failed:
+651             self._add_stats("error", [report])
+652         elif report.skipped:
+653             self._add_stats("skipped", [report])
+654         items = [x for x in report.result if isinstance(x, Item)]
+655         self._numcollected += len(items)
+656         if self.isatty:
+657             self.report_collect()
+658 
+659     def report_collect(self, final: bool = False) -> None:
+660         if self.config.option.verbose < 0:
+661             return
+662 
+663         if not final:
+664             # Only write "collecting" report every 0.5s.
+665             t = timing.time()
+666             if (
+667                 self._collect_report_last_write is not None
+668                 and self._collect_report_last_write > t - REPORT_COLLECTING_RESOLUTION
+669             ):
+670                 return
+671             self._collect_report_last_write = t
+672 
+673         errors = len(self.stats.get("error", []))
+674         skipped = len(self.stats.get("skipped", []))
+675         deselected = len(self.stats.get("deselected", []))
+676         selected = self._numcollected - deselected
+677         line = "collected " if final else "collecting "
+678         line += (
+679             str(self._numcollected) + " item" + ("" if self._numcollected == 1 else "s")
+680         )
+681         if errors:
+682             line += " / %d error%s" % (errors, "s" if errors != 1 else "")
+683         if deselected:
+684             line += " / %d deselected" % deselected
+685         if skipped:
+686             line += " / %d skipped" % skipped
+687         if self._numcollected > selected:
+688             line += " / %d selected" % selected
+689         if self.isatty:
+690             self.rewrite(line, bold=True, erase=True)
+691             if final:
+692                 self.write("\n")
+693         else:
+694             self.write_line(line)
+695 
+696     @hookimpl(trylast=True)
+697     def pytest_sessionstart(self, session: "Session") -> None:
+698         self._session = session
+699         self._sessionstarttime = timing.time()
+700         if not self.showheader:
+701             return
+702         self.write_sep("=", "test session starts", bold=True)
+703         verinfo = platform.python_version()
+704         if not self.no_header:
+705             msg = f"platform {sys.platform} -- Python {verinfo}"
+706             pypy_version_info = getattr(sys, "pypy_version_info", None)
+707             if pypy_version_info:
+708                 verinfo = ".".join(map(str, pypy_version_info[:3]))
+709                 msg += f"[pypy-{verinfo}-{pypy_version_info[3]}]"
+710             msg += ", pytest-{}, pluggy-{}".format(
+711                 _pytest._version.version, pluggy.__version__
+712             )
+713             if (
+714                 self.verbosity > 0
+715                 or self.config.option.debug
+716                 or getattr(self.config.option, "pastebin", None)
+717             ):
+718                 msg += " -- " + str(sys.executable)
+719             self.write_line(msg)
+720             lines = self.config.hook.pytest_report_header(
+721                 config=self.config, start_path=self.startpath
+722             )
+723             self._write_report_lines_from_hooks(lines)
+724 
+725     def _write_report_lines_from_hooks(
+726         self, lines: Sequence[Union[str, Sequence[str]]]
+727     ) -> None:
+728         for line_or_lines in reversed(lines):
+729             if isinstance(line_or_lines, str):
+730                 self.write_line(line_or_lines)
+731             else:
+732                 for line in line_or_lines:
+733                     self.write_line(line)
+734 
+735     def pytest_report_header(self, config: Config) -> List[str]:
+736         line = "rootdir: %s" % config.rootpath
+737 
+738         if config.inipath:
+739             line += ", configfile: " + bestrelpath(config.rootpath, config.inipath)
+740 
+741         if config.args_source == Config.ArgsSource.TESTPATHS:
+742             testpaths: List[str] = config.getini("testpaths")
+743             line += ", testpaths: {}".format(", ".join(testpaths))
+744 
+745         result = [line]
+746 
+747         plugininfo = config.pluginmanager.list_plugin_distinfo()
+748         if plugininfo:
+749             result.append("plugins: %s" % ", ".join(_plugin_nameversions(plugininfo)))
+750         return result
+751 
+752     def pytest_collection_finish(self, session: "Session") -> None:
+753         self.report_collect(True)
+754 
+755         lines = self.config.hook.pytest_report_collectionfinish(
+756             config=self.config,
+757             start_path=self.startpath,
+758             items=session.items,
+759         )
+760         self._write_report_lines_from_hooks(lines)
+761 
+762         if self.config.getoption("collectonly"):
+763             if session.items:
+764                 if self.config.option.verbose > -1:
+765                     self._tw.line("")
+766                 self._printcollecteditems(session.items)
+767 
+768             failed = self.stats.get("failed")
+769             if failed:
+770                 self._tw.sep("!", "collection failures")
+771                 for rep in failed:
+772                     rep.toterminal(self._tw)
+773 
+774     def _printcollecteditems(self, items: Sequence[Item]) -> None:
+775         if self.config.option.verbose < 0:
+776             if self.config.option.verbose < -1:
+777                 counts = Counter(item.nodeid.split("::", 1)[0] for item in items)
+778                 for name, count in sorted(counts.items()):
+779                     self._tw.line("%s: %d" % (name, count))
+780             else:
+781                 for item in items:
+782                     self._tw.line(item.nodeid)
+783             return
+784         stack: List[Node] = []
+785         indent = ""
+786         for item in items:
+787             needed_collectors = item.listchain()[1:]  # strip root node
+788             while stack:
+789                 if stack == needed_collectors[: len(stack)]:
+790                     break
+791                 stack.pop()
+792             for col in needed_collectors[len(stack) :]:
+793                 stack.append(col)
+794                 indent = (len(stack) - 1) * "  "
+795                 self._tw.line(f"{indent}{col}")
+796                 if self.config.option.verbose >= 1:
+797                     obj = getattr(col, "obj", None)
+798                     doc = inspect.getdoc(obj) if obj else None
+799                     if doc:
+800                         for line in doc.splitlines():
+801                             self._tw.line("{}{}".format(indent + "  ", line))
+802 
+803     @hookimpl(hookwrapper=True)
+804     def pytest_sessionfinish(
+805         self, session: "Session", exitstatus: Union[int, ExitCode]
+806     ):
+807         outcome = yield
+808         outcome.get_result()
+809         self._tw.line("")
+810         summary_exit_codes = (
+811             ExitCode.OK,
+812             ExitCode.TESTS_FAILED,
+813             ExitCode.INTERRUPTED,
+814             ExitCode.USAGE_ERROR,
+815             ExitCode.NO_TESTS_COLLECTED,
+816         )
+817         if exitstatus in summary_exit_codes and not self.no_summary:
+818             self.config.hook.pytest_terminal_summary(
+819                 terminalreporter=self, exitstatus=exitstatus, config=self.config
+820             )
+821         if session.shouldfail:
+822             self.write_sep("!", str(session.shouldfail), red=True)
+823         if exitstatus == ExitCode.INTERRUPTED:
+824             self._report_keyboardinterrupt()
+825             self._keyboardinterrupt_memo = None
+826         elif session.shouldstop:
+827             self.write_sep("!", str(session.shouldstop), red=True)
+828         self.summary_stats()
+829 
+830     @hookimpl(hookwrapper=True)
+831     def pytest_terminal_summary(self) -> Generator[None, None, None]:
+832         self.summary_errors()
+833         self.summary_failures()
+834         self.summary_warnings()
+835         self.summary_passes()
+836         yield
+837         self.short_test_summary()
+838         # Display any extra warnings from teardown here (if any).
+839         self.summary_warnings()
+840 
+841     def pytest_keyboard_interrupt(self, excinfo: ExceptionInfo[BaseException]) -> None:
+842         self._keyboardinterrupt_memo = excinfo.getrepr(funcargs=True)
+843 
+844     def pytest_unconfigure(self) -> None:
+845         if self._keyboardinterrupt_memo is not None:
+846             self._report_keyboardinterrupt()
+847 
+848     def _report_keyboardinterrupt(self) -> None:
+849         excrepr = self._keyboardinterrupt_memo
+850         assert excrepr is not None
+851         assert excrepr.reprcrash is not None
+852         msg = excrepr.reprcrash.message
+853         self.write_sep("!", msg)
+854         if "KeyboardInterrupt" in msg:
+855             if self.config.option.fulltrace:
+856                 excrepr.toterminal(self._tw)
+857             else:
+858                 excrepr.reprcrash.toterminal(self._tw)
+859                 self._tw.line(
+860                     "(to show a full traceback on KeyboardInterrupt use --full-trace)",
+861                     yellow=True,
+862                 )
+863 
+864     def _locationline(
+865         self, nodeid: str, fspath: str, lineno: Optional[int], domain: str
+866     ) -> str:
+867         def mkrel(nodeid: str) -> str:
+868             line = self.config.cwd_relative_nodeid(nodeid)
+869             if domain and line.endswith(domain):
+870                 line = line[: -len(domain)]
+871                 values = domain.split("[")
+872                 values[0] = values[0].replace(".", "::")  # don't replace '.' in params
+873                 line += "[".join(values)
+874             return line
+875 
+876         # collect_fspath comes from testid which has a "/"-normalized path.
+877         if fspath:
+878             res = mkrel(nodeid)
+879             if self.verbosity >= 2 and nodeid.split("::")[0] != fspath.replace(
+880                 "\\", nodes.SEP
+881             ):
+882                 res += " <- " + bestrelpath(self.startpath, Path(fspath))
+883         else:
+884             res = "[location]"
+885         return res + " "
+886 
+887     def _getfailureheadline(self, rep):
+888         head_line = rep.head_line
+889         if head_line:
+890             return head_line
+891         return "test session"  # XXX?
+892 
+893     def _getcrashline(self, rep):
+894         try:
+895             return str(rep.longrepr.reprcrash)
+896         except AttributeError:
+897             try:
+898                 return str(rep.longrepr)[:50]
+899             except AttributeError:
+900                 return ""
+901 
+902     #
+903     # Summaries for sessionfinish.
+904     #
+905     def getreports(self, name: str):
+906         return [x for x in self.stats.get(name, ()) if not hasattr(x, "_pdbshown")]
+907 
+908     def summary_warnings(self) -> None:
+909         if self.hasopt("w"):
+910             all_warnings: Optional[List[WarningReport]] = self.stats.get("warnings")
+911             if not all_warnings:
+912                 return
+913 
+914             final = self._already_displayed_warnings is not None
+915             if final:
+916                 warning_reports = all_warnings[self._already_displayed_warnings :]
+917             else:
+918                 warning_reports = all_warnings
+919             self._already_displayed_warnings = len(warning_reports)
+920             if not warning_reports:
+921                 return
+922 
+923             reports_grouped_by_message: Dict[str, List[WarningReport]] = {}
+924             for wr in warning_reports:
+925                 reports_grouped_by_message.setdefault(wr.message, []).append(wr)
+926 
+927             def collapsed_location_report(reports: List[WarningReport]) -> str:
+928                 locations = []
+929                 for w in reports:
+930                     location = w.get_location(self.config)
+931                     if location:
+932                         locations.append(location)
+933 
+934                 if len(locations) < 10:
+935                     return "\n".join(map(str, locations))
+936 
+937                 counts_by_filename = Counter(
+938                     str(loc).split("::", 1)[0] for loc in locations
+939                 )
+940                 return "\n".join(
+941                     "{}: {} warning{}".format(k, v, "s" if v > 1 else "")
+942                     for k, v in counts_by_filename.items()
+943                 )
+944 
+945             title = "warnings summary (final)" if final else "warnings summary"
+946             self.write_sep("=", title, yellow=True, bold=False)
+947             for message, message_reports in reports_grouped_by_message.items():
+948                 maybe_location = collapsed_location_report(message_reports)
+949                 if maybe_location:
+950                     self._tw.line(maybe_location)
+951                     lines = message.splitlines()
+952                     indented = "\n".join("  " + x for x in lines)
+953                     message = indented.rstrip()
+954                 else:
+955                     message = message.rstrip()
+956                 self._tw.line(message)
+957                 self._tw.line()
+958             self._tw.line(
+959                 "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+960             )
+961 
+962     def summary_passes(self) -> None:
+963         if self.config.option.tbstyle != "no":
+964             if self.hasopt("P"):
+965                 reports: List[TestReport] = self.getreports("passed")
+966                 if not reports:
+967                     return
+968                 self.write_sep("=", "PASSES")
+969                 for rep in reports:
+970                     if rep.sections:
+971                         msg = self._getfailureheadline(rep)
+972                         self.write_sep("_", msg, green=True, bold=True)
+973                         self._outrep_summary(rep)
+974                     self._handle_teardown_sections(rep.nodeid)
+975 
+976     def _get_teardown_reports(self, nodeid: str) -> List[TestReport]:
+977         reports = self.getreports("")
+978         return [
+979             report
+980             for report in reports
+981             if report.when == "teardown" and report.nodeid == nodeid
+982         ]
+983 
+984     def _handle_teardown_sections(self, nodeid: str) -> None:
+985         for report in self._get_teardown_reports(nodeid):
+986             self.print_teardown_sections(report)
+987 
+988     def print_teardown_sections(self, rep: TestReport) -> None:
+989         showcapture = self.config.option.showcapture
+990         if showcapture == "no":
+991             return
+992         for secname, content in rep.sections:
+993             if showcapture != "all" and showcapture not in secname:
+994                 continue
+995             if "teardown" in secname:
+996                 self._tw.sep("-", secname)
+997                 if content[-1:] == "\n":
+998                     content = content[:-1]
+999                 self._tw.line(content)
+1000 
+1001     def summary_failures(self) -> None:
+1002         if self.config.option.tbstyle != "no":
+1003             reports: List[BaseReport] = self.getreports("failed")
+1004             if not reports:
+1005                 return
+1006             self.write_sep("=", "FAILURES")
+1007             if self.config.option.tbstyle == "line":
+1008                 for rep in reports:
+1009                     line = self._getcrashline(rep)
+1010                     self.write_line(line)
+1011             else:
+1012                 for rep in reports:
+1013                     msg = self._getfailureheadline(rep)
+1014                     self.write_sep("_", msg, red=True, bold=True)
+1015                     self._outrep_summary(rep)
+1016                     self._handle_teardown_sections(rep.nodeid)
+1017 
+1018     def summary_errors(self) -> None:
+1019         if self.config.option.tbstyle != "no":
+1020             reports: List[BaseReport] = self.getreports("error")
+1021             if not reports:
+1022                 return
+1023             self.write_sep("=", "ERRORS")
+1024             for rep in self.stats["error"]:
+1025                 msg = self._getfailureheadline(rep)
+1026                 if rep.when == "collect":
+1027                     msg = "ERROR collecting " + msg
+1028                 else:
+1029                     msg = f"ERROR at {rep.when} of {msg}"
+1030                 self.write_sep("_", msg, red=True, bold=True)
+1031                 self._outrep_summary(rep)
+1032 
+1033     def _outrep_summary(self, rep: BaseReport) -> None:
+1034         rep.toterminal(self._tw)
+1035         showcapture = self.config.option.showcapture
+1036         if showcapture == "no":
+1037             return
+1038         for secname, content in rep.sections:
+1039             if showcapture != "all" and showcapture not in secname:
+1040                 continue
+1041             self._tw.sep("-", secname)
+1042             if content[-1:] == "\n":
+1043                 content = content[:-1]
+1044             self._tw.line(content)
+1045 
+1046     def summary_stats(self) -> None:
+1047         if self.verbosity < -1:
+1048             return
+1049 
+1050         session_duration = timing.time() - self._sessionstarttime
+1051         (parts, main_color) = self.build_summary_stats_line()
+1052         line_parts = []
+1053 
+1054         display_sep = self.verbosity >= 0
+1055         if display_sep:
+1056             fullwidth = self._tw.fullwidth
+1057         for text, markup in parts:
+1058             with_markup = self._tw.markup(text, **markup)
+1059             if display_sep:
+1060                 fullwidth += len(with_markup) - len(text)
+1061             line_parts.append(with_markup)
+1062         msg = ", ".join(line_parts)
+1063 
+1064         main_markup = {main_color: True}
+1065         duration = f" in {format_session_duration(session_duration)}"
+1066         duration_with_markup = self._tw.markup(duration, **main_markup)
+1067         if display_sep:
+1068             fullwidth += len(duration_with_markup) - len(duration)
+1069         msg += duration_with_markup
+1070 
+1071         if display_sep:
+1072             markup_for_end_sep = self._tw.markup("", **main_markup)
+1073             if markup_for_end_sep.endswith("\x1b[0m"):
+1074                 markup_for_end_sep = markup_for_end_sep[:-4]
+1075             fullwidth += len(markup_for_end_sep)
+1076             msg += markup_for_end_sep
+1077 
+1078         if display_sep:
+1079             self.write_sep("=", msg, fullwidth=fullwidth, **main_markup)
+1080         else:
+1081             self.write_line(msg, **main_markup)
+1082 
+1083     def short_test_summary(self) -> None:
+1084         if not self.reportchars:
+1085             return
+1086 
+1087         def show_simple(lines: List[str], *, stat: str) -> None:
+1088             failed = self.stats.get(stat, [])
+1089             if not failed:
+1090                 return
+1091             config = self.config
+1092             for rep in failed:
+1093                 color = _color_for_type.get(stat, _color_for_type_default)
+1094                 line = _get_line_with_reprcrash_message(
+1095                     config, rep, self._tw, {color: True}
+1096                 )
+1097                 lines.append(line)
+1098 
+1099         def show_xfailed(lines: List[str]) -> None:
+1100             xfailed = self.stats.get("xfailed", [])
+1101             for rep in xfailed:
+1102                 verbose_word = rep._get_verbose_word(self.config)
+1103                 markup_word = self._tw.markup(
+1104                     verbose_word, **{_color_for_type["warnings"]: True}
+1105                 )
+1106                 nodeid = _get_node_id_with_markup(self._tw, self.config, rep)
+1107                 line = f"{markup_word} {nodeid}"
+1108                 reason = rep.wasxfail
+1109                 if reason:
+1110                     line += " - " + str(reason)
+1111 
+1112                 lines.append(line)
+1113 
+1114         def show_xpassed(lines: List[str]) -> None:
+1115             xpassed = self.stats.get("xpassed", [])
+1116             for rep in xpassed:
+1117                 verbose_word = rep._get_verbose_word(self.config)
+1118                 markup_word = self._tw.markup(
+1119                     verbose_word, **{_color_for_type["warnings"]: True}
+1120                 )
+1121                 nodeid = _get_node_id_with_markup(self._tw, self.config, rep)
+1122                 reason = rep.wasxfail
+1123                 lines.append(f"{markup_word} {nodeid} {reason}")
+1124 
+1125         def show_skipped(lines: List[str]) -> None:
+1126             skipped: List[CollectReport] = self.stats.get("skipped", [])
+1127             fskips = _folded_skips(self.startpath, skipped) if skipped else []
+1128             if not fskips:
+1129                 return
+1130             verbose_word = skipped[0]._get_verbose_word(self.config)
+1131             markup_word = self._tw.markup(
+1132                 verbose_word, **{_color_for_type["warnings"]: True}
+1133             )
+1134             prefix = "Skipped: "
+1135             for num, fspath, lineno, reason in fskips:
+1136                 if reason.startswith(prefix):
+1137                     reason = reason[len(prefix) :]
+1138                 if lineno is not None:
+1139                     lines.append(
+1140                         "%s [%d] %s:%d: %s" % (markup_word, num, fspath, lineno, reason)
+1141                     )
+1142                 else:
+1143                     lines.append("%s [%d] %s: %s" % (markup_word, num, fspath, reason))
+1144 
+1145         REPORTCHAR_ACTIONS: Mapping[str, Callable[[List[str]], None]] = {
+1146             "x": show_xfailed,
+1147             "X": show_xpassed,
+1148             "f": partial(show_simple, stat="failed"),
+1149             "s": show_skipped,
+1150             "p": partial(show_simple, stat="passed"),
+1151             "E": partial(show_simple, stat="error"),
+1152         }
+1153 
+1154         lines: List[str] = []
+1155         for char in self.reportchars:
+1156             action = REPORTCHAR_ACTIONS.get(char)
+1157             if action:  # skipping e.g. "P" (passed with output) here.
+1158                 action(lines)
+1159 
+1160         if lines:
+1161             self.write_sep("=", "short test summary info", cyan=True, bold=True)
+1162             for line in lines:
+1163                 self.write_line(line)
+1164 
+1165     def _get_main_color(self) -> Tuple[str, List[str]]:
+1166         if self._main_color is None or self._known_types is None or self._is_last_item:
+1167             self._set_main_color()
+1168             assert self._main_color
+1169             assert self._known_types
+1170         return self._main_color, self._known_types
+1171 
+1172     def _determine_main_color(self, unknown_type_seen: bool) -> str:
+1173         stats = self.stats
+1174         if "failed" in stats or "error" in stats:
+1175             main_color = "red"
+1176         elif "warnings" in stats or "xpassed" in stats or unknown_type_seen:
+1177             main_color = "yellow"
+1178         elif "passed" in stats or not self._is_last_item:
+1179             main_color = "green"
+1180         else:
+1181             main_color = "yellow"
+1182         return main_color
+1183 
+1184     def _set_main_color(self) -> None:
+1185         unknown_types: List[str] = []
+1186         for found_type in self.stats.keys():
+1187             if found_type:  # setup/teardown reports have an empty key, ignore them
+1188                 if found_type not in KNOWN_TYPES and found_type not in unknown_types:
+1189                     unknown_types.append(found_type)
+1190         self._known_types = list(KNOWN_TYPES) + unknown_types
+1191         self._main_color = self._determine_main_color(bool(unknown_types))
+1192 
+1193     def build_summary_stats_line(self) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1194         """
+1195         Build the parts used in the last summary stats line.
+1196 
+1197         The summary stats line is the line shown at the end, "=== 12 passed, 2 errors in Xs===".
+1198 
+1199         This function builds a list of the "parts" that make up for the text in that line, in
+1200         the example above it would be:
+1201 
+1202             [
+1203                 ("12 passed", {"green": True}),
+1204                 ("2 errors", {"red": True}
+1205             ]
+1206 
+1207         That last dict for each line is a "markup dictionary", used by TerminalWriter to
+1208         color output.
+1209 
+1210         The final color of the line is also determined by this function, and is the second
+1211         element of the returned tuple.
+1212         """
+1213         if self.config.getoption("collectonly"):
+1214             return self._build_collect_only_summary_stats_line()
+1215         else:
+1216             return self._build_normal_summary_stats_line()
+1217 
+1218     def _get_reports_to_display(self, key: str) -> List[Any]:
+1219         """Get test/collection reports for the given status key, such as `passed` or `error`."""
+1220         reports = self.stats.get(key, [])
+1221         return [x for x in reports if getattr(x, "count_towards_summary", True)]
+1222 
+1223     def _build_normal_summary_stats_line(
+1224         self,
+1225     ) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1226         main_color, known_types = self._get_main_color()
+1227         parts = []
+1228 
+1229         for key in known_types:
+1230             reports = self._get_reports_to_display(key)
+1231             if reports:
+1232                 count = len(reports)
+1233                 color = _color_for_type.get(key, _color_for_type_default)
+1234                 markup = {color: True, "bold": color == main_color}
+1235                 parts.append(("%d %s" % pluralize(count, key), markup))
+1236 
+1237         if not parts:
+1238             parts = [("no tests ran", {_color_for_type_default: True})]
+1239 
+1240         return parts, main_color
+1241 
+1242     def _build_collect_only_summary_stats_line(
+1243         self,
+1244     ) -> Tuple[List[Tuple[str, Dict[str, bool]]], str]:
+1245         deselected = len(self._get_reports_to_display("deselected"))
+1246         errors = len(self._get_reports_to_display("error"))
+1247 
+1248         if self._numcollected == 0:
+1249             parts = [("no tests collected", {"yellow": True})]
+1250             main_color = "yellow"
+1251 
+1252         elif deselected == 0:
+1253             main_color = "green"
+1254             collected_output = "%d %s collected" % pluralize(self._numcollected, "test")
+1255             parts = [(collected_output, {main_color: True})]
+1256         else:
+1257             all_tests_were_deselected = self._numcollected == deselected
+1258             if all_tests_were_deselected:
+1259                 main_color = "yellow"
+1260                 collected_output = f"no tests collected ({deselected} deselected)"
+1261             else:
+1262                 main_color = "green"
+1263                 selected = self._numcollected - deselected
+1264                 collected_output = f"{selected}/{self._numcollected} tests collected ({deselected} deselected)"
+1265 
+1266             parts = [(collected_output, {main_color: True})]
+1267 
+1268         if errors:
+1269             main_color = _color_for_type["error"]
+1270             parts += [("%d %s" % pluralize(errors, "error"), {main_color: True})]
+1271 
+1272         return parts, main_color
+1273 
+1274 
+1275 def _get_node_id_with_markup(tw: TerminalWriter, config: Config, rep: BaseReport):
+1276     nodeid = config.cwd_relative_nodeid(rep.nodeid)
+1277     path, *parts = nodeid.split("::")
+1278     if parts:
+1279         parts_markup = tw.markup("::".join(parts), bold=True)
+1280         return path + "::" + parts_markup
+1281     else:
+1282         return path
+1283 
+1284 
+1285 def _format_trimmed(format: str, msg: str, available_width: int) -> Optional[str]:
+1286     """Format msg into format, ellipsizing it if doesn't fit in available_width.
+1287 
+1288     Returns None if even the ellipsis can't fit.
+1289     """
+1290     # Only use the first line.
+1291     i = msg.find("\n")
+1292     if i != -1:
+1293         msg = msg[:i]
+1294 
+1295     ellipsis = "..."
+1296     format_width = wcswidth(format.format(""))
+1297     if format_width + len(ellipsis) > available_width:
+1298         return None
+1299 
+1300     if format_width + wcswidth(msg) > available_width:
+1301         available_width -= len(ellipsis)
+1302         msg = msg[:available_width]
+1303         while format_width + wcswidth(msg) > available_width:
+1304             msg = msg[:-1]
+1305         msg += ellipsis
+1306 
+1307     return format.format(msg)
+1308 
+1309 
+1310 def _get_line_with_reprcrash_message(
+1311     config: Config, rep: BaseReport, tw: TerminalWriter, word_markup: Dict[str, bool]
+1312 ) -> str:
+1313     """Get summary line for a report, trying to add reprcrash message."""
+1314     verbose_word = rep._get_verbose_word(config)
+1315     word = tw.markup(verbose_word, **word_markup)
+1316     node = _get_node_id_with_markup(tw, config, rep)
+1317 
+1318     line = f"{word} {node}"
+1319     line_width = wcswidth(line)
+1320 
+1321     try:
+1322         # Type ignored intentionally -- possible AttributeError expected.
+1323         msg = rep.longrepr.reprcrash.message  # type: ignore[union-attr]
+1324     except AttributeError:
+1325         pass
+1326     else:
+1327         if not running_on_ci():
+1328             available_width = tw.fullwidth - line_width
+1329             msg = _format_trimmed(" - {}", msg, available_width)
+1330         else:
+1331             msg = f" - {msg}"
+1332         if msg is not None:
+1333             line += msg
+1334 
+1335     return line
+1336 
+1337 
+1338 def _folded_skips(
+1339     startpath: Path,
+1340     skipped: Sequence[CollectReport],
+1341 ) -> List[Tuple[int, str, Optional[int], str]]:
+1342     d: Dict[Tuple[str, Optional[int], str], List[CollectReport]] = {}
+1343     for event in skipped:
+1344         assert event.longrepr is not None
+1345         assert isinstance(event.longrepr, tuple), (event, event.longrepr)
+1346         assert len(event.longrepr) == 3, (event, event.longrepr)
+1347         fspath, lineno, reason = event.longrepr
+1348         # For consistency, report all fspaths in relative form.
+1349         fspath = bestrelpath(startpath, Path(fspath))
+1350         keywords = getattr(event, "keywords", {})
+1351         # Folding reports with global pytestmark variable.
+1352         # This is a workaround, because for now we cannot identify the scope of a skip marker
+1353         # TODO: Revisit after marks scope would be fixed.
+1354         if (
+1355             event.when == "setup"
+1356             and "skip" in keywords
+1357             and "pytestmark" not in keywords
+1358         ):
+1359             key: Tuple[str, Optional[int], str] = (fspath, None, reason)
+1360         else:
+1361             key = (fspath, lineno, reason)
+1362         d.setdefault(key, []).append(event)
+1363     values: List[Tuple[int, str, Optional[int], str]] = []
+1364     for key, events in d.items():
+1365         values.append((len(events), *key))
+1366     return values
+1367 
+1368 
+1369 _color_for_type = {
+1370     "failed": "red",
+1371     "error": "red",
+1372     "warnings": "yellow",
+1373     "passed": "green",
+1374 }
+1375 _color_for_type_default = "yellow"
+1376 
+1377 
+1378 def pluralize(count: int, noun: str) -> Tuple[int, str]:
+1379     # No need to pluralize words such as `failed` or `passed`.
+1380     if noun not in ["error", "warnings", "test"]:
+1381         return count, noun
+1382 
+1383     # The `warnings` key is plural. To avoid API breakage, we keep it that way but
+1384     # set it to singular here so we can determine plurality in the same way as we do
+1385     # for `error`.
+1386     noun = noun.replace("warnings", "warning")
+1387 
+1388     return count, noun + "s" if count != 1 else noun
+1389 
+1390 
+1391 def _plugin_nameversions(plugininfo) -> List[str]:
+1392     values: List[str] = []
+1393     for plugin, dist in plugininfo:
+1394         # Gets us name and version!
+1395         name = "{dist.project_name}-{dist.version}".format(dist=dist)
+1396         # Questionable convenience, but it keeps things short.
+1397         if name.startswith("pytest-"):
+1398             name = name[7:]
+1399         # We decided to print python package names they can have more than one plugin.
+1400         if name not in values:
+1401             values.append(name)
+1402     return values
+1403 
+1404 
+1405 def format_session_duration(seconds: float) -> str:
+1406     """Format the given seconds in a human readable manner to show in the final summary."""
+1407     if seconds < 60:
+1408         return f"{seconds:.2f}s"
+1409     else:
+1410         dt = datetime.timedelta(seconds=int(seconds))
+1411         return f"{seconds:.2f}s ({dt})"
+1412 
+1413 
+1414 def _get_raw_skip_reason(report: TestReport) -> str:
+1415     """Get the reason string of a skip/xfail/xpass test report.
+1416 
+1417     The string is just the part given by the user.
+1418     """
+1419     if hasattr(report, "wasxfail"):
+1420         reason = cast(str, report.wasxfail)
+1421         if reason.startswith("reason: "):
+1422             reason = reason[len("reason: ") :]
+1423         return reason
+1424     else:
+1425         assert report.skipped
+1426         assert isinstance(report.longrepr, tuple)
+1427         _, _, reason = report.longrepr
+1428         if reason.startswith("Skipped: "):
+1429             reason = reason[len("Skipped: ") :]
+1430         elif reason == "Skipped":
+1431             reason = ""
+1432         return reason
+
+</code><intended_behavior>The method(s) responsible for generating the short test summary (specifically related to handling skipped tests) should be updated or fixed to ensure that whenever a test is skipped due to a fixture condition, the name of the skipped test along with the skip reason is clearly reported. This means enhancing how skipped tests are interpreted and displayed in the summary, ensuring the test names are preserved and displayed alongside their skip reason, rather than just showing the location in the fixture.</intended_behavior>, <file>src/_pytest/skipping.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Support for skip/xfail functions and markers."""
+2 import os
+3 import platform
+4 import sys
+5 import traceback
+6 from collections.abc import Mapping
+7 from typing import Generator
+8 from typing import Optional
+9 from typing import Tuple
+10 from typing import Type
+11 
+12 import attr
+13 
+14 from _pytest.config import Config
+15 from _pytest.config import hookimpl
+16 from _pytest.config.argparsing import Parser
+17 from _pytest.mark.structures import Mark
+18 from _pytest.nodes import Item
+19 from _pytest.outcomes import fail
+20 from _pytest.outcomes import skip
+21 from _pytest.outcomes import xfail
+22 from _pytest.reports import BaseReport
+23 from _pytest.runner import CallInfo
+24 from _pytest.stash import StashKey
+25 
+26 
+27 def pytest_addoption(parser: Parser) -> None:
+28     group = parser.getgroup("general")
+29     group.addoption(
+30         "--runxfail",
+31         action="store_true",
+32         dest="runxfail",
+33         default=False,
+34         help="Report the results of xfail tests as if they were not marked",
+35     )
+36 
+37     parser.addini(
+38         "xfail_strict",
+39         "Default for the strict parameter of xfail "
+40         "markers when not given explicitly (default: False)",
+41         default=False,
+42         type="bool",
+43     )
+44 
+45 
+46 def pytest_configure(config: Config) -> None:
+47     if config.option.runxfail:
+48         # yay a hack
+49         import pytest
+50 
+51         old = pytest.xfail
+52         config.add_cleanup(lambda: setattr(pytest, "xfail", old))
+53 
+54         def nop(*args, **kwargs):
+55             pass
+56 
+57         nop.Exception = xfail.Exception  # type: ignore[attr-defined]
+58         setattr(pytest, "xfail", nop)
+59 
+60     config.addinivalue_line(
+61         "markers",
+62         "skip(reason=None): skip the given test function with an optional reason. "
+63         'Example: skip(reason="no way of currently testing this") skips the '
+64         "test.",
+65     )
+66     config.addinivalue_line(
+67         "markers",
+68         "skipif(condition, ..., *, reason=...): "
+69         "skip the given test function if any of the conditions evaluate to True. "
+70         "Example: skipif(sys.platform == 'win32') skips the test if we are on the win32 platform. "
+71         "See https://docs.pytest.org/en/stable/reference/reference.html#pytest-mark-skipif",
+72     )
+73     config.addinivalue_line(
+74         "markers",
+75         "xfail(condition, ..., *, reason=..., run=True, raises=None, strict=xfail_strict): "
+76         "mark the test function as an expected failure if any of the conditions "
+77         "evaluate to True. Optionally specify a reason for better reporting "
+78         "and run=False if you don't even want to execute the test function. "
+79         "If only specific exception(s) are expected, you can list them in "
+80         "raises, and if the test fails in other ways, it will be reported as "
+81         "a true failure. See https://docs.pytest.org/en/stable/reference/reference.html#pytest-mark-xfail",
+82     )
+83 
+84 
+85 def evaluate_condition(item: Item, mark: Mark, condition: object) -> Tuple[bool, str]:
+86     """Evaluate a single skipif/xfail condition.
+87 
+88     If an old-style string condition is given, it is eval()'d, otherwise the
+89     condition is bool()'d. If this fails, an appropriately formatted pytest.fail
+90     is raised.
+91 
+92     Returns (result, reason). The reason is only relevant if the result is True.
+93     """
+94     # String condition.
+95     if isinstance(condition, str):
+96         globals_ = {
+97             "os": os,
+98             "sys": sys,
+99             "platform": platform,
+100             "config": item.config,
+101         }
+102         for dictionary in reversed(
+103             item.ihook.pytest_markeval_namespace(config=item.config)
+104         ):
+105             if not isinstance(dictionary, Mapping):
+106                 raise ValueError(
+107                     "pytest_markeval_namespace() needs to return a dict, got {!r}".format(
+108                         dictionary
+109                     )
+110                 )
+111             globals_.update(dictionary)
+112         if hasattr(item, "obj"):
+113             globals_.update(item.obj.__globals__)  # type: ignore[attr-defined]
+114         try:
+115             filename = f"<{mark.name} condition>"
+116             condition_code = compile(condition, filename, "eval")
+117             result = eval(condition_code, globals_)
+118         except SyntaxError as exc:
+119             msglines = [
+120                 "Error evaluating %r condition" % mark.name,
+121                 "    " + condition,
+122                 "    " + " " * (exc.offset or 0) + "^",
+123                 "SyntaxError: invalid syntax",
+124             ]
+125             fail("\n".join(msglines), pytrace=False)
+126         except Exception as exc:
+127             msglines = [
+128                 "Error evaluating %r condition" % mark.name,
+129                 "    " + condition,
+130                 *traceback.format_exception_only(type(exc), exc),
+131             ]
+132             fail("\n".join(msglines), pytrace=False)
+133 
+134     # Boolean condition.
+135     else:
+136         try:
+137             result = bool(condition)
+138         except Exception as exc:
+139             msglines = [
+140                 "Error evaluating %r condition as a boolean" % mark.name,
+141                 *traceback.format_exception_only(type(exc), exc),
+142             ]
+143             fail("\n".join(msglines), pytrace=False)
+144 
+145     reason = mark.kwargs.get("reason", None)
+146     if reason is None:
+147         if isinstance(condition, str):
+148             reason = "condition: " + condition
+149         else:
+150             # XXX better be checked at collection time
+151             msg = (
+152                 "Error evaluating %r: " % mark.name
+153                 + "you need to specify reason=STRING when using booleans as conditions."
+154             )
+155             fail(msg, pytrace=False)
+156 
+157     return result, reason
+158 
+159 
+160 @attr.s(slots=True, frozen=True, auto_attribs=True)
+161 class Skip:
+162     """The result of evaluate_skip_marks()."""
+163 
+164     reason: str = "unconditional skip"
+165 
+166 
+167 def evaluate_skip_marks(item: Item) -> Optional[Skip]:
+168     """Evaluate skip and skipif marks on item, returning Skip if triggered."""
+169     for mark in item.iter_markers(name="skipif"):
+170         if "condition" not in mark.kwargs:
+171             conditions = mark.args
+172         else:
+173             conditions = (mark.kwargs["condition"],)
+174 
+175         # Unconditional.
+176         if not conditions:
+177             reason = mark.kwargs.get("reason", "")
+178             return Skip(reason)
+179 
+180         # If any of the conditions are true.
+181         for condition in conditions:
+182             result, reason = evaluate_condition(item, mark, condition)
+183             if result:
+184                 return Skip(reason)
+185 
+186     for mark in item.iter_markers(name="skip"):
+187         try:
+188             return Skip(*mark.args, **mark.kwargs)
+189         except TypeError as e:
+190             raise TypeError(str(e) + " - maybe you meant pytest.mark.skipif?") from None
+191 
+192     return None
+193 
+194 
+195 @attr.s(slots=True, frozen=True, auto_attribs=True)
+196 class Xfail:
+197     """The result of evaluate_xfail_marks()."""
+198 
+199     reason: str
+200     run: bool
+201     strict: bool
+202     raises: Optional[Tuple[Type[BaseException], ...]]
+203 
+204 
+205 def evaluate_xfail_marks(item: Item) -> Optional[Xfail]:
+206     """Evaluate xfail marks on item, returning Xfail if triggered."""
+207     for mark in item.iter_markers(name="xfail"):
+208         run = mark.kwargs.get("run", True)
+209         strict = mark.kwargs.get("strict", item.config.getini("xfail_strict"))
+210         raises = mark.kwargs.get("raises", None)
+211         if "condition" not in mark.kwargs:
+212             conditions = mark.args
+213         else:
+214             conditions = (mark.kwargs["condition"],)
+215 
+216         # Unconditional.
+217         if not conditions:
+218             reason = mark.kwargs.get("reason", "")
+219             return Xfail(reason, run, strict, raises)
+220 
+221         # If any of the conditions are true.
+222         for condition in conditions:
+223             result, reason = evaluate_condition(item, mark, condition)
+224             if result:
+225                 return Xfail(reason, run, strict, raises)
+226 
+227     return None
+228 
+229 
+230 # Saves the xfail mark evaluation. Can be refreshed during call if None.
+231 xfailed_key = StashKey[Optional[Xfail]]()
+232 
+233 
+234 @hookimpl(tryfirst=True)
+235 def pytest_runtest_setup(item: Item) -> None:
+236     skipped = evaluate_skip_marks(item)
+237     if skipped:
+238         raise skip.Exception(skipped.reason, _use_item_location=True)
+239 
+240     item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+241     if xfailed and not item.config.option.runxfail and not xfailed.run:
+242         xfail("[NOTRUN] " + xfailed.reason)
+243 
+244 
+245 @hookimpl(hookwrapper=True)
+246 def pytest_runtest_call(item: Item) -> Generator[None, None, None]:
+247     xfailed = item.stash.get(xfailed_key, None)
+248     if xfailed is None:
+249         item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+250 
+251     if xfailed and not item.config.option.runxfail and not xfailed.run:
+252         xfail("[NOTRUN] " + xfailed.reason)
+253 
+254     yield
+255 
+256     # The test run may have added an xfail mark dynamically.
+257     xfailed = item.stash.get(xfailed_key, None)
+258     if xfailed is None:
+259         item.stash[xfailed_key] = xfailed = evaluate_xfail_marks(item)
+260 
+261 
+262 @hookimpl(hookwrapper=True)
+263 def pytest_runtest_makereport(item: Item, call: CallInfo[None]):
+264     outcome = yield
+265     rep = outcome.get_result()
+266     xfailed = item.stash.get(xfailed_key, None)
+267     if item.config.option.runxfail:
+268         pass  # don't interfere
+269     elif call.excinfo and isinstance(call.excinfo.value, xfail.Exception):
+270         assert call.excinfo.value.msg is not None
+271         rep.wasxfail = "reason: " + call.excinfo.value.msg
+272         rep.outcome = "skipped"
+273     elif not rep.skipped and xfailed:
+274         if call.excinfo:
+275             raises = xfailed.raises
+276             if raises is not None and not isinstance(call.excinfo.value, raises):
+277                 rep.outcome = "failed"
+278             else:
+279                 rep.outcome = "skipped"
+280                 rep.wasxfail = xfailed.reason
+281         elif call.when == "call":
+282             if xfailed.strict:
+283                 rep.outcome = "failed"
+284                 rep.longrepr = "[XPASS(strict)] " + xfailed.reason
+285             else:
+286                 rep.outcome = "passed"
+287                 rep.wasxfail = xfailed.reason
+288 
+289 
+290 def pytest_report_teststatus(report: BaseReport) -> Optional[Tuple[str, str, str]]:
+291     if hasattr(report, "wasxfail"):
+292         if report.skipped:
+293             return "xfailed", "x", "XFAIL"
+294         elif report.passed:
+295             return "xpassed", "X", "XPASS"
+296     return None
+
+</code><intended_behavior>Enhance or fix the logic within this file that records a skip event to ensure that enough context is preserved about the skip reason and which test it pertains to. Specifically, when a test is skipped from within a fixture, ensure that the linkage between the skip reason and the test name is maintained and made available to the reporting mechanism. This could involve modifying how skip reasons are recorded or how skip events are associated with specific tests in the summary report.</intended_behavior>]
+2026-01-15 03:46:52.232 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 03:46:52.232 | INFO     | Search-only: skipping patch selection
+2026-01-15 03:46:52.308 | INFO     | Task pytest-dev__pytest-10482 completed successfully.
+2026-01-15 03:46:52.309 | INFO     | No patch generated. You can try running ACR again.

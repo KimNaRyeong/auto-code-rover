@@ -1,0 +1,1632 @@
+2026-01-15 00:57:12.852 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:57:17.112 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=288, output_tokens=12, cost=0.003240
+2026-01-15 00:57:17.113 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 00:57:17.117 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:57:23.484 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=597, output_tokens=283, cost=0.014460
+2026-01-15 00:57:23.491 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:57:25.921 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=637, output_tokens=54, cost=0.007990
+2026-01-15 00:57:25.922 | DEBUG    | Extracted a valid json.
+2026-01-15 00:57:25.922 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method(\"lookup_allowed\")",
+        "search_method(\"get_list_filter\")",
+        "search_code(\"self.list_filter\")",
+        "search_class(\"ChangeList\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 00:57:25.990 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:57:25.991 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:57:38.639 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1619, output_tokens=620, cost=0.034790
+2026-01-15 00:57:38.647 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:57:47.974 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2455, output_tokens=426, cost=0.037330
+2026-01-15 00:57:47.984 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:57:54.844 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=780, output_tokens=291, cost=0.016530
+2026-01-15 00:57:54.845 | DEBUG    | Extracted a valid json.
+2026-01-15 00:57:54.845 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/contrib/admin/options.py",
+            "class": "ModelAdmin",
+            "method": "lookup_allowed",
+            "intended_behavior": "This method should be modified to accept an additional `request` parameter, enabling it to dynamically determine valid lookup params by iterating through the filters returned by `self.get_list_filter(request)` instead of the static `self.list_filter`. To preserve existing functionality and compatibility, it's vital that any implementation gracefully handles scenarios where the `request` parameter may not be available, potentially by keeping a backward-compatible method signature or providing fallback mechanisms."
+        },
+        {
+            "file": "django/contrib/admin/views/main.py",
+            "class": "ChangeList",
+            "method": "get_filters",
+            "intended_behavior": "Given the dependency on `lookup_allowed`, which is proposed to change to accommodate dynamic list filters, `get_filters` within `ChangeList` may need adjustment to pass the `request` to `lookup_allowed`. The precise change depends on how `lookup_allowed` is invoked here, but the core intent is to ensure that `get_filters` leverages the enhanced `lookup_allowed` to dynamically determine valid filters based on the request. This enhancement will allow the `ChangeList` to reflect more accurately the admin's configuration and permissions on a per-request basis."
+        }
+    ]
+}
+2026-01-15 00:57:54.855 | DEBUG    | Bug location extracted successfully: [<file>django/contrib/admin/options.py</file>
+<class>None</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             if not prev_field or (
+465                 prev_field.is_relation
+466                 and field not in model._meta.parents.values()
+467                 and field is not model._meta.auto_field
+468                 and (
+469                     model._meta.auto_field is None
+470                     or part not in getattr(prev_field, "to_fields", [])
+471                 )
+472             ):
+473                 relation_parts.append(part)
+474             if not getattr(field, "path_infos", None):
+475                 # This is not a relational field, so further parts
+476                 # must be transforms.
+477                 break
+478             prev_field = field
+479             model = field.path_infos[-1].to_opts.model
+480 
+481         if len(relation_parts) <= 1:
+482             # Either a local field filter, or no fields at all.
+483             return True
+484         valid_lookups = {self.date_hierarchy}
+485         for filter_item in self.list_filter:
+486             if isinstance(filter_item, type) and issubclass(
+487                 filter_item, SimpleListFilter
+488             ):
+489                 valid_lookups.add(filter_item.parameter_name)
+490             elif isinstance(filter_item, (list, tuple)):
+491                 valid_lookups.add(filter_item[0])
+492             else:
+493                 valid_lookups.add(filter_item)
+494 
+495         # Is it a valid relational lookup?
+496         return not {
+497             LOOKUP_SEP.join(relation_parts),
+498             LOOKUP_SEP.join(relation_parts + [part]),
+499         }.isdisjoint(valid_lookups)
+
+</code><intended_behavior>This method should be modified to accept an additional `request` parameter, enabling it to dynamically determine valid lookup params by iterating through the filters returned by `self.get_list_filter(request)` instead of the static `self.list_filter`. To preserve existing functionality and compatibility, it's vital that any implementation gracefully handles scenarios where the `request` parameter may not be available, potentially by keeping a backward-compatible method signature or providing fallback mechanisms.</intended_behavior>, <file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             if not prev_field or (
+465                 prev_field.is_relation
+466                 and field not in model._meta.parents.values()
+467                 and field is not model._meta.auto_field
+468                 and (
+469                     model._meta.auto_field is None
+470                     or part not in getattr(prev_field, "to_fields", [])
+471                 )
+472             ):
+473                 relation_parts.append(part)
+474             if not getattr(field, "path_infos", None):
+475                 # This is not a relational field, so further parts
+476                 # must be transforms.
+477                 break
+478             prev_field = field
+479             model = field.path_infos[-1].to_opts.model
+480 
+481         if len(relation_parts) <= 1:
+482             # Either a local field filter, or no fields at all.
+483             return True
+484         valid_lookups = {self.date_hierarchy}
+485         for filter_item in self.list_filter:
+486             if isinstance(filter_item, type) and issubclass(
+487                 filter_item, SimpleListFilter
+488             ):
+489                 valid_lookups.add(filter_item.parameter_name)
+490             elif isinstance(filter_item, (list, tuple)):
+491                 valid_lookups.add(filter_item[0])
+492             else:
+493                 valid_lookups.add(filter_item)
+494 
+495         # Is it a valid relational lookup?
+496         return not {
+497             LOOKUP_SEP.join(relation_parts),
+498             LOOKUP_SEP.join(relation_parts + [part]),
+499         }.isdisjoint(valid_lookups)
+
+</code><intended_behavior>This method should be modified to accept an additional `request` parameter, enabling it to dynamically determine valid lookup params by iterating through the filters returned by `self.get_list_filter(request)` instead of the static `self.list_filter`. To preserve existing functionality and compatibility, it's vital that any implementation gracefully handles scenarios where the `request` parameter may not be available, potentially by keeping a backward-compatible method signature or providing fallback mechanisms.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Given the dependency on `lookup_allowed`, which is proposed to change to accommodate dynamic list filters, `get_filters` within `ChangeList` may need adjustment to pass the `request` to `lookup_allowed`. The precise change depends on how `lookup_allowed` is invoked here, but the core intent is to ensure that `get_filters` leverages the enhanced `lookup_allowed` to dynamically determine valid filters based on the request. This enhancement will allow the `ChangeList` to reflect more accurately the admin's configuration and permissions on a per-request basis.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>None</method>
+<code>
+64 class ChangeList:
+65     search_form_class = ChangeListSearchForm
+66 
+67     def __init__(
+68         self,
+69         request,
+70         model,
+71         list_display,
+72         list_display_links,
+73         list_filter,
+74         date_hierarchy,
+75         search_fields,
+76         list_select_related,
+77         list_per_page,
+78         list_max_show_all,
+79         list_editable,
+80         model_admin,
+81         sortable_by,
+82         search_help_text,
+83     ):
+84         self.model = model
+85         self.opts = model._meta
+86         self.lookup_opts = self.opts
+87         self.root_queryset = model_admin.get_queryset(request)
+88         self.list_display = list_display
+89         self.list_display_links = list_display_links
+90         self.list_filter = list_filter
+91         self.has_filters = None
+92         self.has_active_filters = None
+93         self.clear_all_filters_qs = None
+94         self.date_hierarchy = date_hierarchy
+95         self.search_fields = search_fields
+96         self.list_select_related = list_select_related
+97         self.list_per_page = list_per_page
+98         self.list_max_show_all = list_max_show_all
+99         self.model_admin = model_admin
+100         self.preserved_filters = model_admin.get_preserved_filters(request)
+101         self.sortable_by = sortable_by
+102         self.search_help_text = search_help_text
+103 
+104         # Get search parameters from the query string.
+105         _search_form = self.search_form_class(request.GET)
+106         if not _search_form.is_valid():
+107             for error in _search_form.errors.values():
+108                 messages.error(request, ", ".join(error))
+109         self.query = _search_form.cleaned_data.get(SEARCH_VAR) or ""
+110         try:
+111             self.page_num = int(request.GET.get(PAGE_VAR, 1))
+112         except ValueError:
+113             self.page_num = 1
+114         self.show_all = ALL_VAR in request.GET
+115         self.is_popup = IS_POPUP_VAR in request.GET
+116         self.add_facets = model_admin.show_facets is ShowFacets.ALWAYS or (
+117             model_admin.show_facets is ShowFacets.ALLOW and IS_FACETS_VAR in request.GET
+118         )
+119         self.is_facets_optional = model_admin.show_facets is ShowFacets.ALLOW
+120         to_field = request.GET.get(TO_FIELD_VAR)
+121         if to_field and not model_admin.to_field_allowed(request, to_field):
+122             raise DisallowedModelAdminToField(
+123                 "The field %s cannot be referenced." % to_field
+124             )
+125         self.to_field = to_field
+126         self.params = dict(request.GET.items())
+127         self.filter_params = dict(request.GET.lists())
+128         if PAGE_VAR in self.params:
+129             del self.params[PAGE_VAR]
+130             del self.filter_params[PAGE_VAR]
+131         if ERROR_FLAG in self.params:
+132             del self.params[ERROR_FLAG]
+133             del self.filter_params[ERROR_FLAG]
+134         self.remove_facet_link = self.get_query_string(remove=[IS_FACETS_VAR])
+135         self.add_facet_link = self.get_query_string({IS_FACETS_VAR: True})
+136 
+137         if self.is_popup:
+138             self.list_editable = ()
+139         else:
+140             self.list_editable = list_editable
+141         self.queryset = self.get_queryset(request)
+142         self.get_results(request)
+143         if self.is_popup:
+144             title = gettext("Select %s")
+145         elif self.model_admin.has_change_permission(request):
+146             title = gettext("Select %s to change")
+147         else:
+148             title = gettext("Select %s to view")
+149         self.title = title % self.opts.verbose_name
+150         self.pk_attname = self.lookup_opts.pk.attname
+151 
+152     def __repr__(self):
+153         return "<%s: model=%s model_admin=%s>" % (
+154             self.__class__.__qualname__,
+155             self.model.__qualname__,
+156             self.model_admin.__class__.__qualname__,
+157         )
+158 
+159     def get_filters_params(self, params=None):
+160         """
+161         Return all params except IGNORED_PARAMS.
+162         """
+163         params = params or self.filter_params
+164         lookup_params = params.copy()  # a dictionary of the query string
+165         # Remove all the parameters that are globally and systematically
+166         # ignored.
+167         for ignored in IGNORED_PARAMS:
+168             if ignored in lookup_params:
+169                 del lookup_params[ignored]
+170         return lookup_params
+171 
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+275 
+276     def get_query_string(self, new_params=None, remove=None):
+277         if new_params is None:
+278             new_params = {}
+279         if remove is None:
+280             remove = []
+281         p = self.filter_params.copy()
+282         for r in remove:
+283             for k in list(p):
+284                 if k.startswith(r):
+285                     del p[k]
+286         for k, v in new_params.items():
+287             if v is None:
+288                 if k in p:
+289                     del p[k]
+290             else:
+291                 p[k] = v
+292         return "?%s" % urlencode(sorted(p.items()), doseq=True)
+293 
+294     def get_results(self, request):
+295         paginator = self.model_admin.get_paginator(
+296             request, self.queryset, self.list_per_page
+297         )
+298         # Get the number of objects, with admin filters applied.
+299         result_count = paginator.count
+300 
+301         # Get the total number of objects, with no admin filters applied.
+302         if self.model_admin.show_full_result_count:
+303             full_result_count = self.root_queryset.count()
+304         else:
+305             full_result_count = None
+306         can_show_all = result_count <= self.list_max_show_all
+307         multi_page = result_count > self.list_per_page
+308 
+309         # Get the list of objects to display on this page.
+310         if (self.show_all and can_show_all) or not multi_page:
+311             result_list = self.queryset._clone()
+312         else:
+313             try:
+314                 result_list = paginator.page(self.page_num).object_list
+315             except InvalidPage:
+316                 raise IncorrectLookupParameters
+317 
+318         self.result_count = result_count
+319         self.show_full_result_count = self.model_admin.show_full_result_count
+320         # Admin actions are shown if there is at least one entry
+321         # or if entries are not counted because show_full_result_count is disabled
+322         self.show_admin_actions = not self.show_full_result_count or bool(
+323             full_result_count
+324         )
+325         self.full_result_count = full_result_count
+326         self.result_list = result_list
+327         self.can_show_all = can_show_all
+328         self.multi_page = multi_page
+329         self.paginator = paginator
+330 
+331     def _get_default_ordering(self):
+332         ordering = []
+333         if self.model_admin.ordering:
+334             ordering = self.model_admin.ordering
+335         elif self.lookup_opts.ordering:
+336             ordering = self.lookup_opts.ordering
+337         return ordering
+338 
+339     def get_ordering_field(self, field_name):
+340         """
+341         Return the proper model field name corresponding to the given
+342         field_name to use for ordering. field_name may either be the name of a
+343         proper model field or the name of a method (on the admin or model) or a
+344         callable with the 'admin_order_field' attribute. Return None if no
+345         proper model field name can be matched.
+346         """
+347         try:
+348             field = self.lookup_opts.get_field(field_name)
+349             return field.name
+350         except FieldDoesNotExist:
+351             # See whether field_name is a name of a non-field
+352             # that allows sorting.
+353             if callable(field_name):
+354                 attr = field_name
+355             elif hasattr(self.model_admin, field_name):
+356                 attr = getattr(self.model_admin, field_name)
+357             else:
+358                 attr = getattr(self.model, field_name)
+359             if isinstance(attr, property) and hasattr(attr, "fget"):
+360                 attr = attr.fget
+361             return getattr(attr, "admin_order_field", None)
+362 
+363     def get_ordering(self, request, queryset):
+364         """
+365         Return the list of ordering fields for the change list.
+366         First check the get_ordering() method in model admin, then check
+367         the object's default ordering. Then, any manually-specified ordering
+368         from the query string overrides anything. Finally, a deterministic
+369         order is guaranteed by calling _get_deterministic_ordering() with the
+370         constructed ordering.
+371         """
+372         params = self.params
+373         ordering = list(
+374             self.model_admin.get_ordering(request) or self._get_default_ordering()
+375         )
+376         if ORDER_VAR in params:
+377             # Clear ordering and used params
+378             ordering = []
+379             order_params = params[ORDER_VAR].split(".")
+380             for p in order_params:
+381                 try:
+382                     none, pfx, idx = p.rpartition("-")
+383                     field_name = self.list_display[int(idx)]
+384                     order_field = self.get_ordering_field(field_name)
+385                     if not order_field:
+386                         continue  # No 'admin_order_field', skip it
+387                     if isinstance(order_field, OrderBy):
+388                         if pfx == "-":
+389                             order_field = order_field.copy()
+390                             order_field.reverse_ordering()
+391                         ordering.append(order_field)
+392                     elif hasattr(order_field, "resolve_expression"):
+393                         # order_field is an expression.
+394                         ordering.append(
+395                             order_field.desc() if pfx == "-" else order_field.asc()
+396                         )
+397                     # reverse order if order_field has already "-" as prefix
+398                     elif pfx == "-" and order_field.startswith(pfx):
+399                         ordering.append(order_field.removeprefix(pfx))
+400                     else:
+401                         ordering.append(pfx + order_field)
+402                 except (IndexError, ValueError):
+403                     continue  # Invalid ordering specified, skip it.
+404 
+405         # Add the given query's ordering fields, if any.
+406         ordering.extend(queryset.query.order_by)
+407 
+408         return self._get_deterministic_ordering(ordering)
+409 
+410     def _get_deterministic_ordering(self, ordering):
+411         """
+412         Ensure a deterministic order across all database backends. Search for a
+413         single field or unique together set of fields providing a total
+414         ordering. If these are missing, augment the ordering with a descendant
+415         primary key.
+416         """
+417         ordering = list(ordering)
+418         ordering_fields = set()
+419         total_ordering_fields = {"pk"} | {
+420             field.attname
+421             for field in self.lookup_opts.fields
+422             if field.unique and not field.null
+423         }
+424         for part in ordering:
+425             # Search for single field providing a total ordering.
+426             field_name = None
+427             if isinstance(part, str):
+428                 field_name = part.lstrip("-")
+429             elif isinstance(part, F):
+430                 field_name = part.name
+431             elif isinstance(part, OrderBy) and isinstance(part.expression, F):
+432                 field_name = part.expression.name
+433             if field_name:
+434                 # Normalize attname references by using get_field().
+435                 try:
+436                     field = self.lookup_opts.get_field(field_name)
+437                 except FieldDoesNotExist:
+438                     # Could be "?" for random ordering or a related field
+439                     # lookup. Skip this part of introspection for now.
+440                     continue
+441                 # Ordering by a related field name orders by the referenced
+442                 # model's ordering. Skip this part of introspection for now.
+443                 if field.remote_field and field_name == field.name:
+444                     continue
+445                 if field.attname in total_ordering_fields:
+446                     break
+447                 ordering_fields.add(field.attname)
+448         else:
+449             # No single total ordering field, try unique_together and total
+450             # unique constraints.
+451             constraint_field_names = (
+452                 *self.lookup_opts.unique_together,
+453                 *(
+454                     constraint.fields
+455                     for constraint in self.lookup_opts.total_unique_constraints
+456                 ),
+457             )
+458             for field_names in constraint_field_names:
+459                 # Normalize attname references by using get_field().
+460                 fields = [
+461                     self.lookup_opts.get_field(field_name) for field_name in field_names
+462                 ]
+463                 # Composite unique constraints containing a nullable column
+464                 # cannot ensure total ordering.
+465                 if any(field.null for field in fields):
+466                     continue
+467                 if ordering_fields.issuperset(field.attname for field in fields):
+468                     break
+469             else:
+470                 # If no set of unique fields is present in the ordering, rely
+471                 # on the primary key to provide total ordering.
+472                 ordering.append("-pk")
+473         return ordering
+474 
+475     def get_ordering_field_columns(self):
+476         """
+477         Return a dictionary of ordering field column numbers and asc/desc.
+478         """
+479         # We must cope with more than one column having the same underlying sort
+480         # field, so we base things on column numbers.
+481         ordering = self._get_default_ordering()
+482         ordering_fields = {}
+483         if ORDER_VAR not in self.params:
+484             # for ordering specified on ModelAdmin or model Meta, we don't know
+485             # the right column numbers absolutely, because there might be more
+486             # than one column associated with that ordering, so we guess.
+487             for field in ordering:
+488                 if isinstance(field, (Combinable, OrderBy)):
+489                     if not isinstance(field, OrderBy):
+490                         field = field.asc()
+491                     if isinstance(field.expression, F):
+492                         order_type = "desc" if field.descending else "asc"
+493                         field = field.expression.name
+494                     else:
+495                         continue
+496                 elif field.startswith("-"):
+497                     field = field.removeprefix("-")
+498                     order_type = "desc"
+499                 else:
+500                     order_type = "asc"
+501                 for index, attr in enumerate(self.list_display):
+502                     if self.get_ordering_field(attr) == field:
+503                         ordering_fields[index] = order_type
+504                         break
+505         else:
+506             for p in self.params[ORDER_VAR].split("."):
+507                 none, pfx, idx = p.rpartition("-")
+508                 try:
+509                     idx = int(idx)
+510                 except ValueError:
+511                     continue  # skip it
+512                 ordering_fields[idx] = "desc" if pfx == "-" else "asc"
+513         return ordering_fields
+514 
+515     def get_queryset(self, request, exclude_parameters=None):
+516         # First, we collect all the declared list filters.
+517         (
+518             self.filter_specs,
+519             self.has_filters,
+520             remaining_lookup_params,
+521             filters_may_have_duplicates,
+522             self.has_active_filters,
+523         ) = self.get_filters(request)
+524         # Then, we let every list filter modify the queryset to its liking.
+525         qs = self.root_queryset
+526         for filter_spec in self.filter_specs:
+527             if (
+528                 exclude_parameters is None
+529                 or filter_spec.expected_parameters() != exclude_parameters
+530             ):
+531                 new_qs = filter_spec.queryset(request, qs)
+532                 if new_qs is not None:
+533                     qs = new_qs
+534 
+535         try:
+536             # Finally, we apply the remaining lookup parameters from the query
+537             # string (i.e. those that haven't already been processed by the
+538             # filters).
+539             q_object = build_q_object_from_lookup_parameters(remaining_lookup_params)
+540             qs = qs.filter(q_object)
+541         except (SuspiciousOperation, ImproperlyConfigured):
+542             # Allow certain types of errors to be re-raised as-is so that the
+543             # caller can treat them in a special way.
+544             raise
+545         except Exception as e:
+546             # Every other error is caught with a naked except, because we don't
+547             # have any other way of validating lookup parameters. They might be
+548             # invalid if the keyword arguments are incorrect, or if the values
+549             # are not in the correct type, so we might get FieldError,
+550             # ValueError, ValidationError, or ?.
+551             raise IncorrectLookupParameters(e)
+552 
+553         # Apply search results
+554         qs, search_may_have_duplicates = self.model_admin.get_search_results(
+555             request,
+556             qs,
+557             self.query,
+558         )
+559 
+560         # Set query string for clearing all filters.
+561         self.clear_all_filters_qs = self.get_query_string(
+562             new_params=remaining_lookup_params,
+563             remove=self.get_filters_params(),
+564         )
+565         # Remove duplicates from results, if necessary
+566         if filters_may_have_duplicates | search_may_have_duplicates:
+567             qs = qs.filter(pk=OuterRef("pk"))
+568             qs = self.root_queryset.filter(Exists(qs))
+569 
+570         # Set ordering.
+571         ordering = self.get_ordering(request, qs)
+572         qs = qs.order_by(*ordering)
+573 
+574         if not qs.query.select_related:
+575             qs = self.apply_select_related(qs)
+576 
+577         return qs
+578 
+579     def apply_select_related(self, qs):
+580         if self.list_select_related is True:
+581             return qs.select_related()
+582 
+583         if self.list_select_related is False:
+584             if self.has_related_field_in_list_display():
+585                 return qs.select_related()
+586 
+587         if self.list_select_related:
+588             return qs.select_related(*self.list_select_related)
+589         return qs
+590 
+591     def has_related_field_in_list_display(self):
+592         for field_name in self.list_display:
+593             try:
+594                 field = self.lookup_opts.get_field(field_name)
+595             except FieldDoesNotExist:
+596                 pass
+597             else:
+598                 if isinstance(field.remote_field, ManyToOneRel):
+599                     # <FK>_id field names don't require a join.
+600                     if field_name != field.get_attname():
+601                         return True
+602         return False
+603 
+604     def url_for_result(self, result):
+605         pk = getattr(result, self.pk_attname)
+606         return reverse(
+607             "admin:%s_%s_change" % (self.opts.app_label, self.opts.model_name),
+608             args=(quote(pk),),
+609             current_app=self.model_admin.admin_site.name,
+610         )
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-15 00:57:54.855 | INFO     | Search completed. Bug locations: [<file>django/contrib/admin/options.py</file>
+<class>None</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             if not prev_field or (
+465                 prev_field.is_relation
+466                 and field not in model._meta.parents.values()
+467                 and field is not model._meta.auto_field
+468                 and (
+469                     model._meta.auto_field is None
+470                     or part not in getattr(prev_field, "to_fields", [])
+471                 )
+472             ):
+473                 relation_parts.append(part)
+474             if not getattr(field, "path_infos", None):
+475                 # This is not a relational field, so further parts
+476                 # must be transforms.
+477                 break
+478             prev_field = field
+479             model = field.path_infos[-1].to_opts.model
+480 
+481         if len(relation_parts) <= 1:
+482             # Either a local field filter, or no fields at all.
+483             return True
+484         valid_lookups = {self.date_hierarchy}
+485         for filter_item in self.list_filter:
+486             if isinstance(filter_item, type) and issubclass(
+487                 filter_item, SimpleListFilter
+488             ):
+489                 valid_lookups.add(filter_item.parameter_name)
+490             elif isinstance(filter_item, (list, tuple)):
+491                 valid_lookups.add(filter_item[0])
+492             else:
+493                 valid_lookups.add(filter_item)
+494 
+495         # Is it a valid relational lookup?
+496         return not {
+497             LOOKUP_SEP.join(relation_parts),
+498             LOOKUP_SEP.join(relation_parts + [part]),
+499         }.isdisjoint(valid_lookups)
+
+</code><intended_behavior>This method should be modified to accept an additional `request` parameter, enabling it to dynamically determine valid lookup params by iterating through the filters returned by `self.get_list_filter(request)` instead of the static `self.list_filter`. To preserve existing functionality and compatibility, it's vital that any implementation gracefully handles scenarios where the `request` parameter may not be available, potentially by keeping a backward-compatible method signature or providing fallback mechanisms.</intended_behavior>, <file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             if not prev_field or (
+465                 prev_field.is_relation
+466                 and field not in model._meta.parents.values()
+467                 and field is not model._meta.auto_field
+468                 and (
+469                     model._meta.auto_field is None
+470                     or part not in getattr(prev_field, "to_fields", [])
+471                 )
+472             ):
+473                 relation_parts.append(part)
+474             if not getattr(field, "path_infos", None):
+475                 # This is not a relational field, so further parts
+476                 # must be transforms.
+477                 break
+478             prev_field = field
+479             model = field.path_infos[-1].to_opts.model
+480 
+481         if len(relation_parts) <= 1:
+482             # Either a local field filter, or no fields at all.
+483             return True
+484         valid_lookups = {self.date_hierarchy}
+485         for filter_item in self.list_filter:
+486             if isinstance(filter_item, type) and issubclass(
+487                 filter_item, SimpleListFilter
+488             ):
+489                 valid_lookups.add(filter_item.parameter_name)
+490             elif isinstance(filter_item, (list, tuple)):
+491                 valid_lookups.add(filter_item[0])
+492             else:
+493                 valid_lookups.add(filter_item)
+494 
+495         # Is it a valid relational lookup?
+496         return not {
+497             LOOKUP_SEP.join(relation_parts),
+498             LOOKUP_SEP.join(relation_parts + [part]),
+499         }.isdisjoint(valid_lookups)
+
+</code><intended_behavior>This method should be modified to accept an additional `request` parameter, enabling it to dynamically determine valid lookup params by iterating through the filters returned by `self.get_list_filter(request)` instead of the static `self.list_filter`. To preserve existing functionality and compatibility, it's vital that any implementation gracefully handles scenarios where the `request` parameter may not be available, potentially by keeping a backward-compatible method signature or providing fallback mechanisms.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Given the dependency on `lookup_allowed`, which is proposed to change to accommodate dynamic list filters, `get_filters` within `ChangeList` may need adjustment to pass the `request` to `lookup_allowed`. The precise change depends on how `lookup_allowed` is invoked here, but the core intent is to ensure that `get_filters` leverages the enhanced `lookup_allowed` to dynamically determine valid filters based on the request. This enhancement will allow the `ChangeList` to reflect more accurately the admin's configuration and permissions on a per-request basis.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>None</method>
+<code>
+64 class ChangeList:
+65     search_form_class = ChangeListSearchForm
+66 
+67     def __init__(
+68         self,
+69         request,
+70         model,
+71         list_display,
+72         list_display_links,
+73         list_filter,
+74         date_hierarchy,
+75         search_fields,
+76         list_select_related,
+77         list_per_page,
+78         list_max_show_all,
+79         list_editable,
+80         model_admin,
+81         sortable_by,
+82         search_help_text,
+83     ):
+84         self.model = model
+85         self.opts = model._meta
+86         self.lookup_opts = self.opts
+87         self.root_queryset = model_admin.get_queryset(request)
+88         self.list_display = list_display
+89         self.list_display_links = list_display_links
+90         self.list_filter = list_filter
+91         self.has_filters = None
+92         self.has_active_filters = None
+93         self.clear_all_filters_qs = None
+94         self.date_hierarchy = date_hierarchy
+95         self.search_fields = search_fields
+96         self.list_select_related = list_select_related
+97         self.list_per_page = list_per_page
+98         self.list_max_show_all = list_max_show_all
+99         self.model_admin = model_admin
+100         self.preserved_filters = model_admin.get_preserved_filters(request)
+101         self.sortable_by = sortable_by
+102         self.search_help_text = search_help_text
+103 
+104         # Get search parameters from the query string.
+105         _search_form = self.search_form_class(request.GET)
+106         if not _search_form.is_valid():
+107             for error in _search_form.errors.values():
+108                 messages.error(request, ", ".join(error))
+109         self.query = _search_form.cleaned_data.get(SEARCH_VAR) or ""
+110         try:
+111             self.page_num = int(request.GET.get(PAGE_VAR, 1))
+112         except ValueError:
+113             self.page_num = 1
+114         self.show_all = ALL_VAR in request.GET
+115         self.is_popup = IS_POPUP_VAR in request.GET
+116         self.add_facets = model_admin.show_facets is ShowFacets.ALWAYS or (
+117             model_admin.show_facets is ShowFacets.ALLOW and IS_FACETS_VAR in request.GET
+118         )
+119         self.is_facets_optional = model_admin.show_facets is ShowFacets.ALLOW
+120         to_field = request.GET.get(TO_FIELD_VAR)
+121         if to_field and not model_admin.to_field_allowed(request, to_field):
+122             raise DisallowedModelAdminToField(
+123                 "The field %s cannot be referenced." % to_field
+124             )
+125         self.to_field = to_field
+126         self.params = dict(request.GET.items())
+127         self.filter_params = dict(request.GET.lists())
+128         if PAGE_VAR in self.params:
+129             del self.params[PAGE_VAR]
+130             del self.filter_params[PAGE_VAR]
+131         if ERROR_FLAG in self.params:
+132             del self.params[ERROR_FLAG]
+133             del self.filter_params[ERROR_FLAG]
+134         self.remove_facet_link = self.get_query_string(remove=[IS_FACETS_VAR])
+135         self.add_facet_link = self.get_query_string({IS_FACETS_VAR: True})
+136 
+137         if self.is_popup:
+138             self.list_editable = ()
+139         else:
+140             self.list_editable = list_editable
+141         self.queryset = self.get_queryset(request)
+142         self.get_results(request)
+143         if self.is_popup:
+144             title = gettext("Select %s")
+145         elif self.model_admin.has_change_permission(request):
+146             title = gettext("Select %s to change")
+147         else:
+148             title = gettext("Select %s to view")
+149         self.title = title % self.opts.verbose_name
+150         self.pk_attname = self.lookup_opts.pk.attname
+151 
+152     def __repr__(self):
+153         return "<%s: model=%s model_admin=%s>" % (
+154             self.__class__.__qualname__,
+155             self.model.__qualname__,
+156             self.model_admin.__class__.__qualname__,
+157         )
+158 
+159     def get_filters_params(self, params=None):
+160         """
+161         Return all params except IGNORED_PARAMS.
+162         """
+163         params = params or self.filter_params
+164         lookup_params = params.copy()  # a dictionary of the query string
+165         # Remove all the parameters that are globally and systematically
+166         # ignored.
+167         for ignored in IGNORED_PARAMS:
+168             if ignored in lookup_params:
+169                 del lookup_params[ignored]
+170         return lookup_params
+171 
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+275 
+276     def get_query_string(self, new_params=None, remove=None):
+277         if new_params is None:
+278             new_params = {}
+279         if remove is None:
+280             remove = []
+281         p = self.filter_params.copy()
+282         for r in remove:
+283             for k in list(p):
+284                 if k.startswith(r):
+285                     del p[k]
+286         for k, v in new_params.items():
+287             if v is None:
+288                 if k in p:
+289                     del p[k]
+290             else:
+291                 p[k] = v
+292         return "?%s" % urlencode(sorted(p.items()), doseq=True)
+293 
+294     def get_results(self, request):
+295         paginator = self.model_admin.get_paginator(
+296             request, self.queryset, self.list_per_page
+297         )
+298         # Get the number of objects, with admin filters applied.
+299         result_count = paginator.count
+300 
+301         # Get the total number of objects, with no admin filters applied.
+302         if self.model_admin.show_full_result_count:
+303             full_result_count = self.root_queryset.count()
+304         else:
+305             full_result_count = None
+306         can_show_all = result_count <= self.list_max_show_all
+307         multi_page = result_count > self.list_per_page
+308 
+309         # Get the list of objects to display on this page.
+310         if (self.show_all and can_show_all) or not multi_page:
+311             result_list = self.queryset._clone()
+312         else:
+313             try:
+314                 result_list = paginator.page(self.page_num).object_list
+315             except InvalidPage:
+316                 raise IncorrectLookupParameters
+317 
+318         self.result_count = result_count
+319         self.show_full_result_count = self.model_admin.show_full_result_count
+320         # Admin actions are shown if there is at least one entry
+321         # or if entries are not counted because show_full_result_count is disabled
+322         self.show_admin_actions = not self.show_full_result_count or bool(
+323             full_result_count
+324         )
+325         self.full_result_count = full_result_count
+326         self.result_list = result_list
+327         self.can_show_all = can_show_all
+328         self.multi_page = multi_page
+329         self.paginator = paginator
+330 
+331     def _get_default_ordering(self):
+332         ordering = []
+333         if self.model_admin.ordering:
+334             ordering = self.model_admin.ordering
+335         elif self.lookup_opts.ordering:
+336             ordering = self.lookup_opts.ordering
+337         return ordering
+338 
+339     def get_ordering_field(self, field_name):
+340         """
+341         Return the proper model field name corresponding to the given
+342         field_name to use for ordering. field_name may either be the name of a
+343         proper model field or the name of a method (on the admin or model) or a
+344         callable with the 'admin_order_field' attribute. Return None if no
+345         proper model field name can be matched.
+346         """
+347         try:
+348             field = self.lookup_opts.get_field(field_name)
+349             return field.name
+350         except FieldDoesNotExist:
+351             # See whether field_name is a name of a non-field
+352             # that allows sorting.
+353             if callable(field_name):
+354                 attr = field_name
+355             elif hasattr(self.model_admin, field_name):
+356                 attr = getattr(self.model_admin, field_name)
+357             else:
+358                 attr = getattr(self.model, field_name)
+359             if isinstance(attr, property) and hasattr(attr, "fget"):
+360                 attr = attr.fget
+361             return getattr(attr, "admin_order_field", None)
+362 
+363     def get_ordering(self, request, queryset):
+364         """
+365         Return the list of ordering fields for the change list.
+366         First check the get_ordering() method in model admin, then check
+367         the object's default ordering. Then, any manually-specified ordering
+368         from the query string overrides anything. Finally, a deterministic
+369         order is guaranteed by calling _get_deterministic_ordering() with the
+370         constructed ordering.
+371         """
+372         params = self.params
+373         ordering = list(
+374             self.model_admin.get_ordering(request) or self._get_default_ordering()
+375         )
+376         if ORDER_VAR in params:
+377             # Clear ordering and used params
+378             ordering = []
+379             order_params = params[ORDER_VAR].split(".")
+380             for p in order_params:
+381                 try:
+382                     none, pfx, idx = p.rpartition("-")
+383                     field_name = self.list_display[int(idx)]
+384                     order_field = self.get_ordering_field(field_name)
+385                     if not order_field:
+386                         continue  # No 'admin_order_field', skip it
+387                     if isinstance(order_field, OrderBy):
+388                         if pfx == "-":
+389                             order_field = order_field.copy()
+390                             order_field.reverse_ordering()
+391                         ordering.append(order_field)
+392                     elif hasattr(order_field, "resolve_expression"):
+393                         # order_field is an expression.
+394                         ordering.append(
+395                             order_field.desc() if pfx == "-" else order_field.asc()
+396                         )
+397                     # reverse order if order_field has already "-" as prefix
+398                     elif pfx == "-" and order_field.startswith(pfx):
+399                         ordering.append(order_field.removeprefix(pfx))
+400                     else:
+401                         ordering.append(pfx + order_field)
+402                 except (IndexError, ValueError):
+403                     continue  # Invalid ordering specified, skip it.
+404 
+405         # Add the given query's ordering fields, if any.
+406         ordering.extend(queryset.query.order_by)
+407 
+408         return self._get_deterministic_ordering(ordering)
+409 
+410     def _get_deterministic_ordering(self, ordering):
+411         """
+412         Ensure a deterministic order across all database backends. Search for a
+413         single field or unique together set of fields providing a total
+414         ordering. If these are missing, augment the ordering with a descendant
+415         primary key.
+416         """
+417         ordering = list(ordering)
+418         ordering_fields = set()
+419         total_ordering_fields = {"pk"} | {
+420             field.attname
+421             for field in self.lookup_opts.fields
+422             if field.unique and not field.null
+423         }
+424         for part in ordering:
+425             # Search for single field providing a total ordering.
+426             field_name = None
+427             if isinstance(part, str):
+428                 field_name = part.lstrip("-")
+429             elif isinstance(part, F):
+430                 field_name = part.name
+431             elif isinstance(part, OrderBy) and isinstance(part.expression, F):
+432                 field_name = part.expression.name
+433             if field_name:
+434                 # Normalize attname references by using get_field().
+435                 try:
+436                     field = self.lookup_opts.get_field(field_name)
+437                 except FieldDoesNotExist:
+438                     # Could be "?" for random ordering or a related field
+439                     # lookup. Skip this part of introspection for now.
+440                     continue
+441                 # Ordering by a related field name orders by the referenced
+442                 # model's ordering. Skip this part of introspection for now.
+443                 if field.remote_field and field_name == field.name:
+444                     continue
+445                 if field.attname in total_ordering_fields:
+446                     break
+447                 ordering_fields.add(field.attname)
+448         else:
+449             # No single total ordering field, try unique_together and total
+450             # unique constraints.
+451             constraint_field_names = (
+452                 *self.lookup_opts.unique_together,
+453                 *(
+454                     constraint.fields
+455                     for constraint in self.lookup_opts.total_unique_constraints
+456                 ),
+457             )
+458             for field_names in constraint_field_names:
+459                 # Normalize attname references by using get_field().
+460                 fields = [
+461                     self.lookup_opts.get_field(field_name) for field_name in field_names
+462                 ]
+463                 # Composite unique constraints containing a nullable column
+464                 # cannot ensure total ordering.
+465                 if any(field.null for field in fields):
+466                     continue
+467                 if ordering_fields.issuperset(field.attname for field in fields):
+468                     break
+469             else:
+470                 # If no set of unique fields is present in the ordering, rely
+471                 # on the primary key to provide total ordering.
+472                 ordering.append("-pk")
+473         return ordering
+474 
+475     def get_ordering_field_columns(self):
+476         """
+477         Return a dictionary of ordering field column numbers and asc/desc.
+478         """
+479         # We must cope with more than one column having the same underlying sort
+480         # field, so we base things on column numbers.
+481         ordering = self._get_default_ordering()
+482         ordering_fields = {}
+483         if ORDER_VAR not in self.params:
+484             # for ordering specified on ModelAdmin or model Meta, we don't know
+485             # the right column numbers absolutely, because there might be more
+486             # than one column associated with that ordering, so we guess.
+487             for field in ordering:
+488                 if isinstance(field, (Combinable, OrderBy)):
+489                     if not isinstance(field, OrderBy):
+490                         field = field.asc()
+491                     if isinstance(field.expression, F):
+492                         order_type = "desc" if field.descending else "asc"
+493                         field = field.expression.name
+494                     else:
+495                         continue
+496                 elif field.startswith("-"):
+497                     field = field.removeprefix("-")
+498                     order_type = "desc"
+499                 else:
+500                     order_type = "asc"
+501                 for index, attr in enumerate(self.list_display):
+502                     if self.get_ordering_field(attr) == field:
+503                         ordering_fields[index] = order_type
+504                         break
+505         else:
+506             for p in self.params[ORDER_VAR].split("."):
+507                 none, pfx, idx = p.rpartition("-")
+508                 try:
+509                     idx = int(idx)
+510                 except ValueError:
+511                     continue  # skip it
+512                 ordering_fields[idx] = "desc" if pfx == "-" else "asc"
+513         return ordering_fields
+514 
+515     def get_queryset(self, request, exclude_parameters=None):
+516         # First, we collect all the declared list filters.
+517         (
+518             self.filter_specs,
+519             self.has_filters,
+520             remaining_lookup_params,
+521             filters_may_have_duplicates,
+522             self.has_active_filters,
+523         ) = self.get_filters(request)
+524         # Then, we let every list filter modify the queryset to its liking.
+525         qs = self.root_queryset
+526         for filter_spec in self.filter_specs:
+527             if (
+528                 exclude_parameters is None
+529                 or filter_spec.expected_parameters() != exclude_parameters
+530             ):
+531                 new_qs = filter_spec.queryset(request, qs)
+532                 if new_qs is not None:
+533                     qs = new_qs
+534 
+535         try:
+536             # Finally, we apply the remaining lookup parameters from the query
+537             # string (i.e. those that haven't already been processed by the
+538             # filters).
+539             q_object = build_q_object_from_lookup_parameters(remaining_lookup_params)
+540             qs = qs.filter(q_object)
+541         except (SuspiciousOperation, ImproperlyConfigured):
+542             # Allow certain types of errors to be re-raised as-is so that the
+543             # caller can treat them in a special way.
+544             raise
+545         except Exception as e:
+546             # Every other error is caught with a naked except, because we don't
+547             # have any other way of validating lookup parameters. They might be
+548             # invalid if the keyword arguments are incorrect, or if the values
+549             # are not in the correct type, so we might get FieldError,
+550             # ValueError, ValidationError, or ?.
+551             raise IncorrectLookupParameters(e)
+552 
+553         # Apply search results
+554         qs, search_may_have_duplicates = self.model_admin.get_search_results(
+555             request,
+556             qs,
+557             self.query,
+558         )
+559 
+560         # Set query string for clearing all filters.
+561         self.clear_all_filters_qs = self.get_query_string(
+562             new_params=remaining_lookup_params,
+563             remove=self.get_filters_params(),
+564         )
+565         # Remove duplicates from results, if necessary
+566         if filters_may_have_duplicates | search_may_have_duplicates:
+567             qs = qs.filter(pk=OuterRef("pk"))
+568             qs = self.root_queryset.filter(Exists(qs))
+569 
+570         # Set ordering.
+571         ordering = self.get_ordering(request, qs)
+572         qs = qs.order_by(*ordering)
+573 
+574         if not qs.query.select_related:
+575             qs = self.apply_select_related(qs)
+576 
+577         return qs
+578 
+579     def apply_select_related(self, qs):
+580         if self.list_select_related is True:
+581             return qs.select_related()
+582 
+583         if self.list_select_related is False:
+584             if self.has_related_field_in_list_display():
+585                 return qs.select_related()
+586 
+587         if self.list_select_related:
+588             return qs.select_related(*self.list_select_related)
+589         return qs
+590 
+591     def has_related_field_in_list_display(self):
+592         for field_name in self.list_display:
+593             try:
+594                 field = self.lookup_opts.get_field(field_name)
+595             except FieldDoesNotExist:
+596                 pass
+597             else:
+598                 if isinstance(field.remote_field, ManyToOneRel):
+599                     # <FK>_id field names don't require a join.
+600                     if field_name != field.get_attname():
+601                         return True
+602         return False
+603 
+604     def url_for_result(self, result):
+605         pk = getattr(result, self.pk_attname)
+606         return reverse(
+607             "admin:%s_%s_change" % (self.opts.app_label, self.opts.model_name),
+608             args=(quote(pk),),
+609             current_app=self.model_admin.admin_site.name,
+610         )
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-15 00:57:54.855 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:57:54.856 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:57:55.066 | INFO     | Task django__django-16759 completed successfully.
+2026-01-15 00:57:55.067 | INFO     | No patch generated. You can try running ACR again.

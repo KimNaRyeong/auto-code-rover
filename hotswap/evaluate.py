@@ -262,8 +262,8 @@ def get_cost(model):
     return total_time_cost, total_input_tokens, total_output_tokens
                     
 def evaluate_hotswap():
-    hotswap_fl_results_for_r = dict()
-    mixtral_fl_results_for_r = dict()
+    # hotswap_fl_results_for_r = dict()
+    # mixtral_fl_results_for_r = dict()
     # gpt4_fl_results_for_r = dict()
     # for i in range(1, 6):
     #     hotswap_fl_results_for_r[i] = extract_fl_results("hotswap", i)
@@ -284,24 +284,24 @@ def evaluate_hotswap():
     
     hotswap_filtered_result_file = './filtered_fl_results_hotswap.json'
     mixtral_filtered_result_file = './filtered_fl_results_mixtral.json'
-    # gpt4_filtered_result_file = './filtered_fl_results_gpt-4.json'
+    gpt4_filtered_result_file = './filtered_fl_results_gpt-4.json'
 
     with open(hotswap_filtered_result_file, 'r') as f:
         hotswap_fl_results_for_r = json.load(f)
     with open(mixtral_filtered_result_file, 'r') as f:
         mixtral_fl_results_for_r = json.load(f)
-    # with open(gpt4_filtered_result_file, 'r') as f:
-    #     gpt4_fl_results_for_r = json.load(f)
+    with open(gpt4_filtered_result_file, 'r') as f:
+        gpt4_fl_results_for_r = json.load(f)
 
     # =================== Evaluation ====================
     
     hotswap_evaluation_result = evaluate("hotswap")
     mixtral_evaluation_result = evaluate("mixtral")
-    # gpt4_evaluation_result = evaluate("gpt-4")
+    gpt4_evaluation_result = evaluate("gpt-4")
 
     print(f"Mixtral: {mixtral_evaluation_result}")
     print(f"Hotswap: {hotswap_evaluation_result}")
-    # print(f"gpt-4: {gpt4_evaluation_result}")
+    print(f"gpt-4: {gpt4_evaluation_result}")
 
     # =================== Cost Calculation =====================
     gpt4_input_price_per_1m = 10
@@ -311,12 +311,12 @@ def evaluate_hotswap():
     hotswap_time_cost, hotswap_input_tokens, hotswap_output_tokens = get_cost("hotswap")
     hotswap_monetary_cost = ((hotswap_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((hotswap_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
 
-    # gpt4_time_cost, gpt4_input_tokens, gpt4_output_tokens = get_cost("gpt-4")
-    # gpt4_monetary_cost = ((gpt4_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((gpt4_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
+    gpt4_time_cost, gpt4_input_tokens, gpt4_output_tokens = get_cost("gpt-4")
+    gpt4_monetary_cost = ((gpt4_input_tokens / 1_000_000) * gpt4_input_price_per_1m) + ((gpt4_output_tokens / 1_000_000) * gpt4_output_price_per_1m)
 
-    print(f"Mixtral - time cost: {mixtral_time_cost:.4f}, monetary cost: {mixtral_monetary_cost:.4f}")
-    print(f"Hotswap - time cost: {hotswap_time_cost:.4f}, monetary cost: {hotswap_monetary_cost:.4f}")
-    # print(f"Gpt-4 - time cost: {gpt4_time_cost:.4f}, monetary cost: {gpt4_monetary_cost:.4f}")
+    print(f"Mixtral - time cost: {mixtral_time_cost:.4f}, monetary cost: {mixtral_monetary_cost:.4f}, input tokens: {mixtral_input_tokens}, output tokens: {mixtral_output_tokens}")
+    print(f"Hotswap - time cost: {hotswap_time_cost:.4f}, monetary cost: {hotswap_monetary_cost:.4f}, input tokens: {hotswap_input_tokens}, output tokens: {hotswap_output_tokens}")
+    print(f"Gpt-4 - time cost: {gpt4_time_cost:.4f}, monetary cost: {gpt4_monetary_cost:.4f}, input tokens: {gpt4_input_tokens}, output_tokens: {gpt4_output_tokens}")
 
 
 if __name__ == '__main__':
