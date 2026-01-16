@@ -29,52 +29,52 @@ with open(hotswap_list_file, 'r') as f:
     hotswap_list = json.load(f)
 
 for i in range(1, 6):
-    no_hotswap_copy_list = []
-    hotswap_copy_list = []
-    for task in test_list:
-        if task not in hotswap_list[str(i)]:
-            no_hotswap_copy_list.append(task)
-        else:
-            hotswap_copy_list.append(task)
+    # no_hotswap_copy_list = []
+    # hotswap_copy_list = []
+    # for task in test_list:
+    #     if task not in hotswap_list[str(i)]:
+    #         no_hotswap_copy_list.append(task)
+    #     else:
+    #         hotswap_copy_list.append(task)
 
-    hotswap_dest_base_dir = f'./results/hotswap/only_fl_{i}/no_patch'
-    os.makedirs(hotswap_dest_base_dir, exist_ok=True)
+    # hotswap_dest_base_dir = f'./results/hotswap/only_fl_{i}/no_patch'
+    # os.makedirs(hotswap_dest_base_dir, exist_ok=True)
 
-    source_base_dir = f'../fl_outputs/only_fl_output_mixtral_{i}/no_patch'
-    for task in no_hotswap_copy_list:
-        source_path = get_source_dir(source_base_dir, task)
-        task_dir = source_path.split('/')[-1]
-        dest_path = os.path.join(hotswap_dest_base_dir, task_dir)
-        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
+    # source_base_dir = f'../fl_outputs/only_fl_output_mixtral_{i}/no_patch'
+    # for task in no_hotswap_copy_list:
+    #     source_path = get_source_dir(source_base_dir, task)
+    #     task_dir = source_path.split('/')[-1]
+    #     dest_path = os.path.join(hotswap_dest_base_dir, task_dir)
+    #     shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
     
-    source_base_dir = f'../fl_outputs/only_fl_hotswap_{i}/no_patch'
-    for task in hotswap_copy_list:
-        source_path = get_source_dir(source_base_dir, task)
-        task_dir = source_path.split('/')[-1]
-        dest_path = os.path.join(hotswap_dest_base_dir, task_dir)
-        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
+    # source_base_dir = f'../fl_outputs/only_fl_hotswap_{i}/no_patch'
+    # for task in hotswap_copy_list:
+    #     source_path = get_source_dir(source_base_dir, task)
+    #     task_dir = source_path.split('/')[-1]
+    #     dest_path = os.path.join(hotswap_dest_base_dir, task_dir)
+    #     shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
     
     
-    mixtral_dest_base_dir = f'./results/mixtral/only_fl_{i}/no_patch'
-    os.makedirs(mixtral_dest_base_dir, exist_ok=True)
+    # mixtral_dest_base_dir = f'./results/mixtral/only_fl_{i}/no_patch'
+    # os.makedirs(mixtral_dest_base_dir, exist_ok=True)
 
-    source_base_dir = f'../fl_outputs/only_fl_output_mixtral_{i}/no_patch'
-    for task in test_list:
-        source_path = get_source_dir(source_base_dir, task)
-        task_dir = source_path.split('/')[-1]
-        dest_path = os.path.join(mixtral_dest_base_dir, task_dir)
-        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
-
-
-    # gpt4_dest_base_dir = f'./results/gpt-4/only_fl_{i}/no_patch'
-    # os.makedirs(gpt4_dest_base_dir, exist_ok=True)
-
-    # source_base_dir = f'../fl_outputs/only_fl_output{i}/no_patch'
+    # source_base_dir = f'../fl_outputs/only_fl_output_mixtral_{i}/no_patch'
     # for task in test_list:
     #     source_path = get_source_dir(source_base_dir, task)
     #     task_dir = source_path.split('/')[-1]
-    #     dest_path = os.path.join(gpt4_dest_base_dir, task_dir)
+    #     dest_path = os.path.join(mixtral_dest_base_dir, task_dir)
     #     shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
+
+
+    gpt4_dest_base_dir = f'./results/gpt-4/only_fl_{i}/no_patch'
+    os.makedirs(gpt4_dest_base_dir, exist_ok=True)
+
+    source_base_dir = f'../fl_outputs/only_fl_output{i}/no_patch'
+    for task in test_list:
+        source_path = get_source_dir(source_base_dir, task)
+        task_dir = source_path.split('/')[-1]
+        dest_path = os.path.join(gpt4_dest_base_dir, task_dir)
+        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
 
 
 
