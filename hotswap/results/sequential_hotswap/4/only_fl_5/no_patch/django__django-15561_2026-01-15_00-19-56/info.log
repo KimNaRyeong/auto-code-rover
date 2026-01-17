@@ -1,0 +1,1858 @@
+2026-01-15 00:19:57.048 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:20:01.873 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=159, output_tokens=12, cost=0.001950
+2026-01-15 00:20:01.874 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 00:20:01.878 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:20:12.607 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=468, output_tokens=335, cost=0.014730
+2026-01-15 00:20:12.612 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:20:15.661 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=689, output_tokens=61, cost=0.008720
+2026-01-15 00:20:15.664 | DEBUG    | Extracted a valid json.
+2026-01-15 00:20:15.664 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_method(\"AlterField\")",
+        "search_code(\"choices\")",
+        "search_class(\"SQLiteSchemaEditor\")",
+        "search_method_in_class(\"sql_alter_column\", \"SQLiteSchemaEditor\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 00:20:16.038 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:20:16.038 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:20:33.399 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1686, output_tokens=764, cost=0.039780
+2026-01-15 00:20:33.407 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:20:45.135 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2666, output_tokens=486, cost=0.041240
+2026-01-15 00:20:45.143 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:20:52.188 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=840, output_tokens=218, cost=0.014940
+2026-01-15 00:20:52.189 | DEBUG    | Extracted a valid json.
+2026-01-15 00:20:52.189 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/db/backends/sqlite3/schema.py",
+            "class": "DatabaseSchemaEditor",
+            "method": "alter_field, add_field",
+            "intended_behavior": "These methods should first check if the operation involves changes that are irrelevant to the SQLite database schema, such as adding or changing field choices. If the operation is solely related to choices, the method should perform no operations, effectively making it a noop for SQLite. This would involve adding conditional checks to skip SQL generation and execution steps for choice-related changes."
+        },
+        {
+            "file": "django/db/migrations/operations/fields.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Enhance the AlterField operation or its processing to recognize when changes are SQLite-relevant or not. Specifically for choices, the migration engine should identify that this change does not impact the database schema and bypass the generation of SQL for such migrations on SQLite databases."
+        }
+    ]
+}
+2026-01-15 00:20:52.197 | DEBUG    | Bug location extracted successfully: [<file>django/db/backends/sqlite3/schema.py</file>
+<class>DatabaseSchemaEditor</class>
+<method>None</method>
+<code>
+13 class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
+14 
+15     sql_delete_table = "DROP TABLE %(table)s"
+16     sql_create_fk = None
+17     sql_create_inline_fk = (
+18         "REFERENCES %(to_table)s (%(to_column)s) DEFERRABLE INITIALLY DEFERRED"
+19     )
+20     sql_create_column_inline_fk = sql_create_inline_fk
+21     sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s"
+22     sql_create_unique = "CREATE UNIQUE INDEX %(name)s ON %(table)s (%(columns)s)"
+23     sql_delete_unique = "DROP INDEX %(name)s"
+24 
+25     def __enter__(self):
+26         # Some SQLite schema alterations need foreign key constraints to be
+27         # disabled. Enforce it here for the duration of the schema edition.
+28         if not self.connection.disable_constraint_checking():
+29             raise NotSupportedError(
+30                 "SQLite schema editor cannot be used while foreign key "
+31                 "constraint checks are enabled. Make sure to disable them "
+32                 "before entering a transaction.atomic() context because "
+33                 "SQLite does not support disabling them in the middle of "
+34                 "a multi-statement transaction."
+35             )
+36         return super().__enter__()
+37 
+38     def __exit__(self, exc_type, exc_value, traceback):
+39         self.connection.check_constraints()
+40         super().__exit__(exc_type, exc_value, traceback)
+41         self.connection.enable_constraint_checking()
+42 
+43     def quote_value(self, value):
+44         # The backend "mostly works" without this function and there are use
+45         # cases for compiling Python without the sqlite3 libraries (e.g.
+46         # security hardening).
+47         try:
+48             import sqlite3
+49 
+50             value = sqlite3.adapt(value)
+51         except ImportError:
+52             pass
+53         except sqlite3.ProgrammingError:
+54             pass
+55         # Manual emulation of SQLite parameter quoting
+56         if isinstance(value, bool):
+57             return str(int(value))
+58         elif isinstance(value, (Decimal, float, int)):
+59             return str(value)
+60         elif isinstance(value, str):
+61             return "'%s'" % value.replace("'", "''")
+62         elif value is None:
+63             return "NULL"
+64         elif isinstance(value, (bytes, bytearray, memoryview)):
+65             # Bytes are only allowed for BLOB fields, encoded as string
+66             # literals containing hexadecimal data and preceded by a single "X"
+67             # character.
+68             return "X'%s'" % value.hex()
+69         else:
+70             raise ValueError(
+71                 "Cannot quote parameter value %r of type %s" % (value, type(value))
+72             )
+73 
+74     def prepare_default(self, value):
+75         return self.quote_value(value)
+76 
+77     def _is_referenced_by_fk_constraint(
+78         self, table_name, column_name=None, ignore_self=False
+79     ):
+80         """
+81         Return whether or not the provided table name is referenced by another
+82         one. If `column_name` is specified, only references pointing to that
+83         column are considered. If `ignore_self` is True, self-referential
+84         constraints are ignored.
+85         """
+86         with self.connection.cursor() as cursor:
+87             for other_table in self.connection.introspection.get_table_list(cursor):
+88                 if ignore_self and other_table.name == table_name:
+89                     continue
+90                 relations = self.connection.introspection.get_relations(
+91                     cursor, other_table.name
+92                 )
+93                 for constraint_column, constraint_table in relations.values():
+94                     if constraint_table == table_name and (
+95                         column_name is None or constraint_column == column_name
+96                     ):
+97                         return True
+98         return False
+99 
+100     def alter_db_table(
+101         self, model, old_db_table, new_db_table, disable_constraints=True
+102     ):
+103         if (
+104             not self.connection.features.supports_atomic_references_rename
+105             and disable_constraints
+106             and self._is_referenced_by_fk_constraint(old_db_table)
+107         ):
+108             if self.connection.in_atomic_block:
+109                 raise NotSupportedError(
+110                     (
+111                         "Renaming the %r table while in a transaction is not "
+112                         "supported on SQLite < 3.26 because it would break referential "
+113                         "integrity. Try adding `atomic = False` to the Migration class."
+114                     )
+115                     % old_db_table
+116                 )
+117             self.connection.enable_constraint_checking()
+118             super().alter_db_table(model, old_db_table, new_db_table)
+119             self.connection.disable_constraint_checking()
+120         else:
+121             super().alter_db_table(model, old_db_table, new_db_table)
+122 
+123     def alter_field(self, model, old_field, new_field, strict=False):
+124         if not self._field_should_be_altered(old_field, new_field):
+125             return
+126         old_field_name = old_field.name
+127         table_name = model._meta.db_table
+128         _, old_column_name = old_field.get_attname_column()
+129         if (
+130             new_field.name != old_field_name
+131             and not self.connection.features.supports_atomic_references_rename
+132             and self._is_referenced_by_fk_constraint(
+133                 table_name, old_column_name, ignore_self=True
+134             )
+135         ):
+136             if self.connection.in_atomic_block:
+137                 raise NotSupportedError(
+138                     (
+139                         "Renaming the %r.%r column while in a transaction is not "
+140                         "supported on SQLite < 3.26 because it would break referential "
+141                         "integrity. Try adding `atomic = False` to the Migration class."
+142                     )
+143                     % (model._meta.db_table, old_field_name)
+144                 )
+145             with atomic(self.connection.alias):
+146                 super().alter_field(model, old_field, new_field, strict=strict)
+147                 # Follow SQLite's documented procedure for performing changes
+148                 # that don't affect the on-disk content.
+149                 # https://sqlite.org/lang_altertable.html#otheralter
+150                 with self.connection.cursor() as cursor:
+151                     schema_version = cursor.execute("PRAGMA schema_version").fetchone()[
+152                         0
+153                     ]
+154                     cursor.execute("PRAGMA writable_schema = 1")
+155                     references_template = ' REFERENCES "%s" ("%%s") ' % table_name
+156                     new_column_name = new_field.get_attname_column()[1]
+157                     search = references_template % old_column_name
+158                     replacement = references_template % new_column_name
+159                     cursor.execute(
+160                         "UPDATE sqlite_master SET sql = replace(sql, %s, %s)",
+161                         (search, replacement),
+162                     )
+163                     cursor.execute("PRAGMA schema_version = %d" % (schema_version + 1))
+164                     cursor.execute("PRAGMA writable_schema = 0")
+165                     # The integrity check will raise an exception and rollback
+166                     # the transaction if the sqlite_master updates corrupt the
+167                     # database.
+168                     cursor.execute("PRAGMA integrity_check")
+169             # Perform a VACUUM to refresh the database representation from
+170             # the sqlite_master table.
+171             with self.connection.cursor() as cursor:
+172                 cursor.execute("VACUUM")
+173         else:
+174             super().alter_field(model, old_field, new_field, strict=strict)
+175 
+176     def _remake_table(
+177         self, model, create_field=None, delete_field=None, alter_field=None
+178     ):
+179         """
+180         Shortcut to transform a model from old_model into new_model
+181 
+182         This follows the correct procedure to perform non-rename or column
+183         addition operations based on SQLite's documentation
+184 
+185         https://www.sqlite.org/lang_altertable.html#caution
+186 
+187         The essential steps are:
+188           1. Create a table with the updated definition called "new__app_model"
+189           2. Copy the data from the existing "app_model" table to the new table
+190           3. Drop the "app_model" table
+191           4. Rename the "new__app_model" table to "app_model"
+192           5. Restore any index of the previous "app_model" table.
+193         """
+194         # Self-referential fields must be recreated rather than copied from
+195         # the old model to ensure their remote_field.field_name doesn't refer
+196         # to an altered field.
+197         def is_self_referential(f):
+198             return f.is_relation and f.remote_field.model is model
+199 
+200         # Work out the new fields dict / mapping
+201         body = {
+202             f.name: f.clone() if is_self_referential(f) else f
+203             for f in model._meta.local_concrete_fields
+204         }
+205         # Since mapping might mix column names and default values,
+206         # its values must be already quoted.
+207         mapping = {
+208             f.column: self.quote_name(f.column)
+209             for f in model._meta.local_concrete_fields
+210         }
+211         # This maps field names (not columns) for things like unique_together
+212         rename_mapping = {}
+213         # If any of the new or altered fields is introducing a new PK,
+214         # remove the old one
+215         restore_pk_field = None
+216         if getattr(create_field, "primary_key", False) or (
+217             alter_field and getattr(alter_field[1], "primary_key", False)
+218         ):
+219             for name, field in list(body.items()):
+220                 if field.primary_key:
+221                     field.primary_key = False
+222                     restore_pk_field = field
+223                     if field.auto_created:
+224                         del body[name]
+225                         del mapping[field.column]
+226         # Add in any created fields
+227         if create_field:
+228             body[create_field.name] = create_field
+229             # Choose a default and insert it into the copy map
+230             if not create_field.many_to_many and create_field.concrete:
+231                 mapping[create_field.column] = self.prepare_default(
+232                     self.effective_default(create_field),
+233                 )
+234         # Add in any altered fields
+235         if alter_field:
+236             old_field, new_field = alter_field
+237             body.pop(old_field.name, None)
+238             mapping.pop(old_field.column, None)
+239             body[new_field.name] = new_field
+240             if old_field.null and not new_field.null:
+241                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+242                     "col": self.quote_name(old_field.column),
+243                     "default": self.prepare_default(self.effective_default(new_field)),
+244                 }
+245                 mapping[new_field.column] = case_sql
+246             else:
+247                 mapping[new_field.column] = self.quote_name(old_field.column)
+248             rename_mapping[old_field.name] = new_field.name
+249         # Remove any deleted fields
+250         if delete_field:
+251             del body[delete_field.name]
+252             del mapping[delete_field.column]
+253             # Remove any implicit M2M tables
+254             if (
+255                 delete_field.many_to_many
+256                 and delete_field.remote_field.through._meta.auto_created
+257             ):
+258                 return self.delete_model(delete_field.remote_field.through)
+259         # Work inside a new app registry
+260         apps = Apps()
+261 
+262         # Work out the new value of unique_together, taking renames into
+263         # account
+264         unique_together = [
+265             [rename_mapping.get(n, n) for n in unique]
+266             for unique in model._meta.unique_together
+267         ]
+268 
+269         # Work out the new value for index_together, taking renames into
+270         # account
+271         index_together = [
+272             [rename_mapping.get(n, n) for n in index]
+273             for index in model._meta.index_together
+274         ]
+275 
+276         indexes = model._meta.indexes
+277         if delete_field:
+278             indexes = [
+279                 index for index in indexes if delete_field.name not in index.fields
+280             ]
+281 
+282         constraints = list(model._meta.constraints)
+283 
+284         # Provide isolated instances of the fields to the new model body so
+285         # that the existing model's internals aren't interfered with when
+286         # the dummy model is constructed.
+287         body_copy = copy.deepcopy(body)
+288 
+289         # Construct a new model with the new fields to allow self referential
+290         # primary key to resolve to. This model won't ever be materialized as a
+291         # table and solely exists for foreign key reference resolution purposes.
+292         # This wouldn't be required if the schema editor was operating on model
+293         # states instead of rendered models.
+294         meta_contents = {
+295             "app_label": model._meta.app_label,
+296             "db_table": model._meta.db_table,
+297             "unique_together": unique_together,
+298             "index_together": index_together,
+299             "indexes": indexes,
+300             "constraints": constraints,
+301             "apps": apps,
+302         }
+303         meta = type("Meta", (), meta_contents)
+304         body_copy["Meta"] = meta
+305         body_copy["__module__"] = model.__module__
+306         type(model._meta.object_name, model.__bases__, body_copy)
+307 
+308         # Construct a model with a renamed table name.
+309         body_copy = copy.deepcopy(body)
+310         meta_contents = {
+311             "app_label": model._meta.app_label,
+312             "db_table": "new__%s" % strip_quotes(model._meta.db_table),
+313             "unique_together": unique_together,
+314             "index_together": index_together,
+315             "indexes": indexes,
+316             "constraints": constraints,
+317             "apps": apps,
+318         }
+319         meta = type("Meta", (), meta_contents)
+320         body_copy["Meta"] = meta
+321         body_copy["__module__"] = model.__module__
+322         new_model = type("New%s" % model._meta.object_name, model.__bases__, body_copy)
+323 
+324         # Create a new table with the updated schema.
+325         self.create_model(new_model)
+326 
+327         # Copy data from the old table into the new table
+328         self.execute(
+329             "INSERT INTO %s (%s) SELECT %s FROM %s"
+330             % (
+331                 self.quote_name(new_model._meta.db_table),
+332                 ", ".join(self.quote_name(x) for x in mapping),
+333                 ", ".join(mapping.values()),
+334                 self.quote_name(model._meta.db_table),
+335             )
+336         )
+337 
+338         # Delete the old table to make way for the new
+339         self.delete_model(model, handle_autom2m=False)
+340 
+341         # Rename the new table to take way for the old
+342         self.alter_db_table(
+343             new_model,
+344             new_model._meta.db_table,
+345             model._meta.db_table,
+346             disable_constraints=False,
+347         )
+348 
+349         # Run deferred SQL on correct table
+350         for sql in self.deferred_sql:
+351             self.execute(sql)
+352         self.deferred_sql = []
+353         # Fix any PK-removed field
+354         if restore_pk_field:
+355             restore_pk_field.primary_key = True
+356 
+357     def delete_model(self, model, handle_autom2m=True):
+358         if handle_autom2m:
+359             super().delete_model(model)
+360         else:
+361             # Delete the table (and only that)
+362             self.execute(
+363                 self.sql_delete_table
+364                 % {
+365                     "table": self.quote_name(model._meta.db_table),
+366                 }
+367             )
+368             # Remove all deferred statements referencing the deleted table.
+369             for sql in list(self.deferred_sql):
+370                 if isinstance(sql, Statement) and sql.references_table(
+371                     model._meta.db_table
+372                 ):
+373                     self.deferred_sql.remove(sql)
+374 
+375     def add_field(self, model, field):
+376         """Create a field on a model."""
+377         if (
+378             # Primary keys and unique fields are not supported in ALTER TABLE
+379             # ADD COLUMN.
+380             field.primary_key
+381             or field.unique
+382             or
+383             # Fields with default values cannot by handled by ALTER TABLE ADD
+384             # COLUMN statement because DROP DEFAULT is not supported in
+385             # ALTER TABLE.
+386             not field.null
+387             or self.effective_default(field) is not None
+388         ):
+389             self._remake_table(model, create_field=field)
+390         else:
+391             super().add_field(model, field)
+392 
+393     def remove_field(self, model, field):
+394         """
+395         Remove a field from a model. Usually involves deleting a column,
+396         but for M2Ms may involve deleting a table.
+397         """
+398         # M2M fields are a special case
+399         if field.many_to_many:
+400             # For implicit M2M tables, delete the auto-created table
+401             if field.remote_field.through._meta.auto_created:
+402                 self.delete_model(field.remote_field.through)
+403             # For explicit "through" M2M fields, do nothing
+404         elif (
+405             self.connection.features.can_alter_table_drop_column
+406             # Primary keys, unique fields, and foreign keys are not
+407             # supported in ALTER TABLE DROP COLUMN.
+408             and not field.primary_key
+409             and not field.unique
+410             and not (field.remote_field and field.db_constraint)
+411         ):
+412             super().remove_field(model, field)
+413         # For everything else, remake.
+414         else:
+415             # It might not actually have a column behind it
+416             if field.db_parameters(connection=self.connection)["type"] is None:
+417                 return
+418             self._remake_table(model, delete_field=field)
+419 
+420     def _alter_field(
+421         self,
+422         model,
+423         old_field,
+424         new_field,
+425         old_type,
+426         new_type,
+427         old_db_params,
+428         new_db_params,
+429         strict=False,
+430     ):
+431         """Perform a "physical" (non-ManyToMany) field update."""
+432         # Use "ALTER TABLE ... RENAME COLUMN" if only the column name
+433         # changed and there aren't any constraints.
+434         if (
+435             self.connection.features.can_alter_table_rename_column
+436             and old_field.column != new_field.column
+437             and self.column_sql(model, old_field) == self.column_sql(model, new_field)
+438             and not (
+439                 old_field.remote_field
+440                 and old_field.db_constraint
+441                 or new_field.remote_field
+442                 and new_field.db_constraint
+443             )
+444         ):
+445             return self.execute(
+446                 self._rename_field_sql(
+447                     model._meta.db_table, old_field, new_field, new_type
+448                 )
+449             )
+450         # Alter by remaking table
+451         self._remake_table(model, alter_field=(old_field, new_field))
+452         # Rebuild tables with FKs pointing to this field.
+453         if new_field.unique and old_type != new_type:
+454             related_models = set()
+455             opts = new_field.model._meta
+456             for remote_field in opts.related_objects:
+457                 # Ignore self-relationship since the table was already rebuilt.
+458                 if remote_field.related_model == model:
+459                     continue
+460                 if not remote_field.many_to_many:
+461                     if remote_field.field_name == new_field.name:
+462                         related_models.add(remote_field.related_model)
+463                 elif new_field.primary_key and remote_field.through._meta.auto_created:
+464                     related_models.add(remote_field.through)
+465             if new_field.primary_key:
+466                 for many_to_many in opts.many_to_many:
+467                     # Ignore self-relationship since the table was already rebuilt.
+468                     if many_to_many.related_model == model:
+469                         continue
+470                     if many_to_many.remote_field.through._meta.auto_created:
+471                         related_models.add(many_to_many.remote_field.through)
+472             for related_model in related_models:
+473                 self._remake_table(related_model)
+474 
+475     def _alter_many_to_many(self, model, old_field, new_field, strict):
+476         """Alter M2Ms to repoint their to= endpoints."""
+477         if (
+478             old_field.remote_field.through._meta.db_table
+479             == new_field.remote_field.through._meta.db_table
+480         ):
+481             # The field name didn't change, but some options did, so we have to
+482             # propagate this altering.
+483             self._remake_table(
+484                 old_field.remote_field.through,
+485                 alter_field=(
+486                     # The field that points to the target model is needed, so
+487                     # we can tell alter_field to change it - this is
+488                     # m2m_reverse_field_name() (as opposed to m2m_field_name(),
+489                     # which points to our model).
+490                     old_field.remote_field.through._meta.get_field(
+491                         old_field.m2m_reverse_field_name()
+492                     ),
+493                     new_field.remote_field.through._meta.get_field(
+494                         new_field.m2m_reverse_field_name()
+495                     ),
+496                 ),
+497             )
+498             return
+499 
+500         # Make a new through table
+501         self.create_model(new_field.remote_field.through)
+502         # Copy the data across
+503         self.execute(
+504             "INSERT INTO %s (%s) SELECT %s FROM %s"
+505             % (
+506                 self.quote_name(new_field.remote_field.through._meta.db_table),
+507                 ", ".join(
+508                     [
+509                         "id",
+510                         new_field.m2m_column_name(),
+511                         new_field.m2m_reverse_name(),
+512                     ]
+513                 ),
+514                 ", ".join(
+515                     [
+516                         "id",
+517                         old_field.m2m_column_name(),
+518                         old_field.m2m_reverse_name(),
+519                     ]
+520                 ),
+521                 self.quote_name(old_field.remote_field.through._meta.db_table),
+522             )
+523         )
+524         # Delete the old through table
+525         self.delete_model(old_field.remote_field.through)
+526 
+527     def add_constraint(self, model, constraint):
+528         if isinstance(constraint, UniqueConstraint) and (
+529             constraint.condition
+530             or constraint.contains_expressions
+531             or constraint.include
+532             or constraint.deferrable
+533         ):
+534             super().add_constraint(model, constraint)
+535         else:
+536             self._remake_table(model)
+537 
+538     def remove_constraint(self, model, constraint):
+539         if isinstance(constraint, UniqueConstraint) and (
+540             constraint.condition
+541             or constraint.contains_expressions
+542             or constraint.include
+543             or constraint.deferrable
+544         ):
+545             super().remove_constraint(model, constraint)
+546         else:
+547             self._remake_table(model)
+548 
+549     def _collate_sql(self, collation):
+550         return "COLLATE " + collation
+
+</code><intended_behavior>These methods should first check if the operation involves changes that are irrelevant to the SQLite database schema, such as adding or changing field choices. If the operation is solely related to choices, the method should perform no operations, effectively making it a noop for SQLite. This would involve adding conditional checks to skip SQL generation and execution steps for choice-related changes.</intended_behavior>, <file>django/db/migrations/operations/fields.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from django.db.migrations.utils import field_references
+2 from django.db.models import NOT_PROVIDED
+3 from django.utils.functional import cached_property
+4 
+5 from .base import Operation
+6 
+7 
+8 class FieldOperation(Operation):
+9     def __init__(self, model_name, name, field=None):
+10         self.model_name = model_name
+11         self.name = name
+12         self.field = field
+13 
+14     @cached_property
+15     def model_name_lower(self):
+16         return self.model_name.lower()
+17 
+18     @cached_property
+19     def name_lower(self):
+20         return self.name.lower()
+21 
+22     def is_same_model_operation(self, operation):
+23         return self.model_name_lower == operation.model_name_lower
+24 
+25     def is_same_field_operation(self, operation):
+26         return (
+27             self.is_same_model_operation(operation)
+28             and self.name_lower == operation.name_lower
+29         )
+30 
+31     def references_model(self, name, app_label):
+32         name_lower = name.lower()
+33         if name_lower == self.model_name_lower:
+34             return True
+35         if self.field:
+36             return bool(
+37                 field_references(
+38                     (app_label, self.model_name_lower),
+39                     self.field,
+40                     (app_label, name_lower),
+41                 )
+42             )
+43         return False
+44 
+45     def references_field(self, model_name, name, app_label):
+46         model_name_lower = model_name.lower()
+47         # Check if this operation locally references the field.
+48         if model_name_lower == self.model_name_lower:
+49             if name == self.name:
+50                 return True
+51             elif (
+52                 self.field
+53                 and hasattr(self.field, "from_fields")
+54                 and name in self.field.from_fields
+55             ):
+56                 return True
+57         # Check if this operation remotely references the field.
+58         if self.field is None:
+59             return False
+60         return bool(
+61             field_references(
+62                 (app_label, self.model_name_lower),
+63                 self.field,
+64                 (app_label, model_name_lower),
+65                 name,
+66             )
+67         )
+68 
+69     def reduce(self, operation, app_label):
+70         return super().reduce(operation, app_label) or not operation.references_field(
+71             self.model_name, self.name, app_label
+72         )
+73 
+74 
+75 class AddField(FieldOperation):
+76     """Add a field to a model."""
+77 
+78     def __init__(self, model_name, name, field, preserve_default=True):
+79         self.preserve_default = preserve_default
+80         super().__init__(model_name, name, field)
+81 
+82     def deconstruct(self):
+83         kwargs = {
+84             "model_name": self.model_name,
+85             "name": self.name,
+86             "field": self.field,
+87         }
+88         if self.preserve_default is not True:
+89             kwargs["preserve_default"] = self.preserve_default
+90         return (self.__class__.__name__, [], kwargs)
+91 
+92     def state_forwards(self, app_label, state):
+93         state.add_field(
+94             app_label,
+95             self.model_name_lower,
+96             self.name,
+97             self.field,
+98             self.preserve_default,
+99         )
+100 
+101     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+102         to_model = to_state.apps.get_model(app_label, self.model_name)
+103         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+104             from_model = from_state.apps.get_model(app_label, self.model_name)
+105             field = to_model._meta.get_field(self.name)
+106             if not self.preserve_default:
+107                 field.default = self.field.default
+108             schema_editor.add_field(
+109                 from_model,
+110                 field,
+111             )
+112             if not self.preserve_default:
+113                 field.default = NOT_PROVIDED
+114 
+115     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+116         from_model = from_state.apps.get_model(app_label, self.model_name)
+117         if self.allow_migrate_model(schema_editor.connection.alias, from_model):
+118             schema_editor.remove_field(
+119                 from_model, from_model._meta.get_field(self.name)
+120             )
+121 
+122     def describe(self):
+123         return "Add field %s to %s" % (self.name, self.model_name)
+124 
+125     @property
+126     def migration_name_fragment(self):
+127         return "%s_%s" % (self.model_name_lower, self.name_lower)
+128 
+129     def reduce(self, operation, app_label):
+130         if isinstance(operation, FieldOperation) and self.is_same_field_operation(
+131             operation
+132         ):
+133             if isinstance(operation, AlterField):
+134                 return [
+135                     AddField(
+136                         model_name=self.model_name,
+137                         name=operation.name,
+138                         field=operation.field,
+139                     ),
+140                 ]
+141             elif isinstance(operation, RemoveField):
+142                 return []
+143             elif isinstance(operation, RenameField):
+144                 return [
+145                     AddField(
+146                         model_name=self.model_name,
+147                         name=operation.new_name,
+148                         field=self.field,
+149                     ),
+150                 ]
+151         return super().reduce(operation, app_label)
+152 
+153 
+154 class RemoveField(FieldOperation):
+155     """Remove a field from a model."""
+156 
+157     def deconstruct(self):
+158         kwargs = {
+159             "model_name": self.model_name,
+160             "name": self.name,
+161         }
+162         return (self.__class__.__name__, [], kwargs)
+163 
+164     def state_forwards(self, app_label, state):
+165         state.remove_field(app_label, self.model_name_lower, self.name)
+166 
+167     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+168         from_model = from_state.apps.get_model(app_label, self.model_name)
+169         if self.allow_migrate_model(schema_editor.connection.alias, from_model):
+170             schema_editor.remove_field(
+171                 from_model, from_model._meta.get_field(self.name)
+172             )
+173 
+174     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+175         to_model = to_state.apps.get_model(app_label, self.model_name)
+176         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+177             from_model = from_state.apps.get_model(app_label, self.model_name)
+178             schema_editor.add_field(from_model, to_model._meta.get_field(self.name))
+179 
+180     def describe(self):
+181         return "Remove field %s from %s" % (self.name, self.model_name)
+182 
+183     @property
+184     def migration_name_fragment(self):
+185         return "remove_%s_%s" % (self.model_name_lower, self.name_lower)
+186 
+187     def reduce(self, operation, app_label):
+188         from .models import DeleteModel
+189 
+190         if (
+191             isinstance(operation, DeleteModel)
+192             and operation.name_lower == self.model_name_lower
+193         ):
+194             return [operation]
+195         return super().reduce(operation, app_label)
+196 
+197 
+198 class AlterField(FieldOperation):
+199     """
+200     Alter a field's database column (e.g. null, max_length) to the provided
+201     new field.
+202     """
+203 
+204     def __init__(self, model_name, name, field, preserve_default=True):
+205         self.preserve_default = preserve_default
+206         super().__init__(model_name, name, field)
+207 
+208     def deconstruct(self):
+209         kwargs = {
+210             "model_name": self.model_name,
+211             "name": self.name,
+212             "field": self.field,
+213         }
+214         if self.preserve_default is not True:
+215             kwargs["preserve_default"] = self.preserve_default
+216         return (self.__class__.__name__, [], kwargs)
+217 
+218     def state_forwards(self, app_label, state):
+219         state.alter_field(
+220             app_label,
+221             self.model_name_lower,
+222             self.name,
+223             self.field,
+224             self.preserve_default,
+225         )
+226 
+227     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+228         to_model = to_state.apps.get_model(app_label, self.model_name)
+229         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+230             from_model = from_state.apps.get_model(app_label, self.model_name)
+231             from_field = from_model._meta.get_field(self.name)
+232             to_field = to_model._meta.get_field(self.name)
+233             if not self.preserve_default:
+234                 to_field.default = self.field.default
+235             schema_editor.alter_field(from_model, from_field, to_field)
+236             if not self.preserve_default:
+237                 to_field.default = NOT_PROVIDED
+238 
+239     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+240         self.database_forwards(app_label, schema_editor, from_state, to_state)
+241 
+242     def describe(self):
+243         return "Alter field %s on %s" % (self.name, self.model_name)
+244 
+245     @property
+246     def migration_name_fragment(self):
+247         return "alter_%s_%s" % (self.model_name_lower, self.name_lower)
+248 
+249     def reduce(self, operation, app_label):
+250         if isinstance(operation, RemoveField) and self.is_same_field_operation(
+251             operation
+252         ):
+253             return [operation]
+254         elif (
+255             isinstance(operation, RenameField)
+256             and self.is_same_field_operation(operation)
+257             and self.field.db_column is None
+258         ):
+259             return [
+260                 operation,
+261                 AlterField(
+262                     model_name=self.model_name,
+263                     name=operation.new_name,
+264                     field=self.field,
+265                 ),
+266             ]
+267         return super().reduce(operation, app_label)
+268 
+269 
+270 class RenameField(FieldOperation):
+271     """Rename a field on the model. Might affect db_column too."""
+272 
+273     def __init__(self, model_name, old_name, new_name):
+274         self.old_name = old_name
+275         self.new_name = new_name
+276         super().__init__(model_name, old_name)
+277 
+278     @cached_property
+279     def old_name_lower(self):
+280         return self.old_name.lower()
+281 
+282     @cached_property
+283     def new_name_lower(self):
+284         return self.new_name.lower()
+285 
+286     def deconstruct(self):
+287         kwargs = {
+288             "model_name": self.model_name,
+289             "old_name": self.old_name,
+290             "new_name": self.new_name,
+291         }
+292         return (self.__class__.__name__, [], kwargs)
+293 
+294     def state_forwards(self, app_label, state):
+295         state.rename_field(
+296             app_label, self.model_name_lower, self.old_name, self.new_name
+297         )
+298 
+299     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+300         to_model = to_state.apps.get_model(app_label, self.model_name)
+301         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+302             from_model = from_state.apps.get_model(app_label, self.model_name)
+303             schema_editor.alter_field(
+304                 from_model,
+305                 from_model._meta.get_field(self.old_name),
+306                 to_model._meta.get_field(self.new_name),
+307             )
+308 
+309     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+310         to_model = to_state.apps.get_model(app_label, self.model_name)
+311         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+312             from_model = from_state.apps.get_model(app_label, self.model_name)
+313             schema_editor.alter_field(
+314                 from_model,
+315                 from_model._meta.get_field(self.new_name),
+316                 to_model._meta.get_field(self.old_name),
+317             )
+318 
+319     def describe(self):
+320         return "Rename field %s on %s to %s" % (
+321             self.old_name,
+322             self.model_name,
+323             self.new_name,
+324         )
+325 
+326     @property
+327     def migration_name_fragment(self):
+328         return "rename_%s_%s_%s" % (
+329             self.old_name_lower,
+330             self.model_name_lower,
+331             self.new_name_lower,
+332         )
+333 
+334     def references_field(self, model_name, name, app_label):
+335         return self.references_model(model_name, app_label) and (
+336             name.lower() == self.old_name_lower or name.lower() == self.new_name_lower
+337         )
+338 
+339     def reduce(self, operation, app_label):
+340         if (
+341             isinstance(operation, RenameField)
+342             and self.is_same_model_operation(operation)
+343             and self.new_name_lower == operation.old_name_lower
+344         ):
+345             return [
+346                 RenameField(
+347                     self.model_name,
+348                     self.old_name,
+349                     operation.new_name,
+350                 ),
+351             ]
+352         # Skip `FieldOperation.reduce` as we want to run `references_field`
+353         # against self.old_name and self.new_name.
+354         return super(FieldOperation, self).reduce(operation, app_label) or not (
+355             operation.references_field(self.model_name, self.old_name, app_label)
+356             or operation.references_field(self.model_name, self.new_name, app_label)
+357         )
+
+</code><intended_behavior>Enhance the AlterField operation or its processing to recognize when changes are SQLite-relevant or not. Specifically for choices, the migration engine should identify that this change does not impact the database schema and bypass the generation of SQL for such migrations on SQLite databases.</intended_behavior>]
+2026-01-15 00:20:52.197 | INFO     | Search completed. Bug locations: [<file>django/db/backends/sqlite3/schema.py</file>
+<class>DatabaseSchemaEditor</class>
+<method>None</method>
+<code>
+13 class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
+14 
+15     sql_delete_table = "DROP TABLE %(table)s"
+16     sql_create_fk = None
+17     sql_create_inline_fk = (
+18         "REFERENCES %(to_table)s (%(to_column)s) DEFERRABLE INITIALLY DEFERRED"
+19     )
+20     sql_create_column_inline_fk = sql_create_inline_fk
+21     sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s"
+22     sql_create_unique = "CREATE UNIQUE INDEX %(name)s ON %(table)s (%(columns)s)"
+23     sql_delete_unique = "DROP INDEX %(name)s"
+24 
+25     def __enter__(self):
+26         # Some SQLite schema alterations need foreign key constraints to be
+27         # disabled. Enforce it here for the duration of the schema edition.
+28         if not self.connection.disable_constraint_checking():
+29             raise NotSupportedError(
+30                 "SQLite schema editor cannot be used while foreign key "
+31                 "constraint checks are enabled. Make sure to disable them "
+32                 "before entering a transaction.atomic() context because "
+33                 "SQLite does not support disabling them in the middle of "
+34                 "a multi-statement transaction."
+35             )
+36         return super().__enter__()
+37 
+38     def __exit__(self, exc_type, exc_value, traceback):
+39         self.connection.check_constraints()
+40         super().__exit__(exc_type, exc_value, traceback)
+41         self.connection.enable_constraint_checking()
+42 
+43     def quote_value(self, value):
+44         # The backend "mostly works" without this function and there are use
+45         # cases for compiling Python without the sqlite3 libraries (e.g.
+46         # security hardening).
+47         try:
+48             import sqlite3
+49 
+50             value = sqlite3.adapt(value)
+51         except ImportError:
+52             pass
+53         except sqlite3.ProgrammingError:
+54             pass
+55         # Manual emulation of SQLite parameter quoting
+56         if isinstance(value, bool):
+57             return str(int(value))
+58         elif isinstance(value, (Decimal, float, int)):
+59             return str(value)
+60         elif isinstance(value, str):
+61             return "'%s'" % value.replace("'", "''")
+62         elif value is None:
+63             return "NULL"
+64         elif isinstance(value, (bytes, bytearray, memoryview)):
+65             # Bytes are only allowed for BLOB fields, encoded as string
+66             # literals containing hexadecimal data and preceded by a single "X"
+67             # character.
+68             return "X'%s'" % value.hex()
+69         else:
+70             raise ValueError(
+71                 "Cannot quote parameter value %r of type %s" % (value, type(value))
+72             )
+73 
+74     def prepare_default(self, value):
+75         return self.quote_value(value)
+76 
+77     def _is_referenced_by_fk_constraint(
+78         self, table_name, column_name=None, ignore_self=False
+79     ):
+80         """
+81         Return whether or not the provided table name is referenced by another
+82         one. If `column_name` is specified, only references pointing to that
+83         column are considered. If `ignore_self` is True, self-referential
+84         constraints are ignored.
+85         """
+86         with self.connection.cursor() as cursor:
+87             for other_table in self.connection.introspection.get_table_list(cursor):
+88                 if ignore_self and other_table.name == table_name:
+89                     continue
+90                 relations = self.connection.introspection.get_relations(
+91                     cursor, other_table.name
+92                 )
+93                 for constraint_column, constraint_table in relations.values():
+94                     if constraint_table == table_name and (
+95                         column_name is None or constraint_column == column_name
+96                     ):
+97                         return True
+98         return False
+99 
+100     def alter_db_table(
+101         self, model, old_db_table, new_db_table, disable_constraints=True
+102     ):
+103         if (
+104             not self.connection.features.supports_atomic_references_rename
+105             and disable_constraints
+106             and self._is_referenced_by_fk_constraint(old_db_table)
+107         ):
+108             if self.connection.in_atomic_block:
+109                 raise NotSupportedError(
+110                     (
+111                         "Renaming the %r table while in a transaction is not "
+112                         "supported on SQLite < 3.26 because it would break referential "
+113                         "integrity. Try adding `atomic = False` to the Migration class."
+114                     )
+115                     % old_db_table
+116                 )
+117             self.connection.enable_constraint_checking()
+118             super().alter_db_table(model, old_db_table, new_db_table)
+119             self.connection.disable_constraint_checking()
+120         else:
+121             super().alter_db_table(model, old_db_table, new_db_table)
+122 
+123     def alter_field(self, model, old_field, new_field, strict=False):
+124         if not self._field_should_be_altered(old_field, new_field):
+125             return
+126         old_field_name = old_field.name
+127         table_name = model._meta.db_table
+128         _, old_column_name = old_field.get_attname_column()
+129         if (
+130             new_field.name != old_field_name
+131             and not self.connection.features.supports_atomic_references_rename
+132             and self._is_referenced_by_fk_constraint(
+133                 table_name, old_column_name, ignore_self=True
+134             )
+135         ):
+136             if self.connection.in_atomic_block:
+137                 raise NotSupportedError(
+138                     (
+139                         "Renaming the %r.%r column while in a transaction is not "
+140                         "supported on SQLite < 3.26 because it would break referential "
+141                         "integrity. Try adding `atomic = False` to the Migration class."
+142                     )
+143                     % (model._meta.db_table, old_field_name)
+144                 )
+145             with atomic(self.connection.alias):
+146                 super().alter_field(model, old_field, new_field, strict=strict)
+147                 # Follow SQLite's documented procedure for performing changes
+148                 # that don't affect the on-disk content.
+149                 # https://sqlite.org/lang_altertable.html#otheralter
+150                 with self.connection.cursor() as cursor:
+151                     schema_version = cursor.execute("PRAGMA schema_version").fetchone()[
+152                         0
+153                     ]
+154                     cursor.execute("PRAGMA writable_schema = 1")
+155                     references_template = ' REFERENCES "%s" ("%%s") ' % table_name
+156                     new_column_name = new_field.get_attname_column()[1]
+157                     search = references_template % old_column_name
+158                     replacement = references_template % new_column_name
+159                     cursor.execute(
+160                         "UPDATE sqlite_master SET sql = replace(sql, %s, %s)",
+161                         (search, replacement),
+162                     )
+163                     cursor.execute("PRAGMA schema_version = %d" % (schema_version + 1))
+164                     cursor.execute("PRAGMA writable_schema = 0")
+165                     # The integrity check will raise an exception and rollback
+166                     # the transaction if the sqlite_master updates corrupt the
+167                     # database.
+168                     cursor.execute("PRAGMA integrity_check")
+169             # Perform a VACUUM to refresh the database representation from
+170             # the sqlite_master table.
+171             with self.connection.cursor() as cursor:
+172                 cursor.execute("VACUUM")
+173         else:
+174             super().alter_field(model, old_field, new_field, strict=strict)
+175 
+176     def _remake_table(
+177         self, model, create_field=None, delete_field=None, alter_field=None
+178     ):
+179         """
+180         Shortcut to transform a model from old_model into new_model
+181 
+182         This follows the correct procedure to perform non-rename or column
+183         addition operations based on SQLite's documentation
+184 
+185         https://www.sqlite.org/lang_altertable.html#caution
+186 
+187         The essential steps are:
+188           1. Create a table with the updated definition called "new__app_model"
+189           2. Copy the data from the existing "app_model" table to the new table
+190           3. Drop the "app_model" table
+191           4. Rename the "new__app_model" table to "app_model"
+192           5. Restore any index of the previous "app_model" table.
+193         """
+194         # Self-referential fields must be recreated rather than copied from
+195         # the old model to ensure their remote_field.field_name doesn't refer
+196         # to an altered field.
+197         def is_self_referential(f):
+198             return f.is_relation and f.remote_field.model is model
+199 
+200         # Work out the new fields dict / mapping
+201         body = {
+202             f.name: f.clone() if is_self_referential(f) else f
+203             for f in model._meta.local_concrete_fields
+204         }
+205         # Since mapping might mix column names and default values,
+206         # its values must be already quoted.
+207         mapping = {
+208             f.column: self.quote_name(f.column)
+209             for f in model._meta.local_concrete_fields
+210         }
+211         # This maps field names (not columns) for things like unique_together
+212         rename_mapping = {}
+213         # If any of the new or altered fields is introducing a new PK,
+214         # remove the old one
+215         restore_pk_field = None
+216         if getattr(create_field, "primary_key", False) or (
+217             alter_field and getattr(alter_field[1], "primary_key", False)
+218         ):
+219             for name, field in list(body.items()):
+220                 if field.primary_key:
+221                     field.primary_key = False
+222                     restore_pk_field = field
+223                     if field.auto_created:
+224                         del body[name]
+225                         del mapping[field.column]
+226         # Add in any created fields
+227         if create_field:
+228             body[create_field.name] = create_field
+229             # Choose a default and insert it into the copy map
+230             if not create_field.many_to_many and create_field.concrete:
+231                 mapping[create_field.column] = self.prepare_default(
+232                     self.effective_default(create_field),
+233                 )
+234         # Add in any altered fields
+235         if alter_field:
+236             old_field, new_field = alter_field
+237             body.pop(old_field.name, None)
+238             mapping.pop(old_field.column, None)
+239             body[new_field.name] = new_field
+240             if old_field.null and not new_field.null:
+241                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+242                     "col": self.quote_name(old_field.column),
+243                     "default": self.prepare_default(self.effective_default(new_field)),
+244                 }
+245                 mapping[new_field.column] = case_sql
+246             else:
+247                 mapping[new_field.column] = self.quote_name(old_field.column)
+248             rename_mapping[old_field.name] = new_field.name
+249         # Remove any deleted fields
+250         if delete_field:
+251             del body[delete_field.name]
+252             del mapping[delete_field.column]
+253             # Remove any implicit M2M tables
+254             if (
+255                 delete_field.many_to_many
+256                 and delete_field.remote_field.through._meta.auto_created
+257             ):
+258                 return self.delete_model(delete_field.remote_field.through)
+259         # Work inside a new app registry
+260         apps = Apps()
+261 
+262         # Work out the new value of unique_together, taking renames into
+263         # account
+264         unique_together = [
+265             [rename_mapping.get(n, n) for n in unique]
+266             for unique in model._meta.unique_together
+267         ]
+268 
+269         # Work out the new value for index_together, taking renames into
+270         # account
+271         index_together = [
+272             [rename_mapping.get(n, n) for n in index]
+273             for index in model._meta.index_together
+274         ]
+275 
+276         indexes = model._meta.indexes
+277         if delete_field:
+278             indexes = [
+279                 index for index in indexes if delete_field.name not in index.fields
+280             ]
+281 
+282         constraints = list(model._meta.constraints)
+283 
+284         # Provide isolated instances of the fields to the new model body so
+285         # that the existing model's internals aren't interfered with when
+286         # the dummy model is constructed.
+287         body_copy = copy.deepcopy(body)
+288 
+289         # Construct a new model with the new fields to allow self referential
+290         # primary key to resolve to. This model won't ever be materialized as a
+291         # table and solely exists for foreign key reference resolution purposes.
+292         # This wouldn't be required if the schema editor was operating on model
+293         # states instead of rendered models.
+294         meta_contents = {
+295             "app_label": model._meta.app_label,
+296             "db_table": model._meta.db_table,
+297             "unique_together": unique_together,
+298             "index_together": index_together,
+299             "indexes": indexes,
+300             "constraints": constraints,
+301             "apps": apps,
+302         }
+303         meta = type("Meta", (), meta_contents)
+304         body_copy["Meta"] = meta
+305         body_copy["__module__"] = model.__module__
+306         type(model._meta.object_name, model.__bases__, body_copy)
+307 
+308         # Construct a model with a renamed table name.
+309         body_copy = copy.deepcopy(body)
+310         meta_contents = {
+311             "app_label": model._meta.app_label,
+312             "db_table": "new__%s" % strip_quotes(model._meta.db_table),
+313             "unique_together": unique_together,
+314             "index_together": index_together,
+315             "indexes": indexes,
+316             "constraints": constraints,
+317             "apps": apps,
+318         }
+319         meta = type("Meta", (), meta_contents)
+320         body_copy["Meta"] = meta
+321         body_copy["__module__"] = model.__module__
+322         new_model = type("New%s" % model._meta.object_name, model.__bases__, body_copy)
+323 
+324         # Create a new table with the updated schema.
+325         self.create_model(new_model)
+326 
+327         # Copy data from the old table into the new table
+328         self.execute(
+329             "INSERT INTO %s (%s) SELECT %s FROM %s"
+330             % (
+331                 self.quote_name(new_model._meta.db_table),
+332                 ", ".join(self.quote_name(x) for x in mapping),
+333                 ", ".join(mapping.values()),
+334                 self.quote_name(model._meta.db_table),
+335             )
+336         )
+337 
+338         # Delete the old table to make way for the new
+339         self.delete_model(model, handle_autom2m=False)
+340 
+341         # Rename the new table to take way for the old
+342         self.alter_db_table(
+343             new_model,
+344             new_model._meta.db_table,
+345             model._meta.db_table,
+346             disable_constraints=False,
+347         )
+348 
+349         # Run deferred SQL on correct table
+350         for sql in self.deferred_sql:
+351             self.execute(sql)
+352         self.deferred_sql = []
+353         # Fix any PK-removed field
+354         if restore_pk_field:
+355             restore_pk_field.primary_key = True
+356 
+357     def delete_model(self, model, handle_autom2m=True):
+358         if handle_autom2m:
+359             super().delete_model(model)
+360         else:
+361             # Delete the table (and only that)
+362             self.execute(
+363                 self.sql_delete_table
+364                 % {
+365                     "table": self.quote_name(model._meta.db_table),
+366                 }
+367             )
+368             # Remove all deferred statements referencing the deleted table.
+369             for sql in list(self.deferred_sql):
+370                 if isinstance(sql, Statement) and sql.references_table(
+371                     model._meta.db_table
+372                 ):
+373                     self.deferred_sql.remove(sql)
+374 
+375     def add_field(self, model, field):
+376         """Create a field on a model."""
+377         if (
+378             # Primary keys and unique fields are not supported in ALTER TABLE
+379             # ADD COLUMN.
+380             field.primary_key
+381             or field.unique
+382             or
+383             # Fields with default values cannot by handled by ALTER TABLE ADD
+384             # COLUMN statement because DROP DEFAULT is not supported in
+385             # ALTER TABLE.
+386             not field.null
+387             or self.effective_default(field) is not None
+388         ):
+389             self._remake_table(model, create_field=field)
+390         else:
+391             super().add_field(model, field)
+392 
+393     def remove_field(self, model, field):
+394         """
+395         Remove a field from a model. Usually involves deleting a column,
+396         but for M2Ms may involve deleting a table.
+397         """
+398         # M2M fields are a special case
+399         if field.many_to_many:
+400             # For implicit M2M tables, delete the auto-created table
+401             if field.remote_field.through._meta.auto_created:
+402                 self.delete_model(field.remote_field.through)
+403             # For explicit "through" M2M fields, do nothing
+404         elif (
+405             self.connection.features.can_alter_table_drop_column
+406             # Primary keys, unique fields, and foreign keys are not
+407             # supported in ALTER TABLE DROP COLUMN.
+408             and not field.primary_key
+409             and not field.unique
+410             and not (field.remote_field and field.db_constraint)
+411         ):
+412             super().remove_field(model, field)
+413         # For everything else, remake.
+414         else:
+415             # It might not actually have a column behind it
+416             if field.db_parameters(connection=self.connection)["type"] is None:
+417                 return
+418             self._remake_table(model, delete_field=field)
+419 
+420     def _alter_field(
+421         self,
+422         model,
+423         old_field,
+424         new_field,
+425         old_type,
+426         new_type,
+427         old_db_params,
+428         new_db_params,
+429         strict=False,
+430     ):
+431         """Perform a "physical" (non-ManyToMany) field update."""
+432         # Use "ALTER TABLE ... RENAME COLUMN" if only the column name
+433         # changed and there aren't any constraints.
+434         if (
+435             self.connection.features.can_alter_table_rename_column
+436             and old_field.column != new_field.column
+437             and self.column_sql(model, old_field) == self.column_sql(model, new_field)
+438             and not (
+439                 old_field.remote_field
+440                 and old_field.db_constraint
+441                 or new_field.remote_field
+442                 and new_field.db_constraint
+443             )
+444         ):
+445             return self.execute(
+446                 self._rename_field_sql(
+447                     model._meta.db_table, old_field, new_field, new_type
+448                 )
+449             )
+450         # Alter by remaking table
+451         self._remake_table(model, alter_field=(old_field, new_field))
+452         # Rebuild tables with FKs pointing to this field.
+453         if new_field.unique and old_type != new_type:
+454             related_models = set()
+455             opts = new_field.model._meta
+456             for remote_field in opts.related_objects:
+457                 # Ignore self-relationship since the table was already rebuilt.
+458                 if remote_field.related_model == model:
+459                     continue
+460                 if not remote_field.many_to_many:
+461                     if remote_field.field_name == new_field.name:
+462                         related_models.add(remote_field.related_model)
+463                 elif new_field.primary_key and remote_field.through._meta.auto_created:
+464                     related_models.add(remote_field.through)
+465             if new_field.primary_key:
+466                 for many_to_many in opts.many_to_many:
+467                     # Ignore self-relationship since the table was already rebuilt.
+468                     if many_to_many.related_model == model:
+469                         continue
+470                     if many_to_many.remote_field.through._meta.auto_created:
+471                         related_models.add(many_to_many.remote_field.through)
+472             for related_model in related_models:
+473                 self._remake_table(related_model)
+474 
+475     def _alter_many_to_many(self, model, old_field, new_field, strict):
+476         """Alter M2Ms to repoint their to= endpoints."""
+477         if (
+478             old_field.remote_field.through._meta.db_table
+479             == new_field.remote_field.through._meta.db_table
+480         ):
+481             # The field name didn't change, but some options did, so we have to
+482             # propagate this altering.
+483             self._remake_table(
+484                 old_field.remote_field.through,
+485                 alter_field=(
+486                     # The field that points to the target model is needed, so
+487                     # we can tell alter_field to change it - this is
+488                     # m2m_reverse_field_name() (as opposed to m2m_field_name(),
+489                     # which points to our model).
+490                     old_field.remote_field.through._meta.get_field(
+491                         old_field.m2m_reverse_field_name()
+492                     ),
+493                     new_field.remote_field.through._meta.get_field(
+494                         new_field.m2m_reverse_field_name()
+495                     ),
+496                 ),
+497             )
+498             return
+499 
+500         # Make a new through table
+501         self.create_model(new_field.remote_field.through)
+502         # Copy the data across
+503         self.execute(
+504             "INSERT INTO %s (%s) SELECT %s FROM %s"
+505             % (
+506                 self.quote_name(new_field.remote_field.through._meta.db_table),
+507                 ", ".join(
+508                     [
+509                         "id",
+510                         new_field.m2m_column_name(),
+511                         new_field.m2m_reverse_name(),
+512                     ]
+513                 ),
+514                 ", ".join(
+515                     [
+516                         "id",
+517                         old_field.m2m_column_name(),
+518                         old_field.m2m_reverse_name(),
+519                     ]
+520                 ),
+521                 self.quote_name(old_field.remote_field.through._meta.db_table),
+522             )
+523         )
+524         # Delete the old through table
+525         self.delete_model(old_field.remote_field.through)
+526 
+527     def add_constraint(self, model, constraint):
+528         if isinstance(constraint, UniqueConstraint) and (
+529             constraint.condition
+530             or constraint.contains_expressions
+531             or constraint.include
+532             or constraint.deferrable
+533         ):
+534             super().add_constraint(model, constraint)
+535         else:
+536             self._remake_table(model)
+537 
+538     def remove_constraint(self, model, constraint):
+539         if isinstance(constraint, UniqueConstraint) and (
+540             constraint.condition
+541             or constraint.contains_expressions
+542             or constraint.include
+543             or constraint.deferrable
+544         ):
+545             super().remove_constraint(model, constraint)
+546         else:
+547             self._remake_table(model)
+548 
+549     def _collate_sql(self, collation):
+550         return "COLLATE " + collation
+
+</code><intended_behavior>These methods should first check if the operation involves changes that are irrelevant to the SQLite database schema, such as adding or changing field choices. If the operation is solely related to choices, the method should perform no operations, effectively making it a noop for SQLite. This would involve adding conditional checks to skip SQL generation and execution steps for choice-related changes.</intended_behavior>, <file>django/db/migrations/operations/fields.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 from django.db.migrations.utils import field_references
+2 from django.db.models import NOT_PROVIDED
+3 from django.utils.functional import cached_property
+4 
+5 from .base import Operation
+6 
+7 
+8 class FieldOperation(Operation):
+9     def __init__(self, model_name, name, field=None):
+10         self.model_name = model_name
+11         self.name = name
+12         self.field = field
+13 
+14     @cached_property
+15     def model_name_lower(self):
+16         return self.model_name.lower()
+17 
+18     @cached_property
+19     def name_lower(self):
+20         return self.name.lower()
+21 
+22     def is_same_model_operation(self, operation):
+23         return self.model_name_lower == operation.model_name_lower
+24 
+25     def is_same_field_operation(self, operation):
+26         return (
+27             self.is_same_model_operation(operation)
+28             and self.name_lower == operation.name_lower
+29         )
+30 
+31     def references_model(self, name, app_label):
+32         name_lower = name.lower()
+33         if name_lower == self.model_name_lower:
+34             return True
+35         if self.field:
+36             return bool(
+37                 field_references(
+38                     (app_label, self.model_name_lower),
+39                     self.field,
+40                     (app_label, name_lower),
+41                 )
+42             )
+43         return False
+44 
+45     def references_field(self, model_name, name, app_label):
+46         model_name_lower = model_name.lower()
+47         # Check if this operation locally references the field.
+48         if model_name_lower == self.model_name_lower:
+49             if name == self.name:
+50                 return True
+51             elif (
+52                 self.field
+53                 and hasattr(self.field, "from_fields")
+54                 and name in self.field.from_fields
+55             ):
+56                 return True
+57         # Check if this operation remotely references the field.
+58         if self.field is None:
+59             return False
+60         return bool(
+61             field_references(
+62                 (app_label, self.model_name_lower),
+63                 self.field,
+64                 (app_label, model_name_lower),
+65                 name,
+66             )
+67         )
+68 
+69     def reduce(self, operation, app_label):
+70         return super().reduce(operation, app_label) or not operation.references_field(
+71             self.model_name, self.name, app_label
+72         )
+73 
+74 
+75 class AddField(FieldOperation):
+76     """Add a field to a model."""
+77 
+78     def __init__(self, model_name, name, field, preserve_default=True):
+79         self.preserve_default = preserve_default
+80         super().__init__(model_name, name, field)
+81 
+82     def deconstruct(self):
+83         kwargs = {
+84             "model_name": self.model_name,
+85             "name": self.name,
+86             "field": self.field,
+87         }
+88         if self.preserve_default is not True:
+89             kwargs["preserve_default"] = self.preserve_default
+90         return (self.__class__.__name__, [], kwargs)
+91 
+92     def state_forwards(self, app_label, state):
+93         state.add_field(
+94             app_label,
+95             self.model_name_lower,
+96             self.name,
+97             self.field,
+98             self.preserve_default,
+99         )
+100 
+101     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+102         to_model = to_state.apps.get_model(app_label, self.model_name)
+103         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+104             from_model = from_state.apps.get_model(app_label, self.model_name)
+105             field = to_model._meta.get_field(self.name)
+106             if not self.preserve_default:
+107                 field.default = self.field.default
+108             schema_editor.add_field(
+109                 from_model,
+110                 field,
+111             )
+112             if not self.preserve_default:
+113                 field.default = NOT_PROVIDED
+114 
+115     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+116         from_model = from_state.apps.get_model(app_label, self.model_name)
+117         if self.allow_migrate_model(schema_editor.connection.alias, from_model):
+118             schema_editor.remove_field(
+119                 from_model, from_model._meta.get_field(self.name)
+120             )
+121 
+122     def describe(self):
+123         return "Add field %s to %s" % (self.name, self.model_name)
+124 
+125     @property
+126     def migration_name_fragment(self):
+127         return "%s_%s" % (self.model_name_lower, self.name_lower)
+128 
+129     def reduce(self, operation, app_label):
+130         if isinstance(operation, FieldOperation) and self.is_same_field_operation(
+131             operation
+132         ):
+133             if isinstance(operation, AlterField):
+134                 return [
+135                     AddField(
+136                         model_name=self.model_name,
+137                         name=operation.name,
+138                         field=operation.field,
+139                     ),
+140                 ]
+141             elif isinstance(operation, RemoveField):
+142                 return []
+143             elif isinstance(operation, RenameField):
+144                 return [
+145                     AddField(
+146                         model_name=self.model_name,
+147                         name=operation.new_name,
+148                         field=self.field,
+149                     ),
+150                 ]
+151         return super().reduce(operation, app_label)
+152 
+153 
+154 class RemoveField(FieldOperation):
+155     """Remove a field from a model."""
+156 
+157     def deconstruct(self):
+158         kwargs = {
+159             "model_name": self.model_name,
+160             "name": self.name,
+161         }
+162         return (self.__class__.__name__, [], kwargs)
+163 
+164     def state_forwards(self, app_label, state):
+165         state.remove_field(app_label, self.model_name_lower, self.name)
+166 
+167     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+168         from_model = from_state.apps.get_model(app_label, self.model_name)
+169         if self.allow_migrate_model(schema_editor.connection.alias, from_model):
+170             schema_editor.remove_field(
+171                 from_model, from_model._meta.get_field(self.name)
+172             )
+173 
+174     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+175         to_model = to_state.apps.get_model(app_label, self.model_name)
+176         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+177             from_model = from_state.apps.get_model(app_label, self.model_name)
+178             schema_editor.add_field(from_model, to_model._meta.get_field(self.name))
+179 
+180     def describe(self):
+181         return "Remove field %s from %s" % (self.name, self.model_name)
+182 
+183     @property
+184     def migration_name_fragment(self):
+185         return "remove_%s_%s" % (self.model_name_lower, self.name_lower)
+186 
+187     def reduce(self, operation, app_label):
+188         from .models import DeleteModel
+189 
+190         if (
+191             isinstance(operation, DeleteModel)
+192             and operation.name_lower == self.model_name_lower
+193         ):
+194             return [operation]
+195         return super().reduce(operation, app_label)
+196 
+197 
+198 class AlterField(FieldOperation):
+199     """
+200     Alter a field's database column (e.g. null, max_length) to the provided
+201     new field.
+202     """
+203 
+204     def __init__(self, model_name, name, field, preserve_default=True):
+205         self.preserve_default = preserve_default
+206         super().__init__(model_name, name, field)
+207 
+208     def deconstruct(self):
+209         kwargs = {
+210             "model_name": self.model_name,
+211             "name": self.name,
+212             "field": self.field,
+213         }
+214         if self.preserve_default is not True:
+215             kwargs["preserve_default"] = self.preserve_default
+216         return (self.__class__.__name__, [], kwargs)
+217 
+218     def state_forwards(self, app_label, state):
+219         state.alter_field(
+220             app_label,
+221             self.model_name_lower,
+222             self.name,
+223             self.field,
+224             self.preserve_default,
+225         )
+226 
+227     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+228         to_model = to_state.apps.get_model(app_label, self.model_name)
+229         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+230             from_model = from_state.apps.get_model(app_label, self.model_name)
+231             from_field = from_model._meta.get_field(self.name)
+232             to_field = to_model._meta.get_field(self.name)
+233             if not self.preserve_default:
+234                 to_field.default = self.field.default
+235             schema_editor.alter_field(from_model, from_field, to_field)
+236             if not self.preserve_default:
+237                 to_field.default = NOT_PROVIDED
+238 
+239     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+240         self.database_forwards(app_label, schema_editor, from_state, to_state)
+241 
+242     def describe(self):
+243         return "Alter field %s on %s" % (self.name, self.model_name)
+244 
+245     @property
+246     def migration_name_fragment(self):
+247         return "alter_%s_%s" % (self.model_name_lower, self.name_lower)
+248 
+249     def reduce(self, operation, app_label):
+250         if isinstance(operation, RemoveField) and self.is_same_field_operation(
+251             operation
+252         ):
+253             return [operation]
+254         elif (
+255             isinstance(operation, RenameField)
+256             and self.is_same_field_operation(operation)
+257             and self.field.db_column is None
+258         ):
+259             return [
+260                 operation,
+261                 AlterField(
+262                     model_name=self.model_name,
+263                     name=operation.new_name,
+264                     field=self.field,
+265                 ),
+266             ]
+267         return super().reduce(operation, app_label)
+268 
+269 
+270 class RenameField(FieldOperation):
+271     """Rename a field on the model. Might affect db_column too."""
+272 
+273     def __init__(self, model_name, old_name, new_name):
+274         self.old_name = old_name
+275         self.new_name = new_name
+276         super().__init__(model_name, old_name)
+277 
+278     @cached_property
+279     def old_name_lower(self):
+280         return self.old_name.lower()
+281 
+282     @cached_property
+283     def new_name_lower(self):
+284         return self.new_name.lower()
+285 
+286     def deconstruct(self):
+287         kwargs = {
+288             "model_name": self.model_name,
+289             "old_name": self.old_name,
+290             "new_name": self.new_name,
+291         }
+292         return (self.__class__.__name__, [], kwargs)
+293 
+294     def state_forwards(self, app_label, state):
+295         state.rename_field(
+296             app_label, self.model_name_lower, self.old_name, self.new_name
+297         )
+298 
+299     def database_forwards(self, app_label, schema_editor, from_state, to_state):
+300         to_model = to_state.apps.get_model(app_label, self.model_name)
+301         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+302             from_model = from_state.apps.get_model(app_label, self.model_name)
+303             schema_editor.alter_field(
+304                 from_model,
+305                 from_model._meta.get_field(self.old_name),
+306                 to_model._meta.get_field(self.new_name),
+307             )
+308 
+309     def database_backwards(self, app_label, schema_editor, from_state, to_state):
+310         to_model = to_state.apps.get_model(app_label, self.model_name)
+311         if self.allow_migrate_model(schema_editor.connection.alias, to_model):
+312             from_model = from_state.apps.get_model(app_label, self.model_name)
+313             schema_editor.alter_field(
+314                 from_model,
+315                 from_model._meta.get_field(self.new_name),
+316                 to_model._meta.get_field(self.old_name),
+317             )
+318 
+319     def describe(self):
+320         return "Rename field %s on %s to %s" % (
+321             self.old_name,
+322             self.model_name,
+323             self.new_name,
+324         )
+325 
+326     @property
+327     def migration_name_fragment(self):
+328         return "rename_%s_%s_%s" % (
+329             self.old_name_lower,
+330             self.model_name_lower,
+331             self.new_name_lower,
+332         )
+333 
+334     def references_field(self, model_name, name, app_label):
+335         return self.references_model(model_name, app_label) and (
+336             name.lower() == self.old_name_lower or name.lower() == self.new_name_lower
+337         )
+338 
+339     def reduce(self, operation, app_label):
+340         if (
+341             isinstance(operation, RenameField)
+342             and self.is_same_model_operation(operation)
+343             and self.new_name_lower == operation.old_name_lower
+344         ):
+345             return [
+346                 RenameField(
+347                     self.model_name,
+348                     self.old_name,
+349                     operation.new_name,
+350                 ),
+351             ]
+352         # Skip `FieldOperation.reduce` as we want to run `references_field`
+353         # against self.old_name and self.new_name.
+354         return super(FieldOperation, self).reduce(operation, app_label) or not (
+355             operation.references_field(self.model_name, self.old_name, app_label)
+356             or operation.references_field(self.model_name, self.new_name, app_label)
+357         )
+
+</code><intended_behavior>Enhance the AlterField operation or its processing to recognize when changes are SQLite-relevant or not. Specifically for choices, the migration engine should identify that this change does not impact the database schema and bypass the generation of SQL for such migrations on SQLite databases.</intended_behavior>]
+2026-01-15 00:20:52.198 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:20:52.198 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:20:52.343 | INFO     | Task django__django-15561 completed successfully.
+2026-01-15 00:20:52.344 | INFO     | No patch generated. You can try running ACR again.

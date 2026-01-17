@@ -52,33 +52,33 @@ class Data_generater():
         # self.task_list = ['django__django-17066']
         # self.task_list = ['astropy__astropy-6938', 'django__django-17066']
         # self.task_list = ['scikit-learn__scikit-learn-26400']
-        ########### Filtering fl results directly and save ##############
-        # self.fl_results = dict()
-        # for i in range(1, self.repetition+1):
-        #     self.fl_results[i] = self.extract_fl_results(i)
-        # fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
-        # with open(fl_results_output_file, 'w') as f:
-        #     json.dump(self.fl_results, f, indent=4)
-        #################################################################
+        ########## Filtering fl results directly and save ##############
+        self.fl_results = dict()
+        for i in range(1, self.repetition+1):
+            self.fl_results[i] = self.extract_fl_results(i)
+        fl_results_output_file = "../fl_results/filtered_fl_results_mixtral.json"
+        with open(fl_results_output_file, 'w') as f:
+            json.dump(self.fl_results, f, indent=4)
+        ################################################################
 
-        ################ Load the filtered_fl_results ###############
-        with open("../fl_results/filtered_fl_results_mixtral.json", 'r') as f:
-            filtered_fl_results = json.load(f)
-        self.fl_results = {int(k): v for k, v in filtered_fl_results.items()}
-        #############################################################
+        # ################ Load the filtered_fl_results ###############
+        # with open("../fl_results/filtered_fl_results_mixtral.json", 'r') as f:
+        #     filtered_fl_results = json.load(f)
+        # self.fl_results = {int(k): v for k, v in filtered_fl_results.items()}
+        # #############################################################
 
-        self.trajs_dict = self.extract_trajs_from_logs()
-        self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
+        # self.trajs_dict = self.extract_trajs_from_logs()
+        # self.reasoning_paths_dict = self.generate_reasoning_paths_dict()
 
-        # print(self.trajs_dict)
-        # print()
-        # print(self.reasoning_paths_dict)
-        # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
-        # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
-        # # print(self.args_dict)
-        self.label_dict = self.get_labels_dict()
-        # # self.task_list = ['scikit-learn__scikit-learn-26400']
-        # # self.task_list = ['astropy__astropy-6938']
+        # # print(self.trajs_dict)
+        # # print()
+        # # print(self.reasoning_paths_dict)
+        # # print(len(self.trajs_dict['astropy__astropy-6938'][1]))
+        # # print(len(self.reasoning_paths_dict['astropy__astropy-6938'][0]))
+        # # # print(self.args_dict)
+        # self.label_dict = self.get_labels_dict()
+        # # # self.task_list = ['scikit-learn__scikit-learn-26400']
+        # # # self.task_list = ['astropy__astropy-6938']
     
     def extract_fl_results(self, idx):
         result_dir = f'../../fl_outputs/only_fl_output_mixtral_{idx}'

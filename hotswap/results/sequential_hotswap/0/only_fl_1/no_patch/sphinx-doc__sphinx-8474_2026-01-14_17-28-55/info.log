@@ -1,0 +1,3585 @@
+2026-01-14 17:28:55.282 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-14 17:28:57.959 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=209, output_tokens=12, cost=0.002450
+2026-01-14 17:28:57.960 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-14 17:28:57.966 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 17:29:03.400 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=516, output_tokens=173, cost=0.010350
+2026-01-14 17:29:03.420 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 17:29:05.618 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=527, output_tokens=36, cost=0.006350
+2026-01-14 17:29:05.619 | DEBUG    | Extracted a valid json.
+2026-01-14 17:29:05.619 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_code(\"WARNING: no number is assigned for table:\")", "search_code(\"numref\")"],
+    "bug_locations": []
+}
+2026-01-14 17:29:05.660 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-14 17:29:05.660 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-14 17:29:20.133 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=945, output_tokens=567, cost=0.026460
+2026-01-14 17:29:20.157 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 17:29:27.972 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1728, output_tokens=306, cost=0.026460
+2026-01-14 17:29:27.976 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 17:29:33.094 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=660, output_tokens=203, cost=0.012690
+2026-01-14 17:29:33.095 | DEBUG    | Extracted a valid json.
+2026-01-14 17:29:33.095 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "sphinx/domains/std.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Ensuring proper number assignment to tables during the Sphinx documentation build process, particularly when generating outputs in singlehtml or latex formats. This involves a thorough review and potentially updating the logic that handles numbering and references to tables to ensure no tables are left without a number that can be referenced."
+        },
+        {
+            "file": "sphinx/builders/latex/transforms.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Handling or suppressing warnings appropriately if the absence of a number is expected behavior under certain conditions. If tables without numbers are a valid case in some scenarios, the code should be able to distinguish these cases and avoid issuing a warning, or provide more context within the warning to help users understand why the number is missing."
+        }
+    ]
+}
+2026-01-14 17:29:33.102 | DEBUG    | Bug location extracted successfully: [<file>sphinx/domains/std.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.domains.std
+3     ~~~~~~~~~~~~~~~~~~
+4 
+5     The standard domain.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import unicodedata
+13 import warnings
+14 from copy import copy
+15 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union, cast
+16 
+17 from docutils import nodes
+18 from docutils.nodes import Element, Node, system_message
+19 from docutils.parsers.rst import Directive, directives
+20 from docutils.statemachine import StringList
+21 
+22 from sphinx import addnodes
+23 from sphinx.addnodes import desc_signature, pending_xref
+24 from sphinx.deprecation import RemovedInSphinx40Warning, RemovedInSphinx50Warning
+25 from sphinx.directives import ObjectDescription
+26 from sphinx.domains import Domain, ObjType
+27 from sphinx.locale import _, __
+28 from sphinx.roles import XRefRole
+29 from sphinx.util import docname_join, logging, ws_re
+30 from sphinx.util.docutils import SphinxDirective
+31 from sphinx.util.nodes import clean_astext, make_id, make_refnode
+32 from sphinx.util.typing import RoleFunction
+33 
+34 if False:
+35     # For type annotation
+36     from typing import Type  # for python3.5.1
+37 
+38     from sphinx.application import Sphinx
+39     from sphinx.builders import Builder
+40     from sphinx.environment import BuildEnvironment
+41 
+42 logger = logging.getLogger(__name__)
+43 
+44 
+45 # RE for option descriptions
+46 option_desc_re = re.compile(r'((?:/|--|-|\+)?[^\s=[]+)(=?\s*.*)')
+47 # RE for grammar tokens
+48 token_re = re.compile(r'`(\w+)`', re.U)
+49 
+50 
+51 class GenericObject(ObjectDescription):
+52     """
+53     A generic x-ref directive registered with Sphinx.add_object_type().
+54     """
+55     indextemplate = ''
+56     parse_node = None  # type: Callable[[GenericObject, BuildEnvironment, str, desc_signature], str]  # NOQA
+57 
+58     def handle_signature(self, sig: str, signode: desc_signature) -> str:
+59         if self.parse_node:
+60             name = self.parse_node(self.env, sig, signode)
+61         else:
+62             signode.clear()
+63             signode += addnodes.desc_name(sig, sig)
+64             # normalize whitespace like XRefRole does
+65             name = ws_re.sub(' ', sig)
+66         return name
+67 
+68     def add_target_and_index(self, name: str, sig: str, signode: desc_signature) -> None:
+69         node_id = make_id(self.env, self.state.document, self.objtype, name)
+70         signode['ids'].append(node_id)
+71 
+72         # Assign old styled node_id not to break old hyperlinks (if possible)
+73         # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+74         old_node_id = self.make_old_id(name)
+75         if old_node_id not in self.state.document.ids and old_node_id not in signode['ids']:
+76             signode['ids'].append(old_node_id)
+77 
+78         self.state.document.note_explicit_target(signode)
+79 
+80         if self.indextemplate:
+81             colon = self.indextemplate.find(':')
+82             if colon != -1:
+83                 indextype = self.indextemplate[:colon].strip()
+84                 indexentry = self.indextemplate[colon + 1:].strip() % (name,)
+85             else:
+86                 indextype = 'single'
+87                 indexentry = self.indextemplate % (name,)
+88             self.indexnode['entries'].append((indextype, indexentry, node_id, '', None))
+89 
+90         std = cast(StandardDomain, self.env.get_domain('std'))
+91         std.note_object(self.objtype, name, node_id, location=signode)
+92 
+93     def make_old_id(self, name: str) -> str:
+94         """Generate old styled node_id for generic objects.
+95 
+96         .. note:: Old Styled node_id was used until Sphinx-3.0.
+97                   This will be removed in Sphinx-5.0.
+98         """
+99         return self.objtype + '-' + name
+100 
+101 
+102 class EnvVar(GenericObject):
+103     indextemplate = _('environment variable; %s')
+104 
+105 
+106 class EnvVarXRefRole(XRefRole):
+107     """
+108     Cross-referencing role for environment variables (adds an index entry).
+109     """
+110 
+111     def result_nodes(self, document: nodes.document, env: "BuildEnvironment", node: Element,
+112                      is_ref: bool) -> Tuple[List[Node], List[system_message]]:
+113         if not is_ref:
+114             return [node], []
+115         varname = node['reftarget']
+116         tgtid = 'index-%s' % env.new_serialno('index')
+117         indexnode = addnodes.index()
+118         indexnode['entries'] = [
+119             ('single', varname, tgtid, '', None),
+120             ('single', _('environment variable; %s') % varname, tgtid, '', None)
+121         ]
+122         targetnode = nodes.target('', '', ids=[tgtid])
+123         document.note_explicit_target(targetnode)
+124         return [indexnode, targetnode, node], []
+125 
+126 
+127 class Target(SphinxDirective):
+128     """
+129     Generic target for user-defined cross-reference types.
+130     """
+131     indextemplate = ''
+132 
+133     has_content = False
+134     required_arguments = 1
+135     optional_arguments = 0
+136     final_argument_whitespace = True
+137     option_spec = {}  # type: Dict
+138 
+139     def run(self) -> List[Node]:
+140         # normalize whitespace in fullname like XRefRole does
+141         fullname = ws_re.sub(' ', self.arguments[0].strip())
+142         node_id = make_id(self.env, self.state.document, self.name, fullname)
+143         node = nodes.target('', '', ids=[node_id])
+144         self.set_source_info(node)
+145 
+146         # Assign old styled node_id not to break old hyperlinks (if possible)
+147         # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+148         old_node_id = self.make_old_id(fullname)
+149         if old_node_id not in self.state.document.ids and old_node_id not in node['ids']:
+150             node['ids'].append(old_node_id)
+151 
+152         self.state.document.note_explicit_target(node)
+153         ret = [node]  # type: List[Node]
+154         if self.indextemplate:
+155             indexentry = self.indextemplate % (fullname,)
+156             indextype = 'single'
+157             colon = indexentry.find(':')
+158             if colon != -1:
+159                 indextype = indexentry[:colon].strip()
+160                 indexentry = indexentry[colon + 1:].strip()
+161             inode = addnodes.index(entries=[(indextype, indexentry, node_id, '', None)])
+162             ret.insert(0, inode)
+163         name = self.name
+164         if ':' in self.name:
+165             _, name = self.name.split(':', 1)
+166 
+167         std = cast(StandardDomain, self.env.get_domain('std'))
+168         std.note_object(name, fullname, node_id, location=node)
+169 
+170         return ret
+171 
+172     def make_old_id(self, name: str) -> str:
+173         """Generate old styled node_id for targets.
+174 
+175         .. note:: Old Styled node_id was used until Sphinx-3.0.
+176                   This will be removed in Sphinx-5.0.
+177         """
+178         return self.name + '-' + name
+179 
+180 
+181 class Cmdoption(ObjectDescription):
+182     """
+183     Description of a command-line option (.. option).
+184     """
+185 
+186     def handle_signature(self, sig: str, signode: desc_signature) -> str:
+187         """Transform an option description into RST nodes."""
+188         count = 0
+189         firstname = ''
+190         for potential_option in sig.split(', '):
+191             potential_option = potential_option.strip()
+192             m = option_desc_re.match(potential_option)
+193             if not m:
+194                 logger.warning(__('Malformed option description %r, should '
+195                                   'look like "opt", "-opt args", "--opt args", '
+196                                   '"/opt args" or "+opt args"'), potential_option,
+197                                location=signode)
+198                 continue
+199             optname, args = m.groups()
+200             if count:
+201                 signode += addnodes.desc_addname(', ', ', ')
+202             signode += addnodes.desc_name(optname, optname)
+203             signode += addnodes.desc_addname(args, args)
+204             if not count:
+205                 firstname = optname
+206                 signode['allnames'] = [optname]
+207             else:
+208                 signode['allnames'].append(optname)
+209             count += 1
+210         if not firstname:
+211             raise ValueError
+212         return firstname
+213 
+214     def add_target_and_index(self, firstname: str, sig: str, signode: desc_signature) -> None:
+215         currprogram = self.env.ref_context.get('std:program')
+216         for optname in signode.get('allnames', []):
+217             prefixes = ['cmdoption']
+218             if currprogram:
+219                 prefixes.append(currprogram)
+220             if not optname.startswith(('-', '/')):
+221                 prefixes.append('arg')
+222             prefix = '-'.join(prefixes)
+223             node_id = make_id(self.env, self.state.document, prefix, optname)
+224             signode['ids'].append(node_id)
+225 
+226             old_node_id = self.make_old_id(prefix, optname)
+227             if old_node_id not in self.state.document.ids and \
+228                old_node_id not in signode['ids']:
+229                 signode['ids'].append(old_node_id)
+230 
+231         self.state.document.note_explicit_target(signode)
+232 
+233         domain = cast(StandardDomain, self.env.get_domain('std'))
+234         for optname in signode.get('allnames', []):
+235             domain.add_program_option(currprogram, optname,
+236                                       self.env.docname, signode['ids'][0])
+237 
+238         # create an index entry
+239         if currprogram:
+240             descr = _('%s command line option') % currprogram
+241         else:
+242             descr = _('command line option')
+243         for option in sig.split(', '):
+244             entry = '; '.join([descr, option])
+245             self.indexnode['entries'].append(('pair', entry, signode['ids'][0], '', None))
+246 
+247     def make_old_id(self, prefix: str, optname: str) -> str:
+248         """Generate old styled node_id for cmdoption.
+249 
+250         .. note:: Old Styled node_id was used until Sphinx-3.0.
+251                   This will be removed in Sphinx-5.0.
+252         """
+253         return nodes.make_id(prefix + '-' + optname)
+254 
+255 
+256 class Program(SphinxDirective):
+257     """
+258     Directive to name the program for which options are documented.
+259     """
+260 
+261     has_content = False
+262     required_arguments = 1
+263     optional_arguments = 0
+264     final_argument_whitespace = True
+265     option_spec = {}  # type: Dict
+266 
+267     def run(self) -> List[Node]:
+268         program = ws_re.sub('-', self.arguments[0].strip())
+269         if program == 'None':
+270             self.env.ref_context.pop('std:program', None)
+271         else:
+272             self.env.ref_context['std:program'] = program
+273         return []
+274 
+275 
+276 class OptionXRefRole(XRefRole):
+277     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+278                      title: str, target: str) -> Tuple[str, str]:
+279         refnode['std:program'] = env.ref_context.get('std:program')
+280         return title, target
+281 
+282 
+283 def split_term_classifiers(line: str) -> List[Optional[str]]:
+284     # split line into a term and classifiers. if no classifier, None is used..
+285     parts = re.split(' +: +', line) + [None]
+286     return parts
+287 
+288 
+289 def make_glossary_term(env: "BuildEnvironment", textnodes: Iterable[Node], index_key: str,
+290                        source: str, lineno: int, node_id: str = None,
+291                        document: nodes.document = None) -> nodes.term:
+292     # get a text-only representation of the term and register it
+293     # as a cross-reference target
+294     term = nodes.term('', '', *textnodes)
+295     term.source = source
+296     term.line = lineno
+297     termtext = term.astext()
+298 
+299     if node_id:
+300         # node_id is given from outside (mainly i18n module), use it forcedly
+301         term['ids'].append(node_id)
+302     elif document:
+303         node_id = make_id(env, document, 'term', termtext)
+304         term['ids'].append(node_id)
+305         document.note_explicit_target(term)
+306     else:
+307         warnings.warn('make_glossary_term() expects document is passed as an argument.',
+308                       RemovedInSphinx40Warning, stacklevel=2)
+309         gloss_entries = env.temp_data.setdefault('gloss_entries', set())
+310         node_id = nodes.make_id('term-' + termtext)
+311         if node_id == 'term':
+312             # "term" is not good for node_id.  Generate it by sequence number instead.
+313             node_id = 'term-%d' % env.new_serialno('glossary')
+314 
+315         while node_id in gloss_entries:
+316             node_id = 'term-%d' % env.new_serialno('glossary')
+317         gloss_entries.add(node_id)
+318         term['ids'].append(node_id)
+319 
+320     std = cast(StandardDomain, env.get_domain('std'))
+321     std.note_object('term', termtext, node_id, location=term)
+322 
+323     # add an index entry too
+324     indexnode = addnodes.index()
+325     indexnode['entries'] = [('single', termtext, node_id, 'main', index_key)]
+326     indexnode.source, indexnode.line = term.source, term.line
+327     term.append(indexnode)
+328 
+329     return term
+330 
+331 
+332 class Glossary(SphinxDirective):
+333     """
+334     Directive to create a glossary with cross-reference targets for :term:
+335     roles.
+336     """
+337 
+338     has_content = True
+339     required_arguments = 0
+340     optional_arguments = 0
+341     final_argument_whitespace = False
+342     option_spec = {
+343         'sorted': directives.flag,
+344     }
+345 
+346     def run(self) -> List[Node]:
+347         node = addnodes.glossary()
+348         node.document = self.state.document
+349 
+350         # This directive implements a custom format of the reST definition list
+351         # that allows multiple lines of terms before the definition.  This is
+352         # easy to parse since we know that the contents of the glossary *must
+353         # be* a definition list.
+354 
+355         # first, collect single entries
+356         entries = []  # type: List[Tuple[List[Tuple[str, str, int]], StringList]]
+357         in_definition = True
+358         in_comment = False
+359         was_empty = True
+360         messages = []  # type: List[Node]
+361         for line, (source, lineno) in zip(self.content, self.content.items):
+362             # empty line -> add to last definition
+363             if not line:
+364                 if in_definition and entries:
+365                     entries[-1][1].append('', source, lineno)
+366                 was_empty = True
+367                 continue
+368             # unindented line -> a term
+369             if line and not line[0].isspace():
+370                 # enable comments
+371                 if line.startswith('.. '):
+372                     in_comment = True
+373                     continue
+374                 else:
+375                     in_comment = False
+376 
+377                 # first term of definition
+378                 if in_definition:
+379                     if not was_empty:
+380                         messages.append(self.state.reporter.warning(
+381                             _('glossary term must be preceded by empty line'),
+382                             source=source, line=lineno))
+383                     entries.append(([(line, source, lineno)], StringList()))
+384                     in_definition = False
+385                 # second term and following
+386                 else:
+387                     if was_empty:
+388                         messages.append(self.state.reporter.warning(
+389                             _('glossary terms must not be separated by empty lines'),
+390                             source=source, line=lineno))
+391                     if entries:
+392                         entries[-1][0].append((line, source, lineno))
+393                     else:
+394                         messages.append(self.state.reporter.warning(
+395                             _('glossary seems to be misformatted, check indentation'),
+396                             source=source, line=lineno))
+397             elif in_comment:
+398                 pass
+399             else:
+400                 if not in_definition:
+401                     # first line of definition, determines indentation
+402                     in_definition = True
+403                     indent_len = len(line) - len(line.lstrip())
+404                 if entries:
+405                     entries[-1][1].append(line[indent_len:], source, lineno)
+406                 else:
+407                     messages.append(self.state.reporter.warning(
+408                         _('glossary seems to be misformatted, check indentation'),
+409                         source=source, line=lineno))
+410             was_empty = False
+411 
+412         # now, parse all the entries into a big definition list
+413         items = []
+414         for terms, definition in entries:
+415             termtexts = []          # type: List[str]
+416             termnodes = []          # type: List[Node]
+417             system_messages = []    # type: List[Node]
+418             for line, source, lineno in terms:
+419                 parts = split_term_classifiers(line)
+420                 # parse the term with inline markup
+421                 # classifiers (parts[1:]) will not be shown on doctree
+422                 textnodes, sysmsg = self.state.inline_text(parts[0], lineno)
+423 
+424                 # use first classifier as a index key
+425                 term = make_glossary_term(self.env, textnodes, parts[1], source, lineno,
+426                                           document=self.state.document)
+427                 term.rawsource = line
+428                 system_messages.extend(sysmsg)
+429                 termtexts.append(term.astext())
+430                 termnodes.append(term)
+431 
+432             termnodes.extend(system_messages)
+433 
+434             defnode = nodes.definition()
+435             if definition:
+436                 self.state.nested_parse(definition, definition.items[0][1],
+437                                         defnode)
+438             termnodes.append(defnode)
+439             items.append((termtexts,
+440                           nodes.definition_list_item('', *termnodes)))
+441 
+442         if 'sorted' in self.options:
+443             items.sort(key=lambda x:
+444                        unicodedata.normalize('NFD', x[0][0].lower()))
+445 
+446         dlist = nodes.definition_list()
+447         dlist['classes'].append('glossary')
+448         dlist.extend(item[1] for item in items)
+449         node += dlist
+450         return messages + [node]
+451 
+452 
+453 def token_xrefs(text: str, productionGroup: str = '') -> List[Node]:
+454     if len(productionGroup) != 0:
+455         productionGroup += ':'
+456     retnodes = []  # type: List[Node]
+457     pos = 0
+458     for m in token_re.finditer(text):
+459         if m.start() > pos:
+460             txt = text[pos:m.start()]
+461             retnodes.append(nodes.Text(txt, txt))
+462         refnode = pending_xref(m.group(1), reftype='token', refdomain='std',
+463                                reftarget=productionGroup + m.group(1))
+464         refnode += nodes.literal(m.group(1), m.group(1), classes=['xref'])
+465         retnodes.append(refnode)
+466         pos = m.end()
+467     if pos < len(text):
+468         retnodes.append(nodes.Text(text[pos:], text[pos:]))
+469     return retnodes
+470 
+471 
+472 class ProductionList(SphinxDirective):
+473     """
+474     Directive to list grammar productions.
+475     """
+476 
+477     has_content = False
+478     required_arguments = 1
+479     optional_arguments = 0
+480     final_argument_whitespace = True
+481     option_spec = {}  # type: Dict
+482 
+483     def run(self) -> List[Node]:
+484         domain = cast(StandardDomain, self.env.get_domain('std'))
+485         node = addnodes.productionlist()  # type: Element
+486         self.set_source_info(node)
+487         # The backslash handling is from ObjectDescription.get_signatures
+488         nl_escape_re = re.compile(r'\\\n')
+489         lines = nl_escape_re.sub('', self.arguments[0]).split('\n')
+490 
+491         productionGroup = ""
+492         i = 0
+493         for rule in lines:
+494             if i == 0 and ':' not in rule:
+495                 productionGroup = rule.strip()
+496                 continue
+497             i += 1
+498             try:
+499                 name, tokens = rule.split(':', 1)
+500             except ValueError:
+501                 break
+502             subnode = addnodes.production(rule)
+503             name = name.strip()
+504             subnode['tokenname'] = name
+505             if subnode['tokenname']:
+506                 prefix = 'grammar-token-%s' % productionGroup
+507                 node_id = make_id(self.env, self.state.document, prefix, name)
+508                 subnode['ids'].append(node_id)
+509 
+510                 # Assign old styled node_id not to break old hyperlinks (if possible)
+511                 # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+512                 old_node_id = self.make_old_id(name)
+513                 if (old_node_id not in self.state.document.ids and
+514                         old_node_id not in subnode['ids']):
+515                     subnode['ids'].append(old_node_id)
+516 
+517                 self.state.document.note_implicit_target(subnode, subnode)
+518 
+519                 if len(productionGroup) != 0:
+520                     objName = "%s:%s" % (productionGroup, name)
+521                 else:
+522                     objName = name
+523                 domain.note_object('token', objName, node_id, location=node)
+524             subnode.extend(token_xrefs(tokens, productionGroup))
+525             node.append(subnode)
+526         return [node]
+527 
+528     def make_old_id(self, token: str) -> str:
+529         """Generate old styled node_id for tokens.
+530 
+531         .. note:: Old Styled node_id was used until Sphinx-3.0.
+532                   This will be removed in Sphinx-5.0.
+533         """
+534         return nodes.make_id('grammar-token-' + token)
+535 
+536 
+537 class TokenXRefRole(XRefRole):
+538     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+539                      title: str, target: str) -> Tuple[str, str]:
+540         target = target.lstrip('~')  # a title-specific thing
+541         if not self.has_explicit_title and title[0] == '~':
+542             if ':' in title:
+543                 _, title = title.split(':')
+544             else:
+545                 title = title[1:]
+546         return title, target
+547 
+548 
+549 class StandardDomain(Domain):
+550     """
+551     Domain for all objects that don't fit into another domain or are added
+552     via the application interface.
+553     """
+554 
+555     name = 'std'
+556     label = 'Default'
+557 
+558     object_types = {
+559         'term': ObjType(_('glossary term'), 'term', searchprio=-1),
+560         'token': ObjType(_('grammar token'), 'token', searchprio=-1),
+561         'label': ObjType(_('reference label'), 'ref', 'keyword',
+562                          searchprio=-1),
+563         'envvar': ObjType(_('environment variable'), 'envvar'),
+564         'cmdoption': ObjType(_('program option'), 'option'),
+565         'doc': ObjType(_('document'), 'doc', searchprio=-1)
+566     }  # type: Dict[str, ObjType]
+567 
+568     directives = {
+569         'program': Program,
+570         'cmdoption': Cmdoption,  # old name for backwards compatibility
+571         'option': Cmdoption,
+572         'envvar': EnvVar,
+573         'glossary': Glossary,
+574         'productionlist': ProductionList,
+575     }  # type: Dict[str, Type[Directive]]
+576     roles = {
+577         'option':  OptionXRefRole(warn_dangling=True),
+578         'envvar':  EnvVarXRefRole(),
+579         # links to tokens in grammar productions
+580         'token':   TokenXRefRole(),
+581         # links to terms in glossary
+582         'term':    XRefRole(innernodeclass=nodes.inline,
+583                             warn_dangling=True),
+584         # links to headings or arbitrary labels
+585         'ref':     XRefRole(lowercase=True, innernodeclass=nodes.inline,
+586                             warn_dangling=True),
+587         # links to labels of numbered figures, tables and code-blocks
+588         'numref':  XRefRole(lowercase=True,
+589                             warn_dangling=True),
+590         # links to labels, without a different title
+591         'keyword': XRefRole(warn_dangling=True),
+592         # links to documents
+593         'doc':     XRefRole(warn_dangling=True, innernodeclass=nodes.inline),
+594     }  # type: Dict[str, Union[RoleFunction, XRefRole]]
+595 
+596     initial_data = {
+597         'progoptions': {},      # (program, name) -> docname, labelid
+598         'objects': {},          # (type, name) -> docname, labelid
+599         'labels': {             # labelname -> docname, labelid, sectionname
+600             'genindex': ('genindex', '', _('Index')),
+601             'modindex': ('py-modindex', '', _('Module Index')),
+602             'search':   ('search', '', _('Search Page')),
+603         },
+604         'anonlabels': {         # labelname -> docname, labelid
+605             'genindex': ('genindex', ''),
+606             'modindex': ('py-modindex', ''),
+607             'search':   ('search', ''),
+608         },
+609     }
+610 
+611     dangling_warnings = {
+612         'term': 'term not in glossary: %(target)s',
+613         'numref':  'undefined label: %(target)s',
+614         'keyword': 'unknown keyword: %(target)s',
+615         'doc': 'unknown document: %(target)s',
+616         'option': 'unknown option: %(target)s',
+617     }
+618 
+619     enumerable_nodes = {  # node_class -> (figtype, title_getter)
+620         nodes.figure: ('figure', None),
+621         nodes.table: ('table', None),
+622         nodes.container: ('code-block', None),
+623     }  # type: Dict[Type[Node], Tuple[str, Callable]]
+624 
+625     def __init__(self, env: "BuildEnvironment") -> None:
+626         super().__init__(env)
+627 
+628         # set up enumerable nodes
+629         self.enumerable_nodes = copy(self.enumerable_nodes)  # create a copy for this instance
+630         for node, settings in env.app.registry.enumerable_nodes.items():
+631             self.enumerable_nodes[node] = settings
+632 
+633     def note_hyperlink_target(self, name: str, docname: str, node_id: str,
+634                               title: str = '') -> None:
+635         """Add a hyperlink target for cross reference.
+636 
+637         .. warning::
+638 
+639            This is only for internal use.  Please don't use this from your extension.
+640            ``document.note_explicit_target()`` or ``note_implicit_target()`` are recommended to
+641            add a hyperlink target to the document.
+642 
+643            This only adds a hyperlink target to the StandardDomain.  And this does not add a
+644            node_id to node.  Therefore, it is very fragile to calling this without
+645            understanding hyperlink target framework in both docutils and Sphinx.
+646 
+647         .. versionadded:: 3.0
+648         """
+649         if name in self.anonlabels and self.anonlabels[name] != (docname, node_id):
+650             logger.warning(__('duplicate label %s, other instance in %s'),
+651                            name, self.env.doc2path(self.anonlabels[name][0]))
+652 
+653         self.anonlabels[name] = (docname, node_id)
+654         if title:
+655             self.labels[name] = (docname, node_id, title)
+656 
+657     @property
+658     def objects(self) -> Dict[Tuple[str, str], Tuple[str, str]]:
+659         return self.data.setdefault('objects', {})  # (objtype, name) -> docname, labelid
+660 
+661     def note_object(self, objtype: str, name: str, labelid: str, location: Any = None
+662                     ) -> None:
+663         """Note a generic object for cross reference.
+664 
+665         .. versionadded:: 3.0
+666         """
+667         if (objtype, name) in self.objects:
+668             docname = self.objects[objtype, name][0]
+669             logger.warning(__('duplicate %s description of %s, other instance in %s'),
+670                            objtype, name, docname, location=location)
+671         self.objects[objtype, name] = (self.env.docname, labelid)
+672 
+673     def add_object(self, objtype: str, name: str, docname: str, labelid: str) -> None:
+674         warnings.warn('StandardDomain.add_object() is deprecated.',
+675                       RemovedInSphinx50Warning, stacklevel=2)
+676         self.objects[objtype, name] = (docname, labelid)
+677 
+678     @property
+679     def progoptions(self) -> Dict[Tuple[str, str], Tuple[str, str]]:
+680         return self.data.setdefault('progoptions', {})  # (program, name) -> docname, labelid
+681 
+682     @property
+683     def labels(self) -> Dict[str, Tuple[str, str, str]]:
+684         return self.data.setdefault('labels', {})  # labelname -> docname, labelid, sectionname
+685 
+686     @property
+687     def anonlabels(self) -> Dict[str, Tuple[str, str]]:
+688         return self.data.setdefault('anonlabels', {})  # labelname -> docname, labelid
+689 
+690     def clear_doc(self, docname: str) -> None:
+691         key = None  # type: Any
+692         for key, (fn, _l) in list(self.progoptions.items()):
+693             if fn == docname:
+694                 del self.progoptions[key]
+695         for key, (fn, _l) in list(self.objects.items()):
+696             if fn == docname:
+697                 del self.objects[key]
+698         for key, (fn, _l, _l) in list(self.labels.items()):
+699             if fn == docname:
+700                 del self.labels[key]
+701         for key, (fn, _l) in list(self.anonlabels.items()):
+702             if fn == docname:
+703                 del self.anonlabels[key]
+704 
+705     def merge_domaindata(self, docnames: List[str], otherdata: Dict) -> None:
+706         # XXX duplicates?
+707         for key, data in otherdata['progoptions'].items():
+708             if data[0] in docnames:
+709                 self.progoptions[key] = data
+710         for key, data in otherdata['objects'].items():
+711             if data[0] in docnames:
+712                 self.objects[key] = data
+713         for key, data in otherdata['labels'].items():
+714             if data[0] in docnames:
+715                 self.labels[key] = data
+716         for key, data in otherdata['anonlabels'].items():
+717             if data[0] in docnames:
+718                 self.anonlabels[key] = data
+719 
+720     def process_doc(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+721         for name, explicit in document.nametypes.items():
+722             if not explicit:
+723                 continue
+724             labelid = document.nameids[name]
+725             if labelid is None:
+726                 continue
+727             node = document.ids[labelid]
+728             if isinstance(node, nodes.target) and 'refid' in node:
+729                 # indirect hyperlink targets
+730                 node = document.ids.get(node['refid'])
+731                 labelid = node['names'][0]
+732             if (node.tagname == 'footnote' or
+733                     'refuri' in node or
+734                     node.tagname.startswith('desc_')):
+735                 # ignore footnote labels, labels automatically generated from a
+736                 # link and object descriptions
+737                 continue
+738             if name in self.labels:
+739                 logger.warning(__('duplicate label %s, other instance in %s'),
+740                                name, env.doc2path(self.labels[name][0]),
+741                                location=node)
+742             self.anonlabels[name] = docname, labelid
+743             if node.tagname in ('section', 'rubric'):
+744                 title = cast(nodes.title, node[0])
+745                 sectname = clean_astext(title)
+746             elif self.is_enumerable_node(node):
+747                 sectname = self.get_numfig_title(node)
+748                 if not sectname:
+749                     continue
+750             else:
+751                 toctree = next(iter(node.traverse(addnodes.toctree)), None)
+752                 if toctree and toctree.get('caption'):
+753                     sectname = toctree.get('caption')
+754                 else:
+755                     # anonymous-only labels
+756                     continue
+757             self.labels[name] = docname, labelid, sectname
+758 
+759     def add_program_option(self, program: str, name: str, docname: str, labelid: str) -> None:
+760         self.progoptions[program, name] = (docname, labelid)
+761 
+762     def build_reference_node(self, fromdocname: str, builder: "Builder", docname: str,
+763                              labelid: str, sectname: str, rolename: str, **options: Any
+764                              ) -> Element:
+765         nodeclass = options.pop('nodeclass', nodes.reference)
+766         newnode = nodeclass('', '', internal=True, **options)
+767         innernode = nodes.inline(sectname, sectname)
+768         if innernode.get('classes') is not None:
+769             innernode['classes'].append('std')
+770             innernode['classes'].append('std-' + rolename)
+771         if docname == fromdocname:
+772             newnode['refid'] = labelid
+773         else:
+774             # set more info in contnode; in case the
+775             # get_relative_uri call raises NoUri,
+776             # the builder will then have to resolve these
+777             contnode = pending_xref('')
+778             contnode['refdocname'] = docname
+779             contnode['refsectname'] = sectname
+780             newnode['refuri'] = builder.get_relative_uri(
+781                 fromdocname, docname)
+782             if labelid:
+783                 newnode['refuri'] += '#' + labelid
+784         newnode.append(innernode)
+785         return newnode
+786 
+787     def resolve_xref(self, env: "BuildEnvironment", fromdocname: str, builder: "Builder",
+788                      typ: str, target: str, node: pending_xref, contnode: Element) -> Element:
+789         if typ == 'ref':
+790             resolver = self._resolve_ref_xref
+791         elif typ == 'numref':
+792             resolver = self._resolve_numref_xref
+793         elif typ == 'keyword':
+794             resolver = self._resolve_keyword_xref
+795         elif typ == 'doc':
+796             resolver = self._resolve_doc_xref
+797         elif typ == 'option':
+798             resolver = self._resolve_option_xref
+799         elif typ == 'citation':
+800             warnings.warn('pending_xref(domain=std, type=citation) is deprecated: %r' % node,
+801                           RemovedInSphinx40Warning, stacklevel=2)
+802             domain = env.get_domain('citation')
+803             return domain.resolve_xref(env, fromdocname, builder, typ, target, node, contnode)
+804         elif typ == 'term':
+805             resolver = self._resolve_term_xref
+806         else:
+807             resolver = self._resolve_obj_xref
+808 
+809         return resolver(env, fromdocname, builder, typ, target, node, contnode)
+810 
+811     def _resolve_ref_xref(self, env: "BuildEnvironment", fromdocname: str,
+812                           builder: "Builder", typ: str, target: str, node: pending_xref,
+813                           contnode: Element) -> Element:
+814         if node['refexplicit']:
+815             # reference to anonymous label; the reference uses
+816             # the supplied link caption
+817             docname, labelid = self.anonlabels.get(target, ('', ''))
+818             sectname = node.astext()
+819         else:
+820             # reference to named label; the final node will
+821             # contain the section name after the label
+822             docname, labelid, sectname = self.labels.get(target, ('', '', ''))
+823         if not docname:
+824             return None
+825 
+826         return self.build_reference_node(fromdocname, builder,
+827                                          docname, labelid, sectname, 'ref')
+828 
+829     def _resolve_numref_xref(self, env: "BuildEnvironment", fromdocname: str,
+830                              builder: "Builder", typ: str, target: str,
+831                              node: pending_xref, contnode: Element) -> Element:
+832         if target in self.labels:
+833             docname, labelid, figname = self.labels.get(target, ('', '', ''))
+834         else:
+835             docname, labelid = self.anonlabels.get(target, ('', ''))
+836             figname = None
+837 
+838         if not docname:
+839             return None
+840 
+841         target_node = env.get_doctree(docname).ids.get(labelid)
+842         figtype = self.get_enumerable_node_type(target_node)
+843         if figtype is None:
+844             return None
+845 
+846         if figtype != 'section' and env.config.numfig is False:
+847             logger.warning(__('numfig is disabled. :numref: is ignored.'), location=node)
+848             return contnode
+849 
+850         try:
+851             fignumber = self.get_fignumber(env, builder, figtype, docname, target_node)
+852             if fignumber is None:
+853                 return contnode
+854         except ValueError:
+855             logger.warning(__("no number is assigned for %s: %s"), figtype, labelid,
+856                            location=node)
+857             return contnode
+858 
+859         try:
+860             if node['refexplicit']:
+861                 title = contnode.astext()
+862             else:
+863                 title = env.config.numfig_format.get(figtype, '')
+864 
+865             if figname is None and '{name}' in title:
+866                 logger.warning(__('the link has no caption: %s'), title, location=node)
+867                 return contnode
+868             else:
+869                 fignum = '.'.join(map(str, fignumber))
+870                 if '{name}' in title or 'number' in title:
+871                     # new style format (cf. "Fig.{number}")
+872                     if figname:
+873                         newtitle = title.format(name=figname, number=fignum)
+874                     else:
+875                         newtitle = title.format(number=fignum)
+876                 else:
+877                     # old style format (cf. "Fig.%s")
+878                     newtitle = title % fignum
+879         except KeyError as exc:
+880             logger.warning(__('invalid numfig_format: %s (%r)'), title, exc, location=node)
+881             return contnode
+882         except TypeError:
+883             logger.warning(__('invalid numfig_format: %s'), title, location=node)
+884             return contnode
+885 
+886         return self.build_reference_node(fromdocname, builder,
+887                                          docname, labelid, newtitle, 'numref',
+888                                          nodeclass=addnodes.number_reference,
+889                                          title=title)
+890 
+891     def _resolve_keyword_xref(self, env: "BuildEnvironment", fromdocname: str,
+892                               builder: "Builder", typ: str, target: str,
+893                               node: pending_xref, contnode: Element) -> Element:
+894         # keywords are oddballs: they are referenced by named labels
+895         docname, labelid, _ = self.labels.get(target, ('', '', ''))
+896         if not docname:
+897             return None
+898         return make_refnode(builder, fromdocname, docname,
+899                             labelid, contnode)
+900 
+901     def _resolve_doc_xref(self, env: "BuildEnvironment", fromdocname: str,
+902                           builder: "Builder", typ: str, target: str,
+903                           node: pending_xref, contnode: Element) -> Element:
+904         # directly reference to document by source name; can be absolute or relative
+905         refdoc = node.get('refdoc', fromdocname)
+906         docname = docname_join(refdoc, node['reftarget'])
+907         if docname not in env.all_docs:
+908             return None
+909         else:
+910             if node['refexplicit']:
+911                 # reference with explicit title
+912                 caption = node.astext()
+913             else:
+914                 caption = clean_astext(env.titles[docname])
+915             innernode = nodes.inline(caption, caption, classes=['doc'])
+916             return make_refnode(builder, fromdocname, docname, None, innernode)
+917 
+918     def _resolve_option_xref(self, env: "BuildEnvironment", fromdocname: str,
+919                              builder: "Builder", typ: str, target: str,
+920                              node: pending_xref, contnode: Element) -> Element:
+921         progname = node.get('std:program')
+922         target = target.strip()
+923         docname, labelid = self.progoptions.get((progname, target), ('', ''))
+924         if not docname:
+925             commands = []
+926             while ws_re.search(target):
+927                 subcommand, target = ws_re.split(target, 1)
+928                 commands.append(subcommand)
+929                 progname = "-".join(commands)
+930 
+931                 docname, labelid = self.progoptions.get((progname, target), ('', ''))
+932                 if docname:
+933                     break
+934             else:
+935                 return None
+936 
+937         return make_refnode(builder, fromdocname, docname,
+938                             labelid, contnode)
+939 
+940     def _resolve_term_xref(self, env: "BuildEnvironment", fromdocname: str,
+941                            builder: "Builder", typ: str, target: str,
+942                            node: pending_xref, contnode: Element) -> Element:
+943         result = self._resolve_obj_xref(env, fromdocname, builder, typ,
+944                                         target, node, contnode)
+945         if result:
+946             return result
+947         else:
+948             for objtype, term in self.objects:
+949                 if objtype == 'term' and term.lower() == target.lower():
+950                     docname, labelid = self.objects[objtype, term]
+951                     logger.warning(__('term %s not found in case sensitive match.'
+952                                       'made a reference to %s instead.'),
+953                                    target, term, location=node, type='ref', subtype='term')
+954                     break
+955             else:
+956                 docname, labelid = '', ''
+957             if not docname:
+958                 return None
+959             return make_refnode(builder, fromdocname, docname,
+960                                 labelid, contnode)
+961 
+962     def _resolve_obj_xref(self, env: "BuildEnvironment", fromdocname: str,
+963                           builder: "Builder", typ: str, target: str,
+964                           node: pending_xref, contnode: Element) -> Element:
+965         objtypes = self.objtypes_for_role(typ) or []
+966         for objtype in objtypes:
+967             if (objtype, target) in self.objects:
+968                 docname, labelid = self.objects[objtype, target]
+969                 break
+970         else:
+971             docname, labelid = '', ''
+972         if not docname:
+973             return None
+974         return make_refnode(builder, fromdocname, docname,
+975                             labelid, contnode)
+976 
+977     def resolve_any_xref(self, env: "BuildEnvironment", fromdocname: str,
+978                          builder: "Builder", target: str, node: pending_xref,
+979                          contnode: Element) -> List[Tuple[str, Element]]:
+980         results = []  # type: List[Tuple[str, Element]]
+981         ltarget = target.lower()  # :ref: lowercases its target automatically
+982         for role in ('ref', 'option'):  # do not try "keyword"
+983             res = self.resolve_xref(env, fromdocname, builder, role,
+984                                     ltarget if role == 'ref' else target,
+985                                     node, contnode)
+986             if res:
+987                 results.append(('std:' + role, res))
+988         # all others
+989         for objtype in self.object_types:
+990             key = (objtype, target)
+991             if objtype == 'term':
+992                 key = (objtype, ltarget)
+993             if key in self.objects:
+994                 docname, labelid = self.objects[key]
+995                 results.append(('std:' + self.role_for_objtype(objtype),
+996                                 make_refnode(builder, fromdocname, docname,
+997                                              labelid, contnode)))
+998         return results
+999 
+1000     def get_objects(self) -> Iterator[Tuple[str, str, str, str, str, int]]:
+1001         # handle the special 'doc' reference here
+1002         for doc in self.env.all_docs:
+1003             yield (doc, clean_astext(self.env.titles[doc]), 'doc', doc, '', -1)
+1004         for (prog, option), info in self.progoptions.items():
+1005             if prog:
+1006                 fullname = ".".join([prog, option])
+1007                 yield (fullname, fullname, 'cmdoption', info[0], info[1], 1)
+1008             else:
+1009                 yield (option, option, 'cmdoption', info[0], info[1], 1)
+1010         for (type, name), info in self.objects.items():
+1011             yield (name, name, type, info[0], info[1],
+1012                    self.object_types[type].attrs['searchprio'])
+1013         for name, (docname, labelid, sectionname) in self.labels.items():
+1014             yield (name, sectionname, 'label', docname, labelid, -1)
+1015         # add anonymous-only labels as well
+1016         non_anon_labels = set(self.labels)
+1017         for name, (docname, labelid) in self.anonlabels.items():
+1018             if name not in non_anon_labels:
+1019                 yield (name, name, 'label', docname, labelid, -1)
+1020 
+1021     def get_type_name(self, type: ObjType, primary: bool = False) -> str:
+1022         # never prepend "Default"
+1023         return type.lname
+1024 
+1025     def is_enumerable_node(self, node: Node) -> bool:
+1026         return node.__class__ in self.enumerable_nodes
+1027 
+1028     def get_numfig_title(self, node: Node) -> str:
+1029         """Get the title of enumerable nodes to refer them using its title"""
+1030         if self.is_enumerable_node(node):
+1031             elem = cast(Element, node)
+1032             _, title_getter = self.enumerable_nodes.get(elem.__class__, (None, None))
+1033             if title_getter:
+1034                 return title_getter(elem)
+1035             else:
+1036                 for subnode in elem:
+1037                     if isinstance(subnode, (nodes.caption, nodes.title)):
+1038                         return clean_astext(subnode)
+1039 
+1040         return None
+1041 
+1042     def get_enumerable_node_type(self, node: Node) -> str:
+1043         """Get type of enumerable nodes."""
+1044         def has_child(node: Element, cls: "Type") -> bool:
+1045             return any(isinstance(child, cls) for child in node)
+1046 
+1047         if isinstance(node, nodes.section):
+1048             return 'section'
+1049         elif (isinstance(node, nodes.container) and
+1050               'literal_block' in node and
+1051               has_child(node, nodes.literal_block)):
+1052             # given node is a code-block having caption
+1053             return 'code-block'
+1054         else:
+1055             figtype, _ = self.enumerable_nodes.get(node.__class__, (None, None))
+1056             return figtype
+1057 
+1058     def get_fignumber(self, env: "BuildEnvironment", builder: "Builder",
+1059                       figtype: str, docname: str, target_node: Element) -> Tuple[int, ...]:
+1060         if figtype == 'section':
+1061             if builder.name == 'latex':
+1062                 return tuple()
+1063             elif docname not in env.toc_secnumbers:
+1064                 raise ValueError  # no number assigned
+1065             else:
+1066                 anchorname = '#' + target_node['ids'][0]
+1067                 if anchorname not in env.toc_secnumbers[docname]:
+1068                     # try first heading which has no anchor
+1069                     return env.toc_secnumbers[docname].get('')
+1070                 else:
+1071                     return env.toc_secnumbers[docname].get(anchorname)
+1072         else:
+1073             try:
+1074                 figure_id = target_node['ids'][0]
+1075                 return env.toc_fignumbers[docname][figtype][figure_id]
+1076             except (KeyError, IndexError) as exc:
+1077                 # target_node is found, but fignumber is not assigned.
+1078                 # Maybe it is defined in orphaned document.
+1079                 raise ValueError from exc
+1080 
+1081     def get_full_qualified_name(self, node: Element) -> str:
+1082         if node.get('reftype') == 'option':
+1083             progname = node.get('std:program')
+1084             command = ws_re.split(node.get('reftarget'))
+1085             if progname:
+1086                 command.insert(0, progname)
+1087             option = command.pop()
+1088             if command:
+1089                 return '.'.join(['-'.join(command), option])
+1090             else:
+1091                 return None
+1092         else:
+1093             return None
+1094 
+1095     def note_citations(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1096         warnings.warn('StandardDomain.note_citations() is deprecated.',
+1097                       RemovedInSphinx40Warning, stacklevel=2)
+1098 
+1099     def note_citation_refs(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1100         warnings.warn('StandardDomain.note_citation_refs() is deprecated.',
+1101                       RemovedInSphinx40Warning, stacklevel=2)
+1102 
+1103     def note_labels(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1104         warnings.warn('StandardDomain.note_labels() is deprecated.',
+1105                       RemovedInSphinx40Warning, stacklevel=2)
+1106 
+1107 
+1108 def warn_missing_reference(app: "Sphinx", domain: Domain, node: pending_xref) -> bool:
+1109     if domain.name != 'std' or node['reftype'] != 'ref':
+1110         return None
+1111     else:
+1112         target = node['reftarget']
+1113         if target not in domain.anonlabels:  # type: ignore
+1114             msg = __('undefined label: %s')
+1115         else:
+1116             msg = __('Failed to create a cross reference. A title or caption not found: %s')
+1117 
+1118         logger.warning(msg % target, location=node, type='ref', subtype=node['reftype'])
+1119         return True
+1120 
+1121 
+1122 def setup(app: "Sphinx") -> Dict[str, Any]:
+1123     app.add_domain(StandardDomain)
+1124     app.connect('warn-missing-reference', warn_missing_reference)
+1125 
+1126     return {
+1127         'version': 'builtin',
+1128         'env_version': 1,
+1129         'parallel_read_safe': True,
+1130         'parallel_write_safe': True,
+1131     }
+
+</code><intended_behavior>Ensuring proper number assignment to tables during the Sphinx documentation build process, particularly when generating outputs in singlehtml or latex formats. This involves a thorough review and potentially updating the logic that handles numbering and references to tables to ensure no tables are left without a number that can be referenced.</intended_behavior>, <file>sphinx/builders/latex/transforms.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.builders.latex.transforms
+3     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4 
+5     Transforms for LaTeX builder.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 from typing import Any, Dict, List, Set, Tuple, cast
+12 
+13 from docutils import nodes
+14 from docutils.nodes import Element, Node
+15 from docutils.transforms.references import Substitutions
+16 
+17 from sphinx import addnodes
+18 from sphinx.application import Sphinx
+19 from sphinx.builders.latex.nodes import (captioned_literal_block, footnotemark, footnotetext,
+20                                          math_reference, thebibliography)
+21 from sphinx.domains.citation import CitationDomain
+22 from sphinx.transforms import SphinxTransform
+23 from sphinx.transforms.post_transforms import SphinxPostTransform
+24 from sphinx.util.nodes import NodeMatcher
+25 
+26 URI_SCHEMES = ('mailto:', 'http:', 'https:', 'ftp:')
+27 
+28 
+29 class FootnoteDocnameUpdater(SphinxTransform):
+30     """Add docname to footnote and footnote_reference nodes."""
+31     default_priority = 700
+32     TARGET_NODES = (nodes.footnote, nodes.footnote_reference)
+33 
+34     def apply(self, **kwargs: Any) -> None:
+35         matcher = NodeMatcher(*self.TARGET_NODES)
+36         for node in self.document.traverse(matcher):  # type: nodes.Element
+37             node['docname'] = self.env.docname
+38 
+39 
+40 class SubstitutionDefinitionsRemover(SphinxPostTransform):
+41     """Remove ``substitution_definition node from doctrees."""
+42 
+43     # should be invoked after Substitutions process
+44     default_priority = Substitutions.default_priority + 1
+45     builders = ('latex',)
+46 
+47     def apply(self, **kwargs: Any) -> None:
+48         for node in self.document.traverse(nodes.substitution_definition):
+49             node.parent.remove(node)
+50 
+51 
+52 class ShowUrlsTransform(SphinxPostTransform):
+53     """Expand references to inline text or footnotes.
+54 
+55     For more information, see :confval:`latex_show_urls`.
+56 
+57     .. note:: This transform is used for integrated doctree
+58     """
+59     default_priority = 400
+60     builders = ('latex',)
+61 
+62     # references are expanded to footnotes (or not)
+63     expanded = False
+64 
+65     def run(self, **kwargs: Any) -> None:
+66         try:
+67             # replace id_prefix temporarily
+68             settings = self.document.settings  # type: Any
+69             id_prefix = settings.id_prefix
+70             settings.id_prefix = 'show_urls'
+71 
+72             self.expand_show_urls()
+73             if self.expanded:
+74                 self.renumber_footnotes()
+75         finally:
+76             # restore id_prefix
+77             settings.id_prefix = id_prefix
+78 
+79     def expand_show_urls(self) -> None:
+80         show_urls = self.config.latex_show_urls
+81         if show_urls is False or show_urls == 'no':
+82             return
+83 
+84         for node in self.document.traverse(nodes.reference):
+85             uri = node.get('refuri', '')
+86             if uri.startswith(URI_SCHEMES):
+87                 if uri.startswith('mailto:'):
+88                     uri = uri[7:]
+89                 if node.astext() != uri:
+90                     index = node.parent.index(node)
+91                     docname = self.get_docname_for_node(node)
+92                     if show_urls == 'footnote':
+93                         fn, fnref = self.create_footnote(uri, docname)
+94                         node.parent.insert(index + 1, fn)
+95                         node.parent.insert(index + 2, fnref)
+96 
+97                         self.expanded = True
+98                     else:  # all other true values (b/w compat)
+99                         textnode = nodes.Text(" (%s)" % uri)
+100                         node.parent.insert(index + 1, textnode)
+101 
+102     def get_docname_for_node(self, node: Node) -> str:
+103         while node:
+104             if isinstance(node, nodes.document):
+105                 return self.env.path2doc(node['source'])
+106             elif isinstance(node, addnodes.start_of_file):
+107                 return node['docname']
+108             else:
+109                 node = node.parent
+110 
+111         return None  # never reached here. only for type hinting
+112 
+113     def create_footnote(self, uri: str, docname: str) -> Tuple[nodes.footnote, nodes.footnote_reference]:  # NOQA
+114         reference = nodes.reference('', nodes.Text(uri), refuri=uri, nolinkurl=True)
+115         footnote = nodes.footnote(uri, auto=1, docname=docname)
+116         footnote['names'].append('#')
+117         footnote += nodes.label('', '#')
+118         footnote += nodes.paragraph('', '', reference)
+119         self.document.note_autofootnote(footnote)
+120 
+121         footnote_ref = nodes.footnote_reference('[#]_', auto=1,
+122                                                 refid=footnote['ids'][0], docname=docname)
+123         footnote_ref += nodes.Text('#')
+124         self.document.note_autofootnote_ref(footnote_ref)
+125         footnote.add_backref(footnote_ref['ids'][0])
+126 
+127         return footnote, footnote_ref
+128 
+129     def renumber_footnotes(self) -> None:
+130         collector = FootnoteCollector(self.document)
+131         self.document.walkabout(collector)
+132 
+133         num = 0
+134         for footnote in collector.auto_footnotes:
+135             # search unused footnote number
+136             while True:
+137                 num += 1
+138                 if str(num) not in collector.used_footnote_numbers:
+139                     break
+140 
+141             # assign new footnote number
+142             old_label = cast(nodes.label, footnote[0])
+143             old_label.replace_self(nodes.label('', str(num)))
+144             if old_label in footnote['names']:
+145                 footnote['names'].remove(old_label.astext())
+146             footnote['names'].append(str(num))
+147 
+148             # update footnote_references by new footnote number
+149             docname = footnote['docname']
+150             for ref in collector.footnote_refs:
+151                 if docname == ref['docname'] and footnote['ids'][0] == ref['refid']:
+152                     ref.remove(ref[0])
+153                     ref += nodes.Text(str(num))
+154 
+155 
+156 class FootnoteCollector(nodes.NodeVisitor):
+157     """Collect footnotes and footnote references on the document"""
+158 
+159     def __init__(self, document: nodes.document) -> None:
+160         self.auto_footnotes = []            # type: List[nodes.footnote]
+161         self.used_footnote_numbers = set()  # type: Set[str]
+162         self.footnote_refs = []             # type: List[nodes.footnote_reference]
+163         super().__init__(document)
+164 
+165     def unknown_visit(self, node: Node) -> None:
+166         pass
+167 
+168     def unknown_departure(self, node: Node) -> None:
+169         pass
+170 
+171     def visit_footnote(self, node: nodes.footnote) -> None:
+172         if node.get('auto'):
+173             self.auto_footnotes.append(node)
+174         else:
+175             for name in node['names']:
+176                 self.used_footnote_numbers.add(name)
+177 
+178     def visit_footnote_reference(self, node: nodes.footnote_reference) -> None:
+179         self.footnote_refs.append(node)
+180 
+181 
+182 class LaTeXFootnoteTransform(SphinxPostTransform):
+183     """Convert footnote definitions and references to appropriate form to LaTeX.
+184 
+185     * Replace footnotes on restricted zone (e.g. headings) by footnotemark node.
+186       In addition, append a footnotetext node after the zone.
+187 
+188       Before::
+189 
+190           <section>
+191               <title>
+192                   headings having footnotes
+193                   <footnote_reference>
+194                       1
+195               <footnote ids="1">
+196                   <label>
+197                       1
+198                   <paragraph>
+199                       footnote body
+200 
+201       After::
+202 
+203           <section>
+204               <title>
+205                   headings having footnotes
+206                   <footnotemark>
+207                       1
+208               <footnotetext>
+209                   footnote body
+210               <footnotetext>
+211                   <label>
+212                       1
+213                   <paragraph>
+214                       footnote body
+215 
+216     * Integrate footnote definitions and footnote references to single footnote node
+217 
+218       Before::
+219 
+220           blah blah blah
+221           <footnote_reference refid="id1">
+222               1
+223           blah blah blah ...
+224 
+225           <footnote ids="1">
+226               <label>
+227                   1
+228               <paragraph>
+229                   footnote body
+230 
+231       After::
+232 
+233           blah blah blah
+234           <footnote ids="1">
+235               <label>
+236                   1
+237               <paragraph>
+238                   footnote body
+239           blah blah blah ...
+240 
+241     * Replace second and subsequent footnote references which refers same footnote definition
+242       by footnotemark node.
+243 
+244       Before::
+245 
+246           blah blah blah
+247           <footnote_reference refid="id1">
+248               1
+249           blah blah blah
+250           <footnote_reference refid="id1">
+251               1
+252           blah blah blah ...
+253 
+254           <footnote ids="1">
+255               <label>
+256                   1
+257               <paragraph>
+258                   footnote body
+259 
+260       After::
+261 
+262           blah blah blah
+263           <footnote ids="1">
+264               <label>
+265                   1
+266               <paragraph>
+267                   footnote body
+268           blah blah blah
+269           <footnotemark>
+270               1
+271           blah blah blah ...
+272 
+273     * Remove unreferenced footnotes
+274 
+275       Before::
+276 
+277           <footnote ids="1">
+278               <label>
+279                   1
+280               <paragraph>
+281                   Unreferenced footnote!
+282 
+283       After::
+284 
+285           <!-- nothing! -->
+286 
+287     * Move footnotes in a title of table or thead to head of tbody
+288 
+289       Before::
+290 
+291           <table>
+292               <title>
+293                   title having footnote_reference
+294                   <footnote_reference refid="1">
+295                       1
+296               <tgroup>
+297                   <thead>
+298                       <row>
+299                           <entry>
+300                               header having footnote_reference
+301                               <footnote_reference refid="2">
+302                                   2
+303                   <tbody>
+304                       <row>
+305                       ...
+306 
+307           <footnote ids="1">
+308               <label>
+309                   1
+310               <paragraph>
+311                   footnote body
+312 
+313           <footnote ids="2">
+314               <label>
+315                   2
+316               <paragraph>
+317                   footnote body
+318 
+319       After::
+320 
+321           <table>
+322               <title>
+323                   title having footnote_reference
+324                   <footnotemark>
+325                       1
+326               <tgroup>
+327                   <thead>
+328                       <row>
+329                           <entry>
+330                               header having footnote_reference
+331                               <footnotemark>
+332                                   2
+333                   <tbody>
+334                       <footnotetext>
+335                           <label>
+336                               1
+337                           <paragraph>
+338                               footnote body
+339 
+340                       <footnotetext>
+341                           <label>
+342                               2
+343                           <paragraph>
+344                               footnote body
+345                       <row>
+346                       ...
+347     """
+348 
+349     default_priority = 600
+350     builders = ('latex',)
+351 
+352     def run(self, **kwargs: Any) -> None:
+353         footnotes = list(self.document.traverse(nodes.footnote))
+354         for node in footnotes:
+355             node.parent.remove(node)
+356 
+357         visitor = LaTeXFootnoteVisitor(self.document, footnotes)
+358         self.document.walkabout(visitor)
+359 
+360 
+361 class LaTeXFootnoteVisitor(nodes.NodeVisitor):
+362     def __init__(self, document: nodes.document, footnotes: List[nodes.footnote]) -> None:
+363         self.appeared = set()       # type: Set[Tuple[str, str]]
+364         self.footnotes = footnotes  # type: List[nodes.footnote]
+365         self.pendings = []          # type: List[nodes.footnote]
+366         self.table_footnotes = []   # type: List[nodes.footnote]
+367         self.restricted = None      # type: nodes.Element
+368         super().__init__(document)
+369 
+370     def unknown_visit(self, node: Node) -> None:
+371         pass
+372 
+373     def unknown_departure(self, node: Node) -> None:
+374         pass
+375 
+376     def restrict(self, node: Element) -> None:
+377         if self.restricted is None:
+378             self.restricted = node
+379 
+380     def unrestrict(self, node: Element) -> None:
+381         if self.restricted == node:
+382             self.restricted = None
+383             pos = node.parent.index(node)
+384             for i, footnote, in enumerate(self.pendings):
+385                 fntext = footnotetext('', *footnote.children)
+386                 node.parent.insert(pos + i + 1, fntext)
+387             self.pendings = []
+388 
+389     def visit_figure(self, node: nodes.figure) -> None:
+390         self.restrict(node)
+391 
+392     def depart_figure(self, node: nodes.figure) -> None:
+393         self.unrestrict(node)
+394 
+395     def visit_term(self, node: nodes.term) -> None:
+396         self.restrict(node)
+397 
+398     def depart_term(self, node: nodes.term) -> None:
+399         self.unrestrict(node)
+400 
+401     def visit_caption(self, node: nodes.caption) -> None:
+402         self.restrict(node)
+403 
+404     def depart_caption(self, node: nodes.caption) -> None:
+405         self.unrestrict(node)
+406 
+407     def visit_title(self, node: nodes.title) -> None:
+408         if isinstance(node.parent, (nodes.section, nodes.table)):
+409             self.restrict(node)
+410 
+411     def depart_title(self, node: nodes.title) -> None:
+412         if isinstance(node.parent, nodes.section):
+413             self.unrestrict(node)
+414         elif isinstance(node.parent, nodes.table):
+415             self.table_footnotes += self.pendings
+416             self.pendings = []
+417             self.unrestrict(node)
+418 
+419     def visit_thead(self, node: nodes.thead) -> None:
+420         self.restrict(node)
+421 
+422     def depart_thead(self, node: nodes.thead) -> None:
+423         self.table_footnotes += self.pendings
+424         self.pendings = []
+425         self.unrestrict(node)
+426 
+427     def depart_table(self, node: nodes.table) -> None:
+428         tbody = list(node.traverse(nodes.tbody))[0]
+429         for footnote in reversed(self.table_footnotes):
+430             fntext = footnotetext('', *footnote.children)
+431             tbody.insert(0, fntext)
+432 
+433         self.table_footnotes = []
+434 
+435     def visit_footnote(self, node: nodes.footnote) -> None:
+436         self.restrict(node)
+437 
+438     def depart_footnote(self, node: nodes.footnote) -> None:
+439         self.unrestrict(node)
+440 
+441     def visit_footnote_reference(self, node: nodes.footnote_reference) -> None:
+442         number = node.astext().strip()
+443         docname = node['docname']
+444         if self.restricted:
+445             mark = footnotemark('', number)
+446             node.replace_self(mark)
+447             if (docname, number) not in self.appeared:
+448                 footnote = self.get_footnote_by_reference(node)
+449                 self.pendings.append(footnote)
+450         elif (docname, number) in self.appeared:
+451             mark = footnotemark('', number)
+452             node.replace_self(mark)
+453         else:
+454             footnote = self.get_footnote_by_reference(node)
+455             self.footnotes.remove(footnote)
+456             node.replace_self(footnote)
+457             footnote.walkabout(self)
+458 
+459         self.appeared.add((docname, number))
+460         raise nodes.SkipNode
+461 
+462     def get_footnote_by_reference(self, node: nodes.footnote_reference) -> nodes.footnote:
+463         docname = node['docname']
+464         for footnote in self.footnotes:
+465             if docname == footnote['docname'] and footnote['ids'][0] == node['refid']:
+466                 return footnote
+467 
+468         return None
+469 
+470 
+471 class BibliographyTransform(SphinxPostTransform):
+472     """Gather bibliography entries to tail of document.
+473 
+474     Before::
+475 
+476         <document>
+477             <paragraph>
+478                 blah blah blah
+479             <citation>
+480                 ...
+481             <paragraph>
+482                 blah blah blah
+483             <citation>
+484                 ...
+485             ...
+486 
+487     After::
+488 
+489         <document>
+490             <paragraph>
+491                 blah blah blah
+492             <paragraph>
+493                 blah blah blah
+494             ...
+495             <thebibliography>
+496                 <citation>
+497                     ...
+498                 <citation>
+499                     ...
+500     """
+501     default_priority = 750
+502     builders = ('latex',)
+503 
+504     def run(self, **kwargs: Any) -> None:
+505         citations = thebibliography()
+506         for node in self.document.traverse(nodes.citation):
+507             node.parent.remove(node)
+508             citations += node
+509 
+510         if len(citations) > 0:
+511             self.document += citations
+512 
+513 
+514 class CitationReferenceTransform(SphinxPostTransform):
+515     """Replace pending_xref nodes for citation by citation_reference.
+516 
+517     To handle citation reference easily on LaTeX writer, this converts
+518     pending_xref nodes to citation_reference.
+519     """
+520     default_priority = 5  # before ReferencesResolver
+521     builders = ('latex',)
+522 
+523     def run(self, **kwargs: Any) -> None:
+524         domain = cast(CitationDomain, self.env.get_domain('citation'))
+525         matcher = NodeMatcher(addnodes.pending_xref, refdomain='citation', reftype='ref')
+526         for node in self.document.traverse(matcher):  # type: addnodes.pending_xref
+527             docname, labelid, _ = domain.citations.get(node['reftarget'], ('', '', 0))
+528             if docname:
+529                 citation_ref = nodes.citation_reference('', '', *node.children,
+530                                                         docname=docname, refname=labelid)
+531                 node.replace_self(citation_ref)
+532 
+533 
+534 class MathReferenceTransform(SphinxPostTransform):
+535     """Replace pending_xref nodes for math by math_reference.
+536 
+537     To handle math reference easily on LaTeX writer, this converts pending_xref
+538     nodes to math_reference.
+539     """
+540     default_priority = 5  # before ReferencesResolver
+541     builders = ('latex',)
+542 
+543     def run(self, **kwargs: Any) -> None:
+544         equations = self.env.get_domain('math').data['objects']
+545         for node in self.document.traverse(addnodes.pending_xref):
+546             if node['refdomain'] == 'math' and node['reftype'] in ('eq', 'numref'):
+547                 docname, _ = equations.get(node['reftarget'], (None, None))
+548                 if docname:
+549                     refnode = math_reference('', docname=docname, target=node['reftarget'])
+550                     node.replace_self(refnode)
+551 
+552 
+553 class LiteralBlockTransform(SphinxPostTransform):
+554     """Replace container nodes for literal_block by captioned_literal_block."""
+555     default_priority = 400
+556     builders = ('latex',)
+557 
+558     def run(self, **kwargs: Any) -> None:
+559         matcher = NodeMatcher(nodes.container, literal_block=True)
+560         for node in self.document.traverse(matcher):  # type: nodes.container
+561             newnode = captioned_literal_block('', *node.children, **node.attributes)
+562             node.replace_self(newnode)
+563 
+564 
+565 class DocumentTargetTransform(SphinxPostTransform):
+566     """Add :doc label to the first section of each document."""
+567     default_priority = 400
+568     builders = ('latex',)
+569 
+570     def run(self, **kwargs: Any) -> None:
+571         for node in self.document.traverse(addnodes.start_of_file):
+572             section = node.next_node(nodes.section)
+573             if section:
+574                 section['ids'].append(':doc')  # special label for :doc:
+575 
+576 
+577 class IndexInSectionTitleTransform(SphinxTransform):
+578     """Move index nodes in section title to outside of the title.
+579 
+580     LaTeX index macro is not compatible with some handling of section titles
+581     such as uppercasing done on LaTeX side (cf. fncychap handling of ``\\chapter``).
+582     Moving the index node to after the title node fixes that.
+583 
+584     Before::
+585 
+586         <section>
+587             <title>
+588                 blah blah <index entries=[...]/>blah
+589             <paragraph>
+590                 blah blah blah
+591             ...
+592 
+593     After::
+594 
+595         <section>
+596             <title>
+597                 blah blah blah
+598             <index entries=[...]/>
+599             <paragraph>
+600                 blah blah blah
+601             ...
+602     """
+603     default_priority = 400
+604 
+605     def apply(self, **kwargs: Any) -> None:
+606         for node in self.document.traverse(nodes.title):
+607             if isinstance(node.parent, nodes.section):
+608                 for i, index in enumerate(node.traverse(addnodes.index)):
+609                     # move the index node next to the section title
+610                     node.remove(index)
+611                     node.parent.insert(i + 1, index)
+612 
+613 
+614 def setup(app: Sphinx) -> Dict[str, Any]:
+615     app.add_transform(FootnoteDocnameUpdater)
+616     app.add_post_transform(SubstitutionDefinitionsRemover)
+617     app.add_post_transform(BibliographyTransform)
+618     app.add_post_transform(CitationReferenceTransform)
+619     app.add_post_transform(DocumentTargetTransform)
+620     app.add_post_transform(IndexInSectionTitleTransform)
+621     app.add_post_transform(LaTeXFootnoteTransform)
+622     app.add_post_transform(LiteralBlockTransform)
+623     app.add_post_transform(MathReferenceTransform)
+624     app.add_post_transform(ShowUrlsTransform)
+625 
+626     return {
+627         'version': 'builtin',
+628         'parallel_read_safe': True,
+629         'parallel_write_safe': True,
+630     }
+
+</code><intended_behavior>Handling or suppressing warnings appropriately if the absence of a number is expected behavior under certain conditions. If tables without numbers are a valid case in some scenarios, the code should be able to distinguish these cases and avoid issuing a warning, or provide more context within the warning to help users understand why the number is missing.</intended_behavior>]
+2026-01-14 17:29:33.102 | INFO     | Search completed. Bug locations: [<file>sphinx/domains/std.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.domains.std
+3     ~~~~~~~~~~~~~~~~~~
+4 
+5     The standard domain.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 import re
+12 import unicodedata
+13 import warnings
+14 from copy import copy
+15 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union, cast
+16 
+17 from docutils import nodes
+18 from docutils.nodes import Element, Node, system_message
+19 from docutils.parsers.rst import Directive, directives
+20 from docutils.statemachine import StringList
+21 
+22 from sphinx import addnodes
+23 from sphinx.addnodes import desc_signature, pending_xref
+24 from sphinx.deprecation import RemovedInSphinx40Warning, RemovedInSphinx50Warning
+25 from sphinx.directives import ObjectDescription
+26 from sphinx.domains import Domain, ObjType
+27 from sphinx.locale import _, __
+28 from sphinx.roles import XRefRole
+29 from sphinx.util import docname_join, logging, ws_re
+30 from sphinx.util.docutils import SphinxDirective
+31 from sphinx.util.nodes import clean_astext, make_id, make_refnode
+32 from sphinx.util.typing import RoleFunction
+33 
+34 if False:
+35     # For type annotation
+36     from typing import Type  # for python3.5.1
+37 
+38     from sphinx.application import Sphinx
+39     from sphinx.builders import Builder
+40     from sphinx.environment import BuildEnvironment
+41 
+42 logger = logging.getLogger(__name__)
+43 
+44 
+45 # RE for option descriptions
+46 option_desc_re = re.compile(r'((?:/|--|-|\+)?[^\s=[]+)(=?\s*.*)')
+47 # RE for grammar tokens
+48 token_re = re.compile(r'`(\w+)`', re.U)
+49 
+50 
+51 class GenericObject(ObjectDescription):
+52     """
+53     A generic x-ref directive registered with Sphinx.add_object_type().
+54     """
+55     indextemplate = ''
+56     parse_node = None  # type: Callable[[GenericObject, BuildEnvironment, str, desc_signature], str]  # NOQA
+57 
+58     def handle_signature(self, sig: str, signode: desc_signature) -> str:
+59         if self.parse_node:
+60             name = self.parse_node(self.env, sig, signode)
+61         else:
+62             signode.clear()
+63             signode += addnodes.desc_name(sig, sig)
+64             # normalize whitespace like XRefRole does
+65             name = ws_re.sub(' ', sig)
+66         return name
+67 
+68     def add_target_and_index(self, name: str, sig: str, signode: desc_signature) -> None:
+69         node_id = make_id(self.env, self.state.document, self.objtype, name)
+70         signode['ids'].append(node_id)
+71 
+72         # Assign old styled node_id not to break old hyperlinks (if possible)
+73         # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+74         old_node_id = self.make_old_id(name)
+75         if old_node_id not in self.state.document.ids and old_node_id not in signode['ids']:
+76             signode['ids'].append(old_node_id)
+77 
+78         self.state.document.note_explicit_target(signode)
+79 
+80         if self.indextemplate:
+81             colon = self.indextemplate.find(':')
+82             if colon != -1:
+83                 indextype = self.indextemplate[:colon].strip()
+84                 indexentry = self.indextemplate[colon + 1:].strip() % (name,)
+85             else:
+86                 indextype = 'single'
+87                 indexentry = self.indextemplate % (name,)
+88             self.indexnode['entries'].append((indextype, indexentry, node_id, '', None))
+89 
+90         std = cast(StandardDomain, self.env.get_domain('std'))
+91         std.note_object(self.objtype, name, node_id, location=signode)
+92 
+93     def make_old_id(self, name: str) -> str:
+94         """Generate old styled node_id for generic objects.
+95 
+96         .. note:: Old Styled node_id was used until Sphinx-3.0.
+97                   This will be removed in Sphinx-5.0.
+98         """
+99         return self.objtype + '-' + name
+100 
+101 
+102 class EnvVar(GenericObject):
+103     indextemplate = _('environment variable; %s')
+104 
+105 
+106 class EnvVarXRefRole(XRefRole):
+107     """
+108     Cross-referencing role for environment variables (adds an index entry).
+109     """
+110 
+111     def result_nodes(self, document: nodes.document, env: "BuildEnvironment", node: Element,
+112                      is_ref: bool) -> Tuple[List[Node], List[system_message]]:
+113         if not is_ref:
+114             return [node], []
+115         varname = node['reftarget']
+116         tgtid = 'index-%s' % env.new_serialno('index')
+117         indexnode = addnodes.index()
+118         indexnode['entries'] = [
+119             ('single', varname, tgtid, '', None),
+120             ('single', _('environment variable; %s') % varname, tgtid, '', None)
+121         ]
+122         targetnode = nodes.target('', '', ids=[tgtid])
+123         document.note_explicit_target(targetnode)
+124         return [indexnode, targetnode, node], []
+125 
+126 
+127 class Target(SphinxDirective):
+128     """
+129     Generic target for user-defined cross-reference types.
+130     """
+131     indextemplate = ''
+132 
+133     has_content = False
+134     required_arguments = 1
+135     optional_arguments = 0
+136     final_argument_whitespace = True
+137     option_spec = {}  # type: Dict
+138 
+139     def run(self) -> List[Node]:
+140         # normalize whitespace in fullname like XRefRole does
+141         fullname = ws_re.sub(' ', self.arguments[0].strip())
+142         node_id = make_id(self.env, self.state.document, self.name, fullname)
+143         node = nodes.target('', '', ids=[node_id])
+144         self.set_source_info(node)
+145 
+146         # Assign old styled node_id not to break old hyperlinks (if possible)
+147         # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+148         old_node_id = self.make_old_id(fullname)
+149         if old_node_id not in self.state.document.ids and old_node_id not in node['ids']:
+150             node['ids'].append(old_node_id)
+151 
+152         self.state.document.note_explicit_target(node)
+153         ret = [node]  # type: List[Node]
+154         if self.indextemplate:
+155             indexentry = self.indextemplate % (fullname,)
+156             indextype = 'single'
+157             colon = indexentry.find(':')
+158             if colon != -1:
+159                 indextype = indexentry[:colon].strip()
+160                 indexentry = indexentry[colon + 1:].strip()
+161             inode = addnodes.index(entries=[(indextype, indexentry, node_id, '', None)])
+162             ret.insert(0, inode)
+163         name = self.name
+164         if ':' in self.name:
+165             _, name = self.name.split(':', 1)
+166 
+167         std = cast(StandardDomain, self.env.get_domain('std'))
+168         std.note_object(name, fullname, node_id, location=node)
+169 
+170         return ret
+171 
+172     def make_old_id(self, name: str) -> str:
+173         """Generate old styled node_id for targets.
+174 
+175         .. note:: Old Styled node_id was used until Sphinx-3.0.
+176                   This will be removed in Sphinx-5.0.
+177         """
+178         return self.name + '-' + name
+179 
+180 
+181 class Cmdoption(ObjectDescription):
+182     """
+183     Description of a command-line option (.. option).
+184     """
+185 
+186     def handle_signature(self, sig: str, signode: desc_signature) -> str:
+187         """Transform an option description into RST nodes."""
+188         count = 0
+189         firstname = ''
+190         for potential_option in sig.split(', '):
+191             potential_option = potential_option.strip()
+192             m = option_desc_re.match(potential_option)
+193             if not m:
+194                 logger.warning(__('Malformed option description %r, should '
+195                                   'look like "opt", "-opt args", "--opt args", '
+196                                   '"/opt args" or "+opt args"'), potential_option,
+197                                location=signode)
+198                 continue
+199             optname, args = m.groups()
+200             if count:
+201                 signode += addnodes.desc_addname(', ', ', ')
+202             signode += addnodes.desc_name(optname, optname)
+203             signode += addnodes.desc_addname(args, args)
+204             if not count:
+205                 firstname = optname
+206                 signode['allnames'] = [optname]
+207             else:
+208                 signode['allnames'].append(optname)
+209             count += 1
+210         if not firstname:
+211             raise ValueError
+212         return firstname
+213 
+214     def add_target_and_index(self, firstname: str, sig: str, signode: desc_signature) -> None:
+215         currprogram = self.env.ref_context.get('std:program')
+216         for optname in signode.get('allnames', []):
+217             prefixes = ['cmdoption']
+218             if currprogram:
+219                 prefixes.append(currprogram)
+220             if not optname.startswith(('-', '/')):
+221                 prefixes.append('arg')
+222             prefix = '-'.join(prefixes)
+223             node_id = make_id(self.env, self.state.document, prefix, optname)
+224             signode['ids'].append(node_id)
+225 
+226             old_node_id = self.make_old_id(prefix, optname)
+227             if old_node_id not in self.state.document.ids and \
+228                old_node_id not in signode['ids']:
+229                 signode['ids'].append(old_node_id)
+230 
+231         self.state.document.note_explicit_target(signode)
+232 
+233         domain = cast(StandardDomain, self.env.get_domain('std'))
+234         for optname in signode.get('allnames', []):
+235             domain.add_program_option(currprogram, optname,
+236                                       self.env.docname, signode['ids'][0])
+237 
+238         # create an index entry
+239         if currprogram:
+240             descr = _('%s command line option') % currprogram
+241         else:
+242             descr = _('command line option')
+243         for option in sig.split(', '):
+244             entry = '; '.join([descr, option])
+245             self.indexnode['entries'].append(('pair', entry, signode['ids'][0], '', None))
+246 
+247     def make_old_id(self, prefix: str, optname: str) -> str:
+248         """Generate old styled node_id for cmdoption.
+249 
+250         .. note:: Old Styled node_id was used until Sphinx-3.0.
+251                   This will be removed in Sphinx-5.0.
+252         """
+253         return nodes.make_id(prefix + '-' + optname)
+254 
+255 
+256 class Program(SphinxDirective):
+257     """
+258     Directive to name the program for which options are documented.
+259     """
+260 
+261     has_content = False
+262     required_arguments = 1
+263     optional_arguments = 0
+264     final_argument_whitespace = True
+265     option_spec = {}  # type: Dict
+266 
+267     def run(self) -> List[Node]:
+268         program = ws_re.sub('-', self.arguments[0].strip())
+269         if program == 'None':
+270             self.env.ref_context.pop('std:program', None)
+271         else:
+272             self.env.ref_context['std:program'] = program
+273         return []
+274 
+275 
+276 class OptionXRefRole(XRefRole):
+277     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+278                      title: str, target: str) -> Tuple[str, str]:
+279         refnode['std:program'] = env.ref_context.get('std:program')
+280         return title, target
+281 
+282 
+283 def split_term_classifiers(line: str) -> List[Optional[str]]:
+284     # split line into a term and classifiers. if no classifier, None is used..
+285     parts = re.split(' +: +', line) + [None]
+286     return parts
+287 
+288 
+289 def make_glossary_term(env: "BuildEnvironment", textnodes: Iterable[Node], index_key: str,
+290                        source: str, lineno: int, node_id: str = None,
+291                        document: nodes.document = None) -> nodes.term:
+292     # get a text-only representation of the term and register it
+293     # as a cross-reference target
+294     term = nodes.term('', '', *textnodes)
+295     term.source = source
+296     term.line = lineno
+297     termtext = term.astext()
+298 
+299     if node_id:
+300         # node_id is given from outside (mainly i18n module), use it forcedly
+301         term['ids'].append(node_id)
+302     elif document:
+303         node_id = make_id(env, document, 'term', termtext)
+304         term['ids'].append(node_id)
+305         document.note_explicit_target(term)
+306     else:
+307         warnings.warn('make_glossary_term() expects document is passed as an argument.',
+308                       RemovedInSphinx40Warning, stacklevel=2)
+309         gloss_entries = env.temp_data.setdefault('gloss_entries', set())
+310         node_id = nodes.make_id('term-' + termtext)
+311         if node_id == 'term':
+312             # "term" is not good for node_id.  Generate it by sequence number instead.
+313             node_id = 'term-%d' % env.new_serialno('glossary')
+314 
+315         while node_id in gloss_entries:
+316             node_id = 'term-%d' % env.new_serialno('glossary')
+317         gloss_entries.add(node_id)
+318         term['ids'].append(node_id)
+319 
+320     std = cast(StandardDomain, env.get_domain('std'))
+321     std.note_object('term', termtext, node_id, location=term)
+322 
+323     # add an index entry too
+324     indexnode = addnodes.index()
+325     indexnode['entries'] = [('single', termtext, node_id, 'main', index_key)]
+326     indexnode.source, indexnode.line = term.source, term.line
+327     term.append(indexnode)
+328 
+329     return term
+330 
+331 
+332 class Glossary(SphinxDirective):
+333     """
+334     Directive to create a glossary with cross-reference targets for :term:
+335     roles.
+336     """
+337 
+338     has_content = True
+339     required_arguments = 0
+340     optional_arguments = 0
+341     final_argument_whitespace = False
+342     option_spec = {
+343         'sorted': directives.flag,
+344     }
+345 
+346     def run(self) -> List[Node]:
+347         node = addnodes.glossary()
+348         node.document = self.state.document
+349 
+350         # This directive implements a custom format of the reST definition list
+351         # that allows multiple lines of terms before the definition.  This is
+352         # easy to parse since we know that the contents of the glossary *must
+353         # be* a definition list.
+354 
+355         # first, collect single entries
+356         entries = []  # type: List[Tuple[List[Tuple[str, str, int]], StringList]]
+357         in_definition = True
+358         in_comment = False
+359         was_empty = True
+360         messages = []  # type: List[Node]
+361         for line, (source, lineno) in zip(self.content, self.content.items):
+362             # empty line -> add to last definition
+363             if not line:
+364                 if in_definition and entries:
+365                     entries[-1][1].append('', source, lineno)
+366                 was_empty = True
+367                 continue
+368             # unindented line -> a term
+369             if line and not line[0].isspace():
+370                 # enable comments
+371                 if line.startswith('.. '):
+372                     in_comment = True
+373                     continue
+374                 else:
+375                     in_comment = False
+376 
+377                 # first term of definition
+378                 if in_definition:
+379                     if not was_empty:
+380                         messages.append(self.state.reporter.warning(
+381                             _('glossary term must be preceded by empty line'),
+382                             source=source, line=lineno))
+383                     entries.append(([(line, source, lineno)], StringList()))
+384                     in_definition = False
+385                 # second term and following
+386                 else:
+387                     if was_empty:
+388                         messages.append(self.state.reporter.warning(
+389                             _('glossary terms must not be separated by empty lines'),
+390                             source=source, line=lineno))
+391                     if entries:
+392                         entries[-1][0].append((line, source, lineno))
+393                     else:
+394                         messages.append(self.state.reporter.warning(
+395                             _('glossary seems to be misformatted, check indentation'),
+396                             source=source, line=lineno))
+397             elif in_comment:
+398                 pass
+399             else:
+400                 if not in_definition:
+401                     # first line of definition, determines indentation
+402                     in_definition = True
+403                     indent_len = len(line) - len(line.lstrip())
+404                 if entries:
+405                     entries[-1][1].append(line[indent_len:], source, lineno)
+406                 else:
+407                     messages.append(self.state.reporter.warning(
+408                         _('glossary seems to be misformatted, check indentation'),
+409                         source=source, line=lineno))
+410             was_empty = False
+411 
+412         # now, parse all the entries into a big definition list
+413         items = []
+414         for terms, definition in entries:
+415             termtexts = []          # type: List[str]
+416             termnodes = []          # type: List[Node]
+417             system_messages = []    # type: List[Node]
+418             for line, source, lineno in terms:
+419                 parts = split_term_classifiers(line)
+420                 # parse the term with inline markup
+421                 # classifiers (parts[1:]) will not be shown on doctree
+422                 textnodes, sysmsg = self.state.inline_text(parts[0], lineno)
+423 
+424                 # use first classifier as a index key
+425                 term = make_glossary_term(self.env, textnodes, parts[1], source, lineno,
+426                                           document=self.state.document)
+427                 term.rawsource = line
+428                 system_messages.extend(sysmsg)
+429                 termtexts.append(term.astext())
+430                 termnodes.append(term)
+431 
+432             termnodes.extend(system_messages)
+433 
+434             defnode = nodes.definition()
+435             if definition:
+436                 self.state.nested_parse(definition, definition.items[0][1],
+437                                         defnode)
+438             termnodes.append(defnode)
+439             items.append((termtexts,
+440                           nodes.definition_list_item('', *termnodes)))
+441 
+442         if 'sorted' in self.options:
+443             items.sort(key=lambda x:
+444                        unicodedata.normalize('NFD', x[0][0].lower()))
+445 
+446         dlist = nodes.definition_list()
+447         dlist['classes'].append('glossary')
+448         dlist.extend(item[1] for item in items)
+449         node += dlist
+450         return messages + [node]
+451 
+452 
+453 def token_xrefs(text: str, productionGroup: str = '') -> List[Node]:
+454     if len(productionGroup) != 0:
+455         productionGroup += ':'
+456     retnodes = []  # type: List[Node]
+457     pos = 0
+458     for m in token_re.finditer(text):
+459         if m.start() > pos:
+460             txt = text[pos:m.start()]
+461             retnodes.append(nodes.Text(txt, txt))
+462         refnode = pending_xref(m.group(1), reftype='token', refdomain='std',
+463                                reftarget=productionGroup + m.group(1))
+464         refnode += nodes.literal(m.group(1), m.group(1), classes=['xref'])
+465         retnodes.append(refnode)
+466         pos = m.end()
+467     if pos < len(text):
+468         retnodes.append(nodes.Text(text[pos:], text[pos:]))
+469     return retnodes
+470 
+471 
+472 class ProductionList(SphinxDirective):
+473     """
+474     Directive to list grammar productions.
+475     """
+476 
+477     has_content = False
+478     required_arguments = 1
+479     optional_arguments = 0
+480     final_argument_whitespace = True
+481     option_spec = {}  # type: Dict
+482 
+483     def run(self) -> List[Node]:
+484         domain = cast(StandardDomain, self.env.get_domain('std'))
+485         node = addnodes.productionlist()  # type: Element
+486         self.set_source_info(node)
+487         # The backslash handling is from ObjectDescription.get_signatures
+488         nl_escape_re = re.compile(r'\\\n')
+489         lines = nl_escape_re.sub('', self.arguments[0]).split('\n')
+490 
+491         productionGroup = ""
+492         i = 0
+493         for rule in lines:
+494             if i == 0 and ':' not in rule:
+495                 productionGroup = rule.strip()
+496                 continue
+497             i += 1
+498             try:
+499                 name, tokens = rule.split(':', 1)
+500             except ValueError:
+501                 break
+502             subnode = addnodes.production(rule)
+503             name = name.strip()
+504             subnode['tokenname'] = name
+505             if subnode['tokenname']:
+506                 prefix = 'grammar-token-%s' % productionGroup
+507                 node_id = make_id(self.env, self.state.document, prefix, name)
+508                 subnode['ids'].append(node_id)
+509 
+510                 # Assign old styled node_id not to break old hyperlinks (if possible)
+511                 # Note: Will be removed in Sphinx-5.0 (RemovedInSphinx50Warning)
+512                 old_node_id = self.make_old_id(name)
+513                 if (old_node_id not in self.state.document.ids and
+514                         old_node_id not in subnode['ids']):
+515                     subnode['ids'].append(old_node_id)
+516 
+517                 self.state.document.note_implicit_target(subnode, subnode)
+518 
+519                 if len(productionGroup) != 0:
+520                     objName = "%s:%s" % (productionGroup, name)
+521                 else:
+522                     objName = name
+523                 domain.note_object('token', objName, node_id, location=node)
+524             subnode.extend(token_xrefs(tokens, productionGroup))
+525             node.append(subnode)
+526         return [node]
+527 
+528     def make_old_id(self, token: str) -> str:
+529         """Generate old styled node_id for tokens.
+530 
+531         .. note:: Old Styled node_id was used until Sphinx-3.0.
+532                   This will be removed in Sphinx-5.0.
+533         """
+534         return nodes.make_id('grammar-token-' + token)
+535 
+536 
+537 class TokenXRefRole(XRefRole):
+538     def process_link(self, env: "BuildEnvironment", refnode: Element, has_explicit_title: bool,
+539                      title: str, target: str) -> Tuple[str, str]:
+540         target = target.lstrip('~')  # a title-specific thing
+541         if not self.has_explicit_title and title[0] == '~':
+542             if ':' in title:
+543                 _, title = title.split(':')
+544             else:
+545                 title = title[1:]
+546         return title, target
+547 
+548 
+549 class StandardDomain(Domain):
+550     """
+551     Domain for all objects that don't fit into another domain or are added
+552     via the application interface.
+553     """
+554 
+555     name = 'std'
+556     label = 'Default'
+557 
+558     object_types = {
+559         'term': ObjType(_('glossary term'), 'term', searchprio=-1),
+560         'token': ObjType(_('grammar token'), 'token', searchprio=-1),
+561         'label': ObjType(_('reference label'), 'ref', 'keyword',
+562                          searchprio=-1),
+563         'envvar': ObjType(_('environment variable'), 'envvar'),
+564         'cmdoption': ObjType(_('program option'), 'option'),
+565         'doc': ObjType(_('document'), 'doc', searchprio=-1)
+566     }  # type: Dict[str, ObjType]
+567 
+568     directives = {
+569         'program': Program,
+570         'cmdoption': Cmdoption,  # old name for backwards compatibility
+571         'option': Cmdoption,
+572         'envvar': EnvVar,
+573         'glossary': Glossary,
+574         'productionlist': ProductionList,
+575     }  # type: Dict[str, Type[Directive]]
+576     roles = {
+577         'option':  OptionXRefRole(warn_dangling=True),
+578         'envvar':  EnvVarXRefRole(),
+579         # links to tokens in grammar productions
+580         'token':   TokenXRefRole(),
+581         # links to terms in glossary
+582         'term':    XRefRole(innernodeclass=nodes.inline,
+583                             warn_dangling=True),
+584         # links to headings or arbitrary labels
+585         'ref':     XRefRole(lowercase=True, innernodeclass=nodes.inline,
+586                             warn_dangling=True),
+587         # links to labels of numbered figures, tables and code-blocks
+588         'numref':  XRefRole(lowercase=True,
+589                             warn_dangling=True),
+590         # links to labels, without a different title
+591         'keyword': XRefRole(warn_dangling=True),
+592         # links to documents
+593         'doc':     XRefRole(warn_dangling=True, innernodeclass=nodes.inline),
+594     }  # type: Dict[str, Union[RoleFunction, XRefRole]]
+595 
+596     initial_data = {
+597         'progoptions': {},      # (program, name) -> docname, labelid
+598         'objects': {},          # (type, name) -> docname, labelid
+599         'labels': {             # labelname -> docname, labelid, sectionname
+600             'genindex': ('genindex', '', _('Index')),
+601             'modindex': ('py-modindex', '', _('Module Index')),
+602             'search':   ('search', '', _('Search Page')),
+603         },
+604         'anonlabels': {         # labelname -> docname, labelid
+605             'genindex': ('genindex', ''),
+606             'modindex': ('py-modindex', ''),
+607             'search':   ('search', ''),
+608         },
+609     }
+610 
+611     dangling_warnings = {
+612         'term': 'term not in glossary: %(target)s',
+613         'numref':  'undefined label: %(target)s',
+614         'keyword': 'unknown keyword: %(target)s',
+615         'doc': 'unknown document: %(target)s',
+616         'option': 'unknown option: %(target)s',
+617     }
+618 
+619     enumerable_nodes = {  # node_class -> (figtype, title_getter)
+620         nodes.figure: ('figure', None),
+621         nodes.table: ('table', None),
+622         nodes.container: ('code-block', None),
+623     }  # type: Dict[Type[Node], Tuple[str, Callable]]
+624 
+625     def __init__(self, env: "BuildEnvironment") -> None:
+626         super().__init__(env)
+627 
+628         # set up enumerable nodes
+629         self.enumerable_nodes = copy(self.enumerable_nodes)  # create a copy for this instance
+630         for node, settings in env.app.registry.enumerable_nodes.items():
+631             self.enumerable_nodes[node] = settings
+632 
+633     def note_hyperlink_target(self, name: str, docname: str, node_id: str,
+634                               title: str = '') -> None:
+635         """Add a hyperlink target for cross reference.
+636 
+637         .. warning::
+638 
+639            This is only for internal use.  Please don't use this from your extension.
+640            ``document.note_explicit_target()`` or ``note_implicit_target()`` are recommended to
+641            add a hyperlink target to the document.
+642 
+643            This only adds a hyperlink target to the StandardDomain.  And this does not add a
+644            node_id to node.  Therefore, it is very fragile to calling this without
+645            understanding hyperlink target framework in both docutils and Sphinx.
+646 
+647         .. versionadded:: 3.0
+648         """
+649         if name in self.anonlabels and self.anonlabels[name] != (docname, node_id):
+650             logger.warning(__('duplicate label %s, other instance in %s'),
+651                            name, self.env.doc2path(self.anonlabels[name][0]))
+652 
+653         self.anonlabels[name] = (docname, node_id)
+654         if title:
+655             self.labels[name] = (docname, node_id, title)
+656 
+657     @property
+658     def objects(self) -> Dict[Tuple[str, str], Tuple[str, str]]:
+659         return self.data.setdefault('objects', {})  # (objtype, name) -> docname, labelid
+660 
+661     def note_object(self, objtype: str, name: str, labelid: str, location: Any = None
+662                     ) -> None:
+663         """Note a generic object for cross reference.
+664 
+665         .. versionadded:: 3.0
+666         """
+667         if (objtype, name) in self.objects:
+668             docname = self.objects[objtype, name][0]
+669             logger.warning(__('duplicate %s description of %s, other instance in %s'),
+670                            objtype, name, docname, location=location)
+671         self.objects[objtype, name] = (self.env.docname, labelid)
+672 
+673     def add_object(self, objtype: str, name: str, docname: str, labelid: str) -> None:
+674         warnings.warn('StandardDomain.add_object() is deprecated.',
+675                       RemovedInSphinx50Warning, stacklevel=2)
+676         self.objects[objtype, name] = (docname, labelid)
+677 
+678     @property
+679     def progoptions(self) -> Dict[Tuple[str, str], Tuple[str, str]]:
+680         return self.data.setdefault('progoptions', {})  # (program, name) -> docname, labelid
+681 
+682     @property
+683     def labels(self) -> Dict[str, Tuple[str, str, str]]:
+684         return self.data.setdefault('labels', {})  # labelname -> docname, labelid, sectionname
+685 
+686     @property
+687     def anonlabels(self) -> Dict[str, Tuple[str, str]]:
+688         return self.data.setdefault('anonlabels', {})  # labelname -> docname, labelid
+689 
+690     def clear_doc(self, docname: str) -> None:
+691         key = None  # type: Any
+692         for key, (fn, _l) in list(self.progoptions.items()):
+693             if fn == docname:
+694                 del self.progoptions[key]
+695         for key, (fn, _l) in list(self.objects.items()):
+696             if fn == docname:
+697                 del self.objects[key]
+698         for key, (fn, _l, _l) in list(self.labels.items()):
+699             if fn == docname:
+700                 del self.labels[key]
+701         for key, (fn, _l) in list(self.anonlabels.items()):
+702             if fn == docname:
+703                 del self.anonlabels[key]
+704 
+705     def merge_domaindata(self, docnames: List[str], otherdata: Dict) -> None:
+706         # XXX duplicates?
+707         for key, data in otherdata['progoptions'].items():
+708             if data[0] in docnames:
+709                 self.progoptions[key] = data
+710         for key, data in otherdata['objects'].items():
+711             if data[0] in docnames:
+712                 self.objects[key] = data
+713         for key, data in otherdata['labels'].items():
+714             if data[0] in docnames:
+715                 self.labels[key] = data
+716         for key, data in otherdata['anonlabels'].items():
+717             if data[0] in docnames:
+718                 self.anonlabels[key] = data
+719 
+720     def process_doc(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+721         for name, explicit in document.nametypes.items():
+722             if not explicit:
+723                 continue
+724             labelid = document.nameids[name]
+725             if labelid is None:
+726                 continue
+727             node = document.ids[labelid]
+728             if isinstance(node, nodes.target) and 'refid' in node:
+729                 # indirect hyperlink targets
+730                 node = document.ids.get(node['refid'])
+731                 labelid = node['names'][0]
+732             if (node.tagname == 'footnote' or
+733                     'refuri' in node or
+734                     node.tagname.startswith('desc_')):
+735                 # ignore footnote labels, labels automatically generated from a
+736                 # link and object descriptions
+737                 continue
+738             if name in self.labels:
+739                 logger.warning(__('duplicate label %s, other instance in %s'),
+740                                name, env.doc2path(self.labels[name][0]),
+741                                location=node)
+742             self.anonlabels[name] = docname, labelid
+743             if node.tagname in ('section', 'rubric'):
+744                 title = cast(nodes.title, node[0])
+745                 sectname = clean_astext(title)
+746             elif self.is_enumerable_node(node):
+747                 sectname = self.get_numfig_title(node)
+748                 if not sectname:
+749                     continue
+750             else:
+751                 toctree = next(iter(node.traverse(addnodes.toctree)), None)
+752                 if toctree and toctree.get('caption'):
+753                     sectname = toctree.get('caption')
+754                 else:
+755                     # anonymous-only labels
+756                     continue
+757             self.labels[name] = docname, labelid, sectname
+758 
+759     def add_program_option(self, program: str, name: str, docname: str, labelid: str) -> None:
+760         self.progoptions[program, name] = (docname, labelid)
+761 
+762     def build_reference_node(self, fromdocname: str, builder: "Builder", docname: str,
+763                              labelid: str, sectname: str, rolename: str, **options: Any
+764                              ) -> Element:
+765         nodeclass = options.pop('nodeclass', nodes.reference)
+766         newnode = nodeclass('', '', internal=True, **options)
+767         innernode = nodes.inline(sectname, sectname)
+768         if innernode.get('classes') is not None:
+769             innernode['classes'].append('std')
+770             innernode['classes'].append('std-' + rolename)
+771         if docname == fromdocname:
+772             newnode['refid'] = labelid
+773         else:
+774             # set more info in contnode; in case the
+775             # get_relative_uri call raises NoUri,
+776             # the builder will then have to resolve these
+777             contnode = pending_xref('')
+778             contnode['refdocname'] = docname
+779             contnode['refsectname'] = sectname
+780             newnode['refuri'] = builder.get_relative_uri(
+781                 fromdocname, docname)
+782             if labelid:
+783                 newnode['refuri'] += '#' + labelid
+784         newnode.append(innernode)
+785         return newnode
+786 
+787     def resolve_xref(self, env: "BuildEnvironment", fromdocname: str, builder: "Builder",
+788                      typ: str, target: str, node: pending_xref, contnode: Element) -> Element:
+789         if typ == 'ref':
+790             resolver = self._resolve_ref_xref
+791         elif typ == 'numref':
+792             resolver = self._resolve_numref_xref
+793         elif typ == 'keyword':
+794             resolver = self._resolve_keyword_xref
+795         elif typ == 'doc':
+796             resolver = self._resolve_doc_xref
+797         elif typ == 'option':
+798             resolver = self._resolve_option_xref
+799         elif typ == 'citation':
+800             warnings.warn('pending_xref(domain=std, type=citation) is deprecated: %r' % node,
+801                           RemovedInSphinx40Warning, stacklevel=2)
+802             domain = env.get_domain('citation')
+803             return domain.resolve_xref(env, fromdocname, builder, typ, target, node, contnode)
+804         elif typ == 'term':
+805             resolver = self._resolve_term_xref
+806         else:
+807             resolver = self._resolve_obj_xref
+808 
+809         return resolver(env, fromdocname, builder, typ, target, node, contnode)
+810 
+811     def _resolve_ref_xref(self, env: "BuildEnvironment", fromdocname: str,
+812                           builder: "Builder", typ: str, target: str, node: pending_xref,
+813                           contnode: Element) -> Element:
+814         if node['refexplicit']:
+815             # reference to anonymous label; the reference uses
+816             # the supplied link caption
+817             docname, labelid = self.anonlabels.get(target, ('', ''))
+818             sectname = node.astext()
+819         else:
+820             # reference to named label; the final node will
+821             # contain the section name after the label
+822             docname, labelid, sectname = self.labels.get(target, ('', '', ''))
+823         if not docname:
+824             return None
+825 
+826         return self.build_reference_node(fromdocname, builder,
+827                                          docname, labelid, sectname, 'ref')
+828 
+829     def _resolve_numref_xref(self, env: "BuildEnvironment", fromdocname: str,
+830                              builder: "Builder", typ: str, target: str,
+831                              node: pending_xref, contnode: Element) -> Element:
+832         if target in self.labels:
+833             docname, labelid, figname = self.labels.get(target, ('', '', ''))
+834         else:
+835             docname, labelid = self.anonlabels.get(target, ('', ''))
+836             figname = None
+837 
+838         if not docname:
+839             return None
+840 
+841         target_node = env.get_doctree(docname).ids.get(labelid)
+842         figtype = self.get_enumerable_node_type(target_node)
+843         if figtype is None:
+844             return None
+845 
+846         if figtype != 'section' and env.config.numfig is False:
+847             logger.warning(__('numfig is disabled. :numref: is ignored.'), location=node)
+848             return contnode
+849 
+850         try:
+851             fignumber = self.get_fignumber(env, builder, figtype, docname, target_node)
+852             if fignumber is None:
+853                 return contnode
+854         except ValueError:
+855             logger.warning(__("no number is assigned for %s: %s"), figtype, labelid,
+856                            location=node)
+857             return contnode
+858 
+859         try:
+860             if node['refexplicit']:
+861                 title = contnode.astext()
+862             else:
+863                 title = env.config.numfig_format.get(figtype, '')
+864 
+865             if figname is None and '{name}' in title:
+866                 logger.warning(__('the link has no caption: %s'), title, location=node)
+867                 return contnode
+868             else:
+869                 fignum = '.'.join(map(str, fignumber))
+870                 if '{name}' in title or 'number' in title:
+871                     # new style format (cf. "Fig.{number}")
+872                     if figname:
+873                         newtitle = title.format(name=figname, number=fignum)
+874                     else:
+875                         newtitle = title.format(number=fignum)
+876                 else:
+877                     # old style format (cf. "Fig.%s")
+878                     newtitle = title % fignum
+879         except KeyError as exc:
+880             logger.warning(__('invalid numfig_format: %s (%r)'), title, exc, location=node)
+881             return contnode
+882         except TypeError:
+883             logger.warning(__('invalid numfig_format: %s'), title, location=node)
+884             return contnode
+885 
+886         return self.build_reference_node(fromdocname, builder,
+887                                          docname, labelid, newtitle, 'numref',
+888                                          nodeclass=addnodes.number_reference,
+889                                          title=title)
+890 
+891     def _resolve_keyword_xref(self, env: "BuildEnvironment", fromdocname: str,
+892                               builder: "Builder", typ: str, target: str,
+893                               node: pending_xref, contnode: Element) -> Element:
+894         # keywords are oddballs: they are referenced by named labels
+895         docname, labelid, _ = self.labels.get(target, ('', '', ''))
+896         if not docname:
+897             return None
+898         return make_refnode(builder, fromdocname, docname,
+899                             labelid, contnode)
+900 
+901     def _resolve_doc_xref(self, env: "BuildEnvironment", fromdocname: str,
+902                           builder: "Builder", typ: str, target: str,
+903                           node: pending_xref, contnode: Element) -> Element:
+904         # directly reference to document by source name; can be absolute or relative
+905         refdoc = node.get('refdoc', fromdocname)
+906         docname = docname_join(refdoc, node['reftarget'])
+907         if docname not in env.all_docs:
+908             return None
+909         else:
+910             if node['refexplicit']:
+911                 # reference with explicit title
+912                 caption = node.astext()
+913             else:
+914                 caption = clean_astext(env.titles[docname])
+915             innernode = nodes.inline(caption, caption, classes=['doc'])
+916             return make_refnode(builder, fromdocname, docname, None, innernode)
+917 
+918     def _resolve_option_xref(self, env: "BuildEnvironment", fromdocname: str,
+919                              builder: "Builder", typ: str, target: str,
+920                              node: pending_xref, contnode: Element) -> Element:
+921         progname = node.get('std:program')
+922         target = target.strip()
+923         docname, labelid = self.progoptions.get((progname, target), ('', ''))
+924         if not docname:
+925             commands = []
+926             while ws_re.search(target):
+927                 subcommand, target = ws_re.split(target, 1)
+928                 commands.append(subcommand)
+929                 progname = "-".join(commands)
+930 
+931                 docname, labelid = self.progoptions.get((progname, target), ('', ''))
+932                 if docname:
+933                     break
+934             else:
+935                 return None
+936 
+937         return make_refnode(builder, fromdocname, docname,
+938                             labelid, contnode)
+939 
+940     def _resolve_term_xref(self, env: "BuildEnvironment", fromdocname: str,
+941                            builder: "Builder", typ: str, target: str,
+942                            node: pending_xref, contnode: Element) -> Element:
+943         result = self._resolve_obj_xref(env, fromdocname, builder, typ,
+944                                         target, node, contnode)
+945         if result:
+946             return result
+947         else:
+948             for objtype, term in self.objects:
+949                 if objtype == 'term' and term.lower() == target.lower():
+950                     docname, labelid = self.objects[objtype, term]
+951                     logger.warning(__('term %s not found in case sensitive match.'
+952                                       'made a reference to %s instead.'),
+953                                    target, term, location=node, type='ref', subtype='term')
+954                     break
+955             else:
+956                 docname, labelid = '', ''
+957             if not docname:
+958                 return None
+959             return make_refnode(builder, fromdocname, docname,
+960                                 labelid, contnode)
+961 
+962     def _resolve_obj_xref(self, env: "BuildEnvironment", fromdocname: str,
+963                           builder: "Builder", typ: str, target: str,
+964                           node: pending_xref, contnode: Element) -> Element:
+965         objtypes = self.objtypes_for_role(typ) or []
+966         for objtype in objtypes:
+967             if (objtype, target) in self.objects:
+968                 docname, labelid = self.objects[objtype, target]
+969                 break
+970         else:
+971             docname, labelid = '', ''
+972         if not docname:
+973             return None
+974         return make_refnode(builder, fromdocname, docname,
+975                             labelid, contnode)
+976 
+977     def resolve_any_xref(self, env: "BuildEnvironment", fromdocname: str,
+978                          builder: "Builder", target: str, node: pending_xref,
+979                          contnode: Element) -> List[Tuple[str, Element]]:
+980         results = []  # type: List[Tuple[str, Element]]
+981         ltarget = target.lower()  # :ref: lowercases its target automatically
+982         for role in ('ref', 'option'):  # do not try "keyword"
+983             res = self.resolve_xref(env, fromdocname, builder, role,
+984                                     ltarget if role == 'ref' else target,
+985                                     node, contnode)
+986             if res:
+987                 results.append(('std:' + role, res))
+988         # all others
+989         for objtype in self.object_types:
+990             key = (objtype, target)
+991             if objtype == 'term':
+992                 key = (objtype, ltarget)
+993             if key in self.objects:
+994                 docname, labelid = self.objects[key]
+995                 results.append(('std:' + self.role_for_objtype(objtype),
+996                                 make_refnode(builder, fromdocname, docname,
+997                                              labelid, contnode)))
+998         return results
+999 
+1000     def get_objects(self) -> Iterator[Tuple[str, str, str, str, str, int]]:
+1001         # handle the special 'doc' reference here
+1002         for doc in self.env.all_docs:
+1003             yield (doc, clean_astext(self.env.titles[doc]), 'doc', doc, '', -1)
+1004         for (prog, option), info in self.progoptions.items():
+1005             if prog:
+1006                 fullname = ".".join([prog, option])
+1007                 yield (fullname, fullname, 'cmdoption', info[0], info[1], 1)
+1008             else:
+1009                 yield (option, option, 'cmdoption', info[0], info[1], 1)
+1010         for (type, name), info in self.objects.items():
+1011             yield (name, name, type, info[0], info[1],
+1012                    self.object_types[type].attrs['searchprio'])
+1013         for name, (docname, labelid, sectionname) in self.labels.items():
+1014             yield (name, sectionname, 'label', docname, labelid, -1)
+1015         # add anonymous-only labels as well
+1016         non_anon_labels = set(self.labels)
+1017         for name, (docname, labelid) in self.anonlabels.items():
+1018             if name not in non_anon_labels:
+1019                 yield (name, name, 'label', docname, labelid, -1)
+1020 
+1021     def get_type_name(self, type: ObjType, primary: bool = False) -> str:
+1022         # never prepend "Default"
+1023         return type.lname
+1024 
+1025     def is_enumerable_node(self, node: Node) -> bool:
+1026         return node.__class__ in self.enumerable_nodes
+1027 
+1028     def get_numfig_title(self, node: Node) -> str:
+1029         """Get the title of enumerable nodes to refer them using its title"""
+1030         if self.is_enumerable_node(node):
+1031             elem = cast(Element, node)
+1032             _, title_getter = self.enumerable_nodes.get(elem.__class__, (None, None))
+1033             if title_getter:
+1034                 return title_getter(elem)
+1035             else:
+1036                 for subnode in elem:
+1037                     if isinstance(subnode, (nodes.caption, nodes.title)):
+1038                         return clean_astext(subnode)
+1039 
+1040         return None
+1041 
+1042     def get_enumerable_node_type(self, node: Node) -> str:
+1043         """Get type of enumerable nodes."""
+1044         def has_child(node: Element, cls: "Type") -> bool:
+1045             return any(isinstance(child, cls) for child in node)
+1046 
+1047         if isinstance(node, nodes.section):
+1048             return 'section'
+1049         elif (isinstance(node, nodes.container) and
+1050               'literal_block' in node and
+1051               has_child(node, nodes.literal_block)):
+1052             # given node is a code-block having caption
+1053             return 'code-block'
+1054         else:
+1055             figtype, _ = self.enumerable_nodes.get(node.__class__, (None, None))
+1056             return figtype
+1057 
+1058     def get_fignumber(self, env: "BuildEnvironment", builder: "Builder",
+1059                       figtype: str, docname: str, target_node: Element) -> Tuple[int, ...]:
+1060         if figtype == 'section':
+1061             if builder.name == 'latex':
+1062                 return tuple()
+1063             elif docname not in env.toc_secnumbers:
+1064                 raise ValueError  # no number assigned
+1065             else:
+1066                 anchorname = '#' + target_node['ids'][0]
+1067                 if anchorname not in env.toc_secnumbers[docname]:
+1068                     # try first heading which has no anchor
+1069                     return env.toc_secnumbers[docname].get('')
+1070                 else:
+1071                     return env.toc_secnumbers[docname].get(anchorname)
+1072         else:
+1073             try:
+1074                 figure_id = target_node['ids'][0]
+1075                 return env.toc_fignumbers[docname][figtype][figure_id]
+1076             except (KeyError, IndexError) as exc:
+1077                 # target_node is found, but fignumber is not assigned.
+1078                 # Maybe it is defined in orphaned document.
+1079                 raise ValueError from exc
+1080 
+1081     def get_full_qualified_name(self, node: Element) -> str:
+1082         if node.get('reftype') == 'option':
+1083             progname = node.get('std:program')
+1084             command = ws_re.split(node.get('reftarget'))
+1085             if progname:
+1086                 command.insert(0, progname)
+1087             option = command.pop()
+1088             if command:
+1089                 return '.'.join(['-'.join(command), option])
+1090             else:
+1091                 return None
+1092         else:
+1093             return None
+1094 
+1095     def note_citations(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1096         warnings.warn('StandardDomain.note_citations() is deprecated.',
+1097                       RemovedInSphinx40Warning, stacklevel=2)
+1098 
+1099     def note_citation_refs(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1100         warnings.warn('StandardDomain.note_citation_refs() is deprecated.',
+1101                       RemovedInSphinx40Warning, stacklevel=2)
+1102 
+1103     def note_labels(self, env: "BuildEnvironment", docname: str, document: nodes.document) -> None:  # NOQA
+1104         warnings.warn('StandardDomain.note_labels() is deprecated.',
+1105                       RemovedInSphinx40Warning, stacklevel=2)
+1106 
+1107 
+1108 def warn_missing_reference(app: "Sphinx", domain: Domain, node: pending_xref) -> bool:
+1109     if domain.name != 'std' or node['reftype'] != 'ref':
+1110         return None
+1111     else:
+1112         target = node['reftarget']
+1113         if target not in domain.anonlabels:  # type: ignore
+1114             msg = __('undefined label: %s')
+1115         else:
+1116             msg = __('Failed to create a cross reference. A title or caption not found: %s')
+1117 
+1118         logger.warning(msg % target, location=node, type='ref', subtype=node['reftype'])
+1119         return True
+1120 
+1121 
+1122 def setup(app: "Sphinx") -> Dict[str, Any]:
+1123     app.add_domain(StandardDomain)
+1124     app.connect('warn-missing-reference', warn_missing_reference)
+1125 
+1126     return {
+1127         'version': 'builtin',
+1128         'env_version': 1,
+1129         'parallel_read_safe': True,
+1130         'parallel_write_safe': True,
+1131     }
+
+</code><intended_behavior>Ensuring proper number assignment to tables during the Sphinx documentation build process, particularly when generating outputs in singlehtml or latex formats. This involves a thorough review and potentially updating the logic that handles numbering and references to tables to ensure no tables are left without a number that can be referenced.</intended_behavior>, <file>sphinx/builders/latex/transforms.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """
+2     sphinx.builders.latex.transforms
+3     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4 
+5     Transforms for LaTeX builder.
+6 
+7     :copyright: Copyright 2007-2020 by the Sphinx team, see AUTHORS.
+8     :license: BSD, see LICENSE for details.
+9 """
+10 
+11 from typing import Any, Dict, List, Set, Tuple, cast
+12 
+13 from docutils import nodes
+14 from docutils.nodes import Element, Node
+15 from docutils.transforms.references import Substitutions
+16 
+17 from sphinx import addnodes
+18 from sphinx.application import Sphinx
+19 from sphinx.builders.latex.nodes import (captioned_literal_block, footnotemark, footnotetext,
+20                                          math_reference, thebibliography)
+21 from sphinx.domains.citation import CitationDomain
+22 from sphinx.transforms import SphinxTransform
+23 from sphinx.transforms.post_transforms import SphinxPostTransform
+24 from sphinx.util.nodes import NodeMatcher
+25 
+26 URI_SCHEMES = ('mailto:', 'http:', 'https:', 'ftp:')
+27 
+28 
+29 class FootnoteDocnameUpdater(SphinxTransform):
+30     """Add docname to footnote and footnote_reference nodes."""
+31     default_priority = 700
+32     TARGET_NODES = (nodes.footnote, nodes.footnote_reference)
+33 
+34     def apply(self, **kwargs: Any) -> None:
+35         matcher = NodeMatcher(*self.TARGET_NODES)
+36         for node in self.document.traverse(matcher):  # type: nodes.Element
+37             node['docname'] = self.env.docname
+38 
+39 
+40 class SubstitutionDefinitionsRemover(SphinxPostTransform):
+41     """Remove ``substitution_definition node from doctrees."""
+42 
+43     # should be invoked after Substitutions process
+44     default_priority = Substitutions.default_priority + 1
+45     builders = ('latex',)
+46 
+47     def apply(self, **kwargs: Any) -> None:
+48         for node in self.document.traverse(nodes.substitution_definition):
+49             node.parent.remove(node)
+50 
+51 
+52 class ShowUrlsTransform(SphinxPostTransform):
+53     """Expand references to inline text or footnotes.
+54 
+55     For more information, see :confval:`latex_show_urls`.
+56 
+57     .. note:: This transform is used for integrated doctree
+58     """
+59     default_priority = 400
+60     builders = ('latex',)
+61 
+62     # references are expanded to footnotes (or not)
+63     expanded = False
+64 
+65     def run(self, **kwargs: Any) -> None:
+66         try:
+67             # replace id_prefix temporarily
+68             settings = self.document.settings  # type: Any
+69             id_prefix = settings.id_prefix
+70             settings.id_prefix = 'show_urls'
+71 
+72             self.expand_show_urls()
+73             if self.expanded:
+74                 self.renumber_footnotes()
+75         finally:
+76             # restore id_prefix
+77             settings.id_prefix = id_prefix
+78 
+79     def expand_show_urls(self) -> None:
+80         show_urls = self.config.latex_show_urls
+81         if show_urls is False or show_urls == 'no':
+82             return
+83 
+84         for node in self.document.traverse(nodes.reference):
+85             uri = node.get('refuri', '')
+86             if uri.startswith(URI_SCHEMES):
+87                 if uri.startswith('mailto:'):
+88                     uri = uri[7:]
+89                 if node.astext() != uri:
+90                     index = node.parent.index(node)
+91                     docname = self.get_docname_for_node(node)
+92                     if show_urls == 'footnote':
+93                         fn, fnref = self.create_footnote(uri, docname)
+94                         node.parent.insert(index + 1, fn)
+95                         node.parent.insert(index + 2, fnref)
+96 
+97                         self.expanded = True
+98                     else:  # all other true values (b/w compat)
+99                         textnode = nodes.Text(" (%s)" % uri)
+100                         node.parent.insert(index + 1, textnode)
+101 
+102     def get_docname_for_node(self, node: Node) -> str:
+103         while node:
+104             if isinstance(node, nodes.document):
+105                 return self.env.path2doc(node['source'])
+106             elif isinstance(node, addnodes.start_of_file):
+107                 return node['docname']
+108             else:
+109                 node = node.parent
+110 
+111         return None  # never reached here. only for type hinting
+112 
+113     def create_footnote(self, uri: str, docname: str) -> Tuple[nodes.footnote, nodes.footnote_reference]:  # NOQA
+114         reference = nodes.reference('', nodes.Text(uri), refuri=uri, nolinkurl=True)
+115         footnote = nodes.footnote(uri, auto=1, docname=docname)
+116         footnote['names'].append('#')
+117         footnote += nodes.label('', '#')
+118         footnote += nodes.paragraph('', '', reference)
+119         self.document.note_autofootnote(footnote)
+120 
+121         footnote_ref = nodes.footnote_reference('[#]_', auto=1,
+122                                                 refid=footnote['ids'][0], docname=docname)
+123         footnote_ref += nodes.Text('#')
+124         self.document.note_autofootnote_ref(footnote_ref)
+125         footnote.add_backref(footnote_ref['ids'][0])
+126 
+127         return footnote, footnote_ref
+128 
+129     def renumber_footnotes(self) -> None:
+130         collector = FootnoteCollector(self.document)
+131         self.document.walkabout(collector)
+132 
+133         num = 0
+134         for footnote in collector.auto_footnotes:
+135             # search unused footnote number
+136             while True:
+137                 num += 1
+138                 if str(num) not in collector.used_footnote_numbers:
+139                     break
+140 
+141             # assign new footnote number
+142             old_label = cast(nodes.label, footnote[0])
+143             old_label.replace_self(nodes.label('', str(num)))
+144             if old_label in footnote['names']:
+145                 footnote['names'].remove(old_label.astext())
+146             footnote['names'].append(str(num))
+147 
+148             # update footnote_references by new footnote number
+149             docname = footnote['docname']
+150             for ref in collector.footnote_refs:
+151                 if docname == ref['docname'] and footnote['ids'][0] == ref['refid']:
+152                     ref.remove(ref[0])
+153                     ref += nodes.Text(str(num))
+154 
+155 
+156 class FootnoteCollector(nodes.NodeVisitor):
+157     """Collect footnotes and footnote references on the document"""
+158 
+159     def __init__(self, document: nodes.document) -> None:
+160         self.auto_footnotes = []            # type: List[nodes.footnote]
+161         self.used_footnote_numbers = set()  # type: Set[str]
+162         self.footnote_refs = []             # type: List[nodes.footnote_reference]
+163         super().__init__(document)
+164 
+165     def unknown_visit(self, node: Node) -> None:
+166         pass
+167 
+168     def unknown_departure(self, node: Node) -> None:
+169         pass
+170 
+171     def visit_footnote(self, node: nodes.footnote) -> None:
+172         if node.get('auto'):
+173             self.auto_footnotes.append(node)
+174         else:
+175             for name in node['names']:
+176                 self.used_footnote_numbers.add(name)
+177 
+178     def visit_footnote_reference(self, node: nodes.footnote_reference) -> None:
+179         self.footnote_refs.append(node)
+180 
+181 
+182 class LaTeXFootnoteTransform(SphinxPostTransform):
+183     """Convert footnote definitions and references to appropriate form to LaTeX.
+184 
+185     * Replace footnotes on restricted zone (e.g. headings) by footnotemark node.
+186       In addition, append a footnotetext node after the zone.
+187 
+188       Before::
+189 
+190           <section>
+191               <title>
+192                   headings having footnotes
+193                   <footnote_reference>
+194                       1
+195               <footnote ids="1">
+196                   <label>
+197                       1
+198                   <paragraph>
+199                       footnote body
+200 
+201       After::
+202 
+203           <section>
+204               <title>
+205                   headings having footnotes
+206                   <footnotemark>
+207                       1
+208               <footnotetext>
+209                   footnote body
+210               <footnotetext>
+211                   <label>
+212                       1
+213                   <paragraph>
+214                       footnote body
+215 
+216     * Integrate footnote definitions and footnote references to single footnote node
+217 
+218       Before::
+219 
+220           blah blah blah
+221           <footnote_reference refid="id1">
+222               1
+223           blah blah blah ...
+224 
+225           <footnote ids="1">
+226               <label>
+227                   1
+228               <paragraph>
+229                   footnote body
+230 
+231       After::
+232 
+233           blah blah blah
+234           <footnote ids="1">
+235               <label>
+236                   1
+237               <paragraph>
+238                   footnote body
+239           blah blah blah ...
+240 
+241     * Replace second and subsequent footnote references which refers same footnote definition
+242       by footnotemark node.
+243 
+244       Before::
+245 
+246           blah blah blah
+247           <footnote_reference refid="id1">
+248               1
+249           blah blah blah
+250           <footnote_reference refid="id1">
+251               1
+252           blah blah blah ...
+253 
+254           <footnote ids="1">
+255               <label>
+256                   1
+257               <paragraph>
+258                   footnote body
+259 
+260       After::
+261 
+262           blah blah blah
+263           <footnote ids="1">
+264               <label>
+265                   1
+266               <paragraph>
+267                   footnote body
+268           blah blah blah
+269           <footnotemark>
+270               1
+271           blah blah blah ...
+272 
+273     * Remove unreferenced footnotes
+274 
+275       Before::
+276 
+277           <footnote ids="1">
+278               <label>
+279                   1
+280               <paragraph>
+281                   Unreferenced footnote!
+282 
+283       After::
+284 
+285           <!-- nothing! -->
+286 
+287     * Move footnotes in a title of table or thead to head of tbody
+288 
+289       Before::
+290 
+291           <table>
+292               <title>
+293                   title having footnote_reference
+294                   <footnote_reference refid="1">
+295                       1
+296               <tgroup>
+297                   <thead>
+298                       <row>
+299                           <entry>
+300                               header having footnote_reference
+301                               <footnote_reference refid="2">
+302                                   2
+303                   <tbody>
+304                       <row>
+305                       ...
+306 
+307           <footnote ids="1">
+308               <label>
+309                   1
+310               <paragraph>
+311                   footnote body
+312 
+313           <footnote ids="2">
+314               <label>
+315                   2
+316               <paragraph>
+317                   footnote body
+318 
+319       After::
+320 
+321           <table>
+322               <title>
+323                   title having footnote_reference
+324                   <footnotemark>
+325                       1
+326               <tgroup>
+327                   <thead>
+328                       <row>
+329                           <entry>
+330                               header having footnote_reference
+331                               <footnotemark>
+332                                   2
+333                   <tbody>
+334                       <footnotetext>
+335                           <label>
+336                               1
+337                           <paragraph>
+338                               footnote body
+339 
+340                       <footnotetext>
+341                           <label>
+342                               2
+343                           <paragraph>
+344                               footnote body
+345                       <row>
+346                       ...
+347     """
+348 
+349     default_priority = 600
+350     builders = ('latex',)
+351 
+352     def run(self, **kwargs: Any) -> None:
+353         footnotes = list(self.document.traverse(nodes.footnote))
+354         for node in footnotes:
+355             node.parent.remove(node)
+356 
+357         visitor = LaTeXFootnoteVisitor(self.document, footnotes)
+358         self.document.walkabout(visitor)
+359 
+360 
+361 class LaTeXFootnoteVisitor(nodes.NodeVisitor):
+362     def __init__(self, document: nodes.document, footnotes: List[nodes.footnote]) -> None:
+363         self.appeared = set()       # type: Set[Tuple[str, str]]
+364         self.footnotes = footnotes  # type: List[nodes.footnote]
+365         self.pendings = []          # type: List[nodes.footnote]
+366         self.table_footnotes = []   # type: List[nodes.footnote]
+367         self.restricted = None      # type: nodes.Element
+368         super().__init__(document)
+369 
+370     def unknown_visit(self, node: Node) -> None:
+371         pass
+372 
+373     def unknown_departure(self, node: Node) -> None:
+374         pass
+375 
+376     def restrict(self, node: Element) -> None:
+377         if self.restricted is None:
+378             self.restricted = node
+379 
+380     def unrestrict(self, node: Element) -> None:
+381         if self.restricted == node:
+382             self.restricted = None
+383             pos = node.parent.index(node)
+384             for i, footnote, in enumerate(self.pendings):
+385                 fntext = footnotetext('', *footnote.children)
+386                 node.parent.insert(pos + i + 1, fntext)
+387             self.pendings = []
+388 
+389     def visit_figure(self, node: nodes.figure) -> None:
+390         self.restrict(node)
+391 
+392     def depart_figure(self, node: nodes.figure) -> None:
+393         self.unrestrict(node)
+394 
+395     def visit_term(self, node: nodes.term) -> None:
+396         self.restrict(node)
+397 
+398     def depart_term(self, node: nodes.term) -> None:
+399         self.unrestrict(node)
+400 
+401     def visit_caption(self, node: nodes.caption) -> None:
+402         self.restrict(node)
+403 
+404     def depart_caption(self, node: nodes.caption) -> None:
+405         self.unrestrict(node)
+406 
+407     def visit_title(self, node: nodes.title) -> None:
+408         if isinstance(node.parent, (nodes.section, nodes.table)):
+409             self.restrict(node)
+410 
+411     def depart_title(self, node: nodes.title) -> None:
+412         if isinstance(node.parent, nodes.section):
+413             self.unrestrict(node)
+414         elif isinstance(node.parent, nodes.table):
+415             self.table_footnotes += self.pendings
+416             self.pendings = []
+417             self.unrestrict(node)
+418 
+419     def visit_thead(self, node: nodes.thead) -> None:
+420         self.restrict(node)
+421 
+422     def depart_thead(self, node: nodes.thead) -> None:
+423         self.table_footnotes += self.pendings
+424         self.pendings = []
+425         self.unrestrict(node)
+426 
+427     def depart_table(self, node: nodes.table) -> None:
+428         tbody = list(node.traverse(nodes.tbody))[0]
+429         for footnote in reversed(self.table_footnotes):
+430             fntext = footnotetext('', *footnote.children)
+431             tbody.insert(0, fntext)
+432 
+433         self.table_footnotes = []
+434 
+435     def visit_footnote(self, node: nodes.footnote) -> None:
+436         self.restrict(node)
+437 
+438     def depart_footnote(self, node: nodes.footnote) -> None:
+439         self.unrestrict(node)
+440 
+441     def visit_footnote_reference(self, node: nodes.footnote_reference) -> None:
+442         number = node.astext().strip()
+443         docname = node['docname']
+444         if self.restricted:
+445             mark = footnotemark('', number)
+446             node.replace_self(mark)
+447             if (docname, number) not in self.appeared:
+448                 footnote = self.get_footnote_by_reference(node)
+449                 self.pendings.append(footnote)
+450         elif (docname, number) in self.appeared:
+451             mark = footnotemark('', number)
+452             node.replace_self(mark)
+453         else:
+454             footnote = self.get_footnote_by_reference(node)
+455             self.footnotes.remove(footnote)
+456             node.replace_self(footnote)
+457             footnote.walkabout(self)
+458 
+459         self.appeared.add((docname, number))
+460         raise nodes.SkipNode
+461 
+462     def get_footnote_by_reference(self, node: nodes.footnote_reference) -> nodes.footnote:
+463         docname = node['docname']
+464         for footnote in self.footnotes:
+465             if docname == footnote['docname'] and footnote['ids'][0] == node['refid']:
+466                 return footnote
+467 
+468         return None
+469 
+470 
+471 class BibliographyTransform(SphinxPostTransform):
+472     """Gather bibliography entries to tail of document.
+473 
+474     Before::
+475 
+476         <document>
+477             <paragraph>
+478                 blah blah blah
+479             <citation>
+480                 ...
+481             <paragraph>
+482                 blah blah blah
+483             <citation>
+484                 ...
+485             ...
+486 
+487     After::
+488 
+489         <document>
+490             <paragraph>
+491                 blah blah blah
+492             <paragraph>
+493                 blah blah blah
+494             ...
+495             <thebibliography>
+496                 <citation>
+497                     ...
+498                 <citation>
+499                     ...
+500     """
+501     default_priority = 750
+502     builders = ('latex',)
+503 
+504     def run(self, **kwargs: Any) -> None:
+505         citations = thebibliography()
+506         for node in self.document.traverse(nodes.citation):
+507             node.parent.remove(node)
+508             citations += node
+509 
+510         if len(citations) > 0:
+511             self.document += citations
+512 
+513 
+514 class CitationReferenceTransform(SphinxPostTransform):
+515     """Replace pending_xref nodes for citation by citation_reference.
+516 
+517     To handle citation reference easily on LaTeX writer, this converts
+518     pending_xref nodes to citation_reference.
+519     """
+520     default_priority = 5  # before ReferencesResolver
+521     builders = ('latex',)
+522 
+523     def run(self, **kwargs: Any) -> None:
+524         domain = cast(CitationDomain, self.env.get_domain('citation'))
+525         matcher = NodeMatcher(addnodes.pending_xref, refdomain='citation', reftype='ref')
+526         for node in self.document.traverse(matcher):  # type: addnodes.pending_xref
+527             docname, labelid, _ = domain.citations.get(node['reftarget'], ('', '', 0))
+528             if docname:
+529                 citation_ref = nodes.citation_reference('', '', *node.children,
+530                                                         docname=docname, refname=labelid)
+531                 node.replace_self(citation_ref)
+532 
+533 
+534 class MathReferenceTransform(SphinxPostTransform):
+535     """Replace pending_xref nodes for math by math_reference.
+536 
+537     To handle math reference easily on LaTeX writer, this converts pending_xref
+538     nodes to math_reference.
+539     """
+540     default_priority = 5  # before ReferencesResolver
+541     builders = ('latex',)
+542 
+543     def run(self, **kwargs: Any) -> None:
+544         equations = self.env.get_domain('math').data['objects']
+545         for node in self.document.traverse(addnodes.pending_xref):
+546             if node['refdomain'] == 'math' and node['reftype'] in ('eq', 'numref'):
+547                 docname, _ = equations.get(node['reftarget'], (None, None))
+548                 if docname:
+549                     refnode = math_reference('', docname=docname, target=node['reftarget'])
+550                     node.replace_self(refnode)
+551 
+552 
+553 class LiteralBlockTransform(SphinxPostTransform):
+554     """Replace container nodes for literal_block by captioned_literal_block."""
+555     default_priority = 400
+556     builders = ('latex',)
+557 
+558     def run(self, **kwargs: Any) -> None:
+559         matcher = NodeMatcher(nodes.container, literal_block=True)
+560         for node in self.document.traverse(matcher):  # type: nodes.container
+561             newnode = captioned_literal_block('', *node.children, **node.attributes)
+562             node.replace_self(newnode)
+563 
+564 
+565 class DocumentTargetTransform(SphinxPostTransform):
+566     """Add :doc label to the first section of each document."""
+567     default_priority = 400
+568     builders = ('latex',)
+569 
+570     def run(self, **kwargs: Any) -> None:
+571         for node in self.document.traverse(addnodes.start_of_file):
+572             section = node.next_node(nodes.section)
+573             if section:
+574                 section['ids'].append(':doc')  # special label for :doc:
+575 
+576 
+577 class IndexInSectionTitleTransform(SphinxTransform):
+578     """Move index nodes in section title to outside of the title.
+579 
+580     LaTeX index macro is not compatible with some handling of section titles
+581     such as uppercasing done on LaTeX side (cf. fncychap handling of ``\\chapter``).
+582     Moving the index node to after the title node fixes that.
+583 
+584     Before::
+585 
+586         <section>
+587             <title>
+588                 blah blah <index entries=[...]/>blah
+589             <paragraph>
+590                 blah blah blah
+591             ...
+592 
+593     After::
+594 
+595         <section>
+596             <title>
+597                 blah blah blah
+598             <index entries=[...]/>
+599             <paragraph>
+600                 blah blah blah
+601             ...
+602     """
+603     default_priority = 400
+604 
+605     def apply(self, **kwargs: Any) -> None:
+606         for node in self.document.traverse(nodes.title):
+607             if isinstance(node.parent, nodes.section):
+608                 for i, index in enumerate(node.traverse(addnodes.index)):
+609                     # move the index node next to the section title
+610                     node.remove(index)
+611                     node.parent.insert(i + 1, index)
+612 
+613 
+614 def setup(app: Sphinx) -> Dict[str, Any]:
+615     app.add_transform(FootnoteDocnameUpdater)
+616     app.add_post_transform(SubstitutionDefinitionsRemover)
+617     app.add_post_transform(BibliographyTransform)
+618     app.add_post_transform(CitationReferenceTransform)
+619     app.add_post_transform(DocumentTargetTransform)
+620     app.add_post_transform(IndexInSectionTitleTransform)
+621     app.add_post_transform(LaTeXFootnoteTransform)
+622     app.add_post_transform(LiteralBlockTransform)
+623     app.add_post_transform(MathReferenceTransform)
+624     app.add_post_transform(ShowUrlsTransform)
+625 
+626     return {
+627         'version': 'builtin',
+628         'parallel_read_safe': True,
+629         'parallel_write_safe': True,
+630     }
+
+</code><intended_behavior>Handling or suppressing warnings appropriately if the absence of a number is expected behavior under certain conditions. If tables without numbers are a valid case in some scenarios, the code should be able to distinguish these cases and avoid issuing a warning, or provide more context within the warning to help users understand why the number is missing.</intended_behavior>]
+2026-01-14 17:29:33.103 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-14 17:29:33.103 | INFO     | Search-only: skipping patch selection
+2026-01-14 17:29:33.189 | INFO     | Task sphinx-doc__sphinx-8474 completed successfully.
+2026-01-14 17:29:33.190 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,772 @@
+2026-01-15 16:17:36.114 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 16:17:39.895 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=141, output_tokens=12, cost=0.001770
+2026-01-15 16:17:39.896 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 16:17:39.901 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 16:17:49.722 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=450, output_tokens=400, cost=0.016500
+2026-01-15 16:17:49.729 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 16:17:52.007 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=754, output_tokens=64, cost=0.009460
+2026-01-15 16:17:52.009 | DEBUG    | Extracted a valid json.
+2026-01-15 16:17:52.009 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"TestRunner\")",
+        "search_class(\"Session\")",
+        "search_method(\"report_error\")",
+        "search_code(\"sys.excepthook\")",
+        "search_code(\"def pytest_\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 16:17:52.319 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 16:17:52.319 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 16:18:09.622 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2583, output_tokens=691, cost=0.046560
+2026-01-15 16:18:09.633 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 16:18:16.407 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3490, output_tokens=255, cost=0.042550
+2026-01-15 16:18:16.413 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 16:18:22.725 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=609, output_tokens=239, cost=0.013260
+2026-01-15 16:18:22.726 | DEBUG    | Extracted a valid json.
+2026-01-15 16:18:22.726 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "src/_pytest/main.py", "class": "Session", "method": "", "intended_behavior": "Integrate sys.unraisablehook to catch and log unraisable exceptions occurring during the test session lifecycle. This entails adding a new method or modifying existing methods within the Session class to set sys.unraisablehook at the start of a test session. The hook should capture unraisable exceptions and associate them with the specific tests or setup/teardown phases they occur in, enhancing error reporting. The implementation should ensure this hook is only active during a pytest test session and restores the original hook (if any) after the session ends to prevent side effects in other parts of the system or subsequent test runs. This can be ensured by storing the original hook before setting the new one and resetting it at the end of the session or through a context manager approach within the test execution flow. The method setting sys.unraisablehook could be invoked in the test session setup phase and ensure restoration in the teardown phase, ensuring broad capture of exceptions throughout the test lifecycle while preserving pytest's existing functionality and behavior."}]
+}
+2026-01-15 16:18:22.728 | DEBUG    | Bug location extracted successfully: [<file>src/_pytest/main.py</file>
+<class>Session</class>
+<method>None</method>
+<code>
+450 class Session(nodes.FSCollector):
+451     Interrupted = Interrupted
+452     Failed = Failed
+453     # Set on the session by runner.pytest_sessionstart.
+454     _setupstate: SetupState
+455     # Set on the session by fixtures.pytest_sessionstart.
+456     _fixturemanager: FixtureManager
+457     exitstatus: Union[int, ExitCode]
+458 
+459     def __init__(self, config: Config) -> None:
+460         super().__init__(
+461             config.rootdir, parent=None, config=config, session=self, nodeid=""
+462         )
+463         self.testsfailed = 0
+464         self.testscollected = 0
+465         self.shouldstop: Union[bool, str] = False
+466         self.shouldfail: Union[bool, str] = False
+467         self.trace = config.trace.root.get("collection")
+468         self.startdir = config.invocation_dir
+469         self._initialpaths: FrozenSet[py.path.local] = frozenset()
+470 
+471         self._bestrelpathcache: Dict[Path, str] = _bestrelpath_cache(config.rootpath)
+472 
+473         self.config.pluginmanager.register(self, name="session")
+474 
+475     @classmethod
+476     def from_config(cls, config: Config) -> "Session":
+477         session: Session = cls._create(config)
+478         return session
+479 
+480     def __repr__(self) -> str:
+481         return "<%s %s exitstatus=%r testsfailed=%d testscollected=%d>" % (
+482             self.__class__.__name__,
+483             self.name,
+484             getattr(self, "exitstatus", "<UNSET>"),
+485             self.testsfailed,
+486             self.testscollected,
+487         )
+488 
+489     def _node_location_to_relpath(self, node_path: Path) -> str:
+490         # bestrelpath is a quite slow function.
+491         return self._bestrelpathcache[node_path]
+492 
+493     @hookimpl(tryfirst=True)
+494     def pytest_collectstart(self) -> None:
+495         if self.shouldfail:
+496             raise self.Failed(self.shouldfail)
+497         if self.shouldstop:
+498             raise self.Interrupted(self.shouldstop)
+499 
+500     @hookimpl(tryfirst=True)
+501     def pytest_runtest_logreport(
+502         self, report: Union[TestReport, CollectReport]
+503     ) -> None:
+504         if report.failed and not hasattr(report, "wasxfail"):
+505             self.testsfailed += 1
+506             maxfail = self.config.getvalue("maxfail")
+507             if maxfail and self.testsfailed >= maxfail:
+508                 self.shouldfail = "stopping after %d failures" % (self.testsfailed)
+509 
+510     pytest_collectreport = pytest_runtest_logreport
+511 
+512     def isinitpath(self, path: py.path.local) -> bool:
+513         return path in self._initialpaths
+514 
+515     def gethookproxy(self, fspath: py.path.local):
+516         # Check if we have the common case of running
+517         # hooks with all conftest.py files.
+518         pm = self.config.pluginmanager
+519         my_conftestmodules = pm._getconftestmodules(
+520             fspath, self.config.getoption("importmode")
+521         )
+522         remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
+523         if remove_mods:
+524             # One or more conftests are not in use at this fspath.
+525             proxy = FSHookProxy(pm, remove_mods)
+526         else:
+527             # All plugins are active for this fspath.
+528             proxy = self.config.hook
+529         return proxy
+530 
+531     def _recurse(self, direntry: "os.DirEntry[str]") -> bool:
+532         if direntry.name == "__pycache__":
+533             return False
+534         path = py.path.local(direntry.path)
+535         ihook = self.gethookproxy(path.dirpath())
+536         if ihook.pytest_ignore_collect(path=path, config=self.config):
+537             return False
+538         norecursepatterns = self.config.getini("norecursedirs")
+539         if any(path.check(fnmatch=pat) for pat in norecursepatterns):
+540             return False
+541         return True
+542 
+543     def _collectfile(
+544         self, path: py.path.local, handle_dupes: bool = True
+545     ) -> Sequence[nodes.Collector]:
+546         assert (
+547             path.isfile()
+548         ), "{!r} is not a file (isdir={!r}, exists={!r}, islink={!r})".format(
+549             path, path.isdir(), path.exists(), path.islink()
+550         )
+551         ihook = self.gethookproxy(path)
+552         if not self.isinitpath(path):
+553             if ihook.pytest_ignore_collect(path=path, config=self.config):
+554                 return ()
+555 
+556         if handle_dupes:
+557             keepduplicates = self.config.getoption("keepduplicates")
+558             if not keepduplicates:
+559                 duplicate_paths = self.config.pluginmanager._duplicatepaths
+560                 if path in duplicate_paths:
+561                     return ()
+562                 else:
+563                     duplicate_paths.add(path)
+564 
+565         return ihook.pytest_collect_file(path=path, parent=self)  # type: ignore[no-any-return]
+566 
+567     @overload
+568     def perform_collect(
+569         self, args: Optional[Sequence[str]] = ..., genitems: "Literal[True]" = ...
+570     ) -> Sequence[nodes.Item]:
+571         ...
+572 
+573     @overload
+574     def perform_collect(
+575         self, args: Optional[Sequence[str]] = ..., genitems: bool = ...
+576     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+577         ...
+578 
+579     def perform_collect(
+580         self, args: Optional[Sequence[str]] = None, genitems: bool = True
+581     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+582         """Perform the collection phase for this session.
+583 
+584         This is called by the default
+585         :func:`pytest_collection <_pytest.hookspec.pytest_collection>` hook
+586         implementation; see the documentation of this hook for more details.
+587         For testing purposes, it may also be called directly on a fresh
+588         ``Session``.
+589 
+590         This function normally recursively expands any collectors collected
+591         from the session to their items, and only items are returned. For
+592         testing purposes, this may be suppressed by passing ``genitems=False``,
+593         in which case the return value contains these collectors unexpanded,
+594         and ``session.items`` is empty.
+595         """
+596         if args is None:
+597             args = self.config.args
+598 
+599         self.trace("perform_collect", self, args)
+600         self.trace.root.indent += 1
+601 
+602         self._notfound: List[Tuple[str, Sequence[nodes.Collector]]] = []
+603         self._initial_parts: List[Tuple[py.path.local, List[str]]] = []
+604         self.items: List[nodes.Item] = []
+605 
+606         hook = self.config.hook
+607 
+608         items: Sequence[Union[nodes.Item, nodes.Collector]] = self.items
+609         try:
+610             initialpaths: List[py.path.local] = []
+611             for arg in args:
+612                 fspath, parts = resolve_collection_argument(
+613                     self.config.invocation_params.dir,
+614                     arg,
+615                     as_pypath=self.config.option.pyargs,
+616                 )
+617                 self._initial_parts.append((fspath, parts))
+618                 initialpaths.append(fspath)
+619             self._initialpaths = frozenset(initialpaths)
+620             rep = collect_one_node(self)
+621             self.ihook.pytest_collectreport(report=rep)
+622             self.trace.root.indent -= 1
+623             if self._notfound:
+624                 errors = []
+625                 for arg, cols in self._notfound:
+626                     line = f"(no name {arg!r} in any of {cols!r})"
+627                     errors.append(f"not found: {arg}\n{line}")
+628                 raise UsageError(*errors)
+629             if not genitems:
+630                 items = rep.result
+631             else:
+632                 if rep.passed:
+633                     for node in rep.result:
+634                         self.items.extend(self.genitems(node))
+635 
+636             self.config.pluginmanager.check_pending()
+637             hook.pytest_collection_modifyitems(
+638                 session=self, config=self.config, items=items
+639             )
+640         finally:
+641             hook.pytest_collection_finish(session=self)
+642 
+643         self.testscollected = len(items)
+644         return items
+645 
+646     def collect(self) -> Iterator[Union[nodes.Item, nodes.Collector]]:
+647         from _pytest.python import Package
+648 
+649         # Keep track of any collected nodes in here, so we don't duplicate fixtures.
+650         node_cache1: Dict[py.path.local, Sequence[nodes.Collector]] = {}
+651         node_cache2: Dict[
+652             Tuple[Type[nodes.Collector], py.path.local], nodes.Collector
+653         ] = ({})
+654 
+655         # Keep track of any collected collectors in matchnodes paths, so they
+656         # are not collected more than once.
+657         matchnodes_cache: Dict[Tuple[Type[nodes.Collector], str], CollectReport] = ({})
+658 
+659         # Dirnames of pkgs with dunder-init files.
+660         pkg_roots: Dict[str, Package] = {}
+661 
+662         for argpath, names in self._initial_parts:
+663             self.trace("processing argument", (argpath, names))
+664             self.trace.root.indent += 1
+665 
+666             # Start with a Session root, and delve to argpath item (dir or file)
+667             # and stack all Packages found on the way.
+668             # No point in finding packages when collecting doctests.
+669             if not self.config.getoption("doctestmodules", False):
+670                 pm = self.config.pluginmanager
+671                 for parent in reversed(argpath.parts()):
+672                     if pm._confcutdir and pm._confcutdir.relto(parent):
+673                         break
+674 
+675                     if parent.isdir():
+676                         pkginit = parent.join("__init__.py")
+677                         if pkginit.isfile() and pkginit not in node_cache1:
+678                             col = self._collectfile(pkginit, handle_dupes=False)
+679                             if col:
+680                                 if isinstance(col[0], Package):
+681                                     pkg_roots[str(parent)] = col[0]
+682                                 node_cache1[col[0].fspath] = [col[0]]
+683 
+684             # If it's a directory argument, recurse and look for any Subpackages.
+685             # Let the Package collector deal with subnodes, don't collect here.
+686             if argpath.check(dir=1):
+687                 assert not names, "invalid arg {!r}".format((argpath, names))
+688 
+689                 seen_dirs: Set[py.path.local] = set()
+690                 for direntry in visit(str(argpath), self._recurse):
+691                     if not direntry.is_file():
+692                         continue
+693 
+694                     path = py.path.local(direntry.path)
+695                     dirpath = path.dirpath()
+696 
+697                     if dirpath not in seen_dirs:
+698                         # Collect packages first.
+699                         seen_dirs.add(dirpath)
+700                         pkginit = dirpath.join("__init__.py")
+701                         if pkginit.exists():
+702                             for x in self._collectfile(pkginit):
+703                                 yield x
+704                                 if isinstance(x, Package):
+705                                     pkg_roots[str(dirpath)] = x
+706                     if str(dirpath) in pkg_roots:
+707                         # Do not collect packages here.
+708                         continue
+709 
+710                     for x in self._collectfile(path):
+711                         key = (type(x), x.fspath)
+712                         if key in node_cache2:
+713                             yield node_cache2[key]
+714                         else:
+715                             node_cache2[key] = x
+716                             yield x
+717             else:
+718                 assert argpath.check(file=1)
+719 
+720                 if argpath in node_cache1:
+721                     col = node_cache1[argpath]
+722                 else:
+723                     collect_root = pkg_roots.get(argpath.dirname, self)
+724                     col = collect_root._collectfile(argpath, handle_dupes=False)
+725                     if col:
+726                         node_cache1[argpath] = col
+727 
+728                 matching = []
+729                 work: List[
+730                     Tuple[Sequence[Union[nodes.Item, nodes.Collector]], Sequence[str]]
+731                 ] = [(col, names)]
+732                 while work:
+733                     self.trace("matchnodes", col, names)
+734                     self.trace.root.indent += 1
+735 
+736                     matchnodes, matchnames = work.pop()
+737                     for node in matchnodes:
+738                         if not matchnames:
+739                             matching.append(node)
+740                             continue
+741                         if not isinstance(node, nodes.Collector):
+742                             continue
+743                         key = (type(node), node.nodeid)
+744                         if key in matchnodes_cache:
+745                             rep = matchnodes_cache[key]
+746                         else:
+747                             rep = collect_one_node(node)
+748                             matchnodes_cache[key] = rep
+749                         if rep.passed:
+750                             submatchnodes = []
+751                             for r in rep.result:
+752                                 # TODO: Remove parametrized workaround once collection structure contains
+753                                 # parametrization.
+754                                 if (
+755                                     r.name == matchnames[0]
+756                                     or r.name.split("[")[0] == matchnames[0]
+757                                 ):
+758                                     submatchnodes.append(r)
+759                             if submatchnodes:
+760                                 work.append((submatchnodes, matchnames[1:]))
+761                             # XXX Accept IDs that don't have "()" for class instances.
+762                             elif len(rep.result) == 1 and rep.result[0].name == "()":
+763                                 work.append((rep.result, matchnames))
+764                         else:
+765                             # Report collection failures here to avoid failing to run some test
+766                             # specified in the command line because the module could not be
+767                             # imported (#134).
+768                             node.ihook.pytest_collectreport(report=rep)
+769 
+770                     self.trace("matchnodes finished -> ", len(matching), "nodes")
+771                     self.trace.root.indent -= 1
+772 
+773                 if not matching:
+774                     report_arg = "::".join((str(argpath), *names))
+775                     self._notfound.append((report_arg, col))
+776                     continue
+777 
+778                 # If __init__.py was the only file requested, then the matched
+779                 # node will be the corresponding Package (by default), and the
+780                 # first yielded item will be the __init__ Module itself, so
+781                 # just use that. If this special case isn't taken, then all the
+782                 # files in the package will be yielded.
+783                 if argpath.basename == "__init__.py" and isinstance(
+784                     matching[0], Package
+785                 ):
+786                     try:
+787                         yield next(iter(matching[0].collect()))
+788                     except StopIteration:
+789                         # The package collects nothing with only an __init__.py
+790                         # file in it, which gets ignored by the default
+791                         # "python_files" option.
+792                         pass
+793                     continue
+794 
+795                 yield from matching
+796 
+797             self.trace.root.indent -= 1
+798 
+799     def genitems(
+800         self, node: Union[nodes.Item, nodes.Collector]
+801     ) -> Iterator[nodes.Item]:
+802         self.trace("genitems", node)
+803         if isinstance(node, nodes.Item):
+804             node.ihook.pytest_itemcollected(item=node)
+805             yield node
+806         else:
+807             assert isinstance(node, nodes.Collector)
+808             rep = collect_one_node(node)
+809             if rep.passed:
+810                 for subnode in rep.result:
+811                     yield from self.genitems(subnode)
+812             node.ihook.pytest_collectreport(report=rep)
+
+</code><intended_behavior>Integrate sys.unraisablehook to catch and log unraisable exceptions occurring during the test session lifecycle. This entails adding a new method or modifying existing methods within the Session class to set sys.unraisablehook at the start of a test session. The hook should capture unraisable exceptions and associate them with the specific tests or setup/teardown phases they occur in, enhancing error reporting. The implementation should ensure this hook is only active during a pytest test session and restores the original hook (if any) after the session ends to prevent side effects in other parts of the system or subsequent test runs. This can be ensured by storing the original hook before setting the new one and resetting it at the end of the session or through a context manager approach within the test execution flow. The method setting sys.unraisablehook could be invoked in the test session setup phase and ensure restoration in the teardown phase, ensuring broad capture of exceptions throughout the test lifecycle while preserving pytest's existing functionality and behavior.</intended_behavior>]
+2026-01-15 16:18:22.728 | INFO     | Search completed. Bug locations: [<file>src/_pytest/main.py</file>
+<class>Session</class>
+<method>None</method>
+<code>
+450 class Session(nodes.FSCollector):
+451     Interrupted = Interrupted
+452     Failed = Failed
+453     # Set on the session by runner.pytest_sessionstart.
+454     _setupstate: SetupState
+455     # Set on the session by fixtures.pytest_sessionstart.
+456     _fixturemanager: FixtureManager
+457     exitstatus: Union[int, ExitCode]
+458 
+459     def __init__(self, config: Config) -> None:
+460         super().__init__(
+461             config.rootdir, parent=None, config=config, session=self, nodeid=""
+462         )
+463         self.testsfailed = 0
+464         self.testscollected = 0
+465         self.shouldstop: Union[bool, str] = False
+466         self.shouldfail: Union[bool, str] = False
+467         self.trace = config.trace.root.get("collection")
+468         self.startdir = config.invocation_dir
+469         self._initialpaths: FrozenSet[py.path.local] = frozenset()
+470 
+471         self._bestrelpathcache: Dict[Path, str] = _bestrelpath_cache(config.rootpath)
+472 
+473         self.config.pluginmanager.register(self, name="session")
+474 
+475     @classmethod
+476     def from_config(cls, config: Config) -> "Session":
+477         session: Session = cls._create(config)
+478         return session
+479 
+480     def __repr__(self) -> str:
+481         return "<%s %s exitstatus=%r testsfailed=%d testscollected=%d>" % (
+482             self.__class__.__name__,
+483             self.name,
+484             getattr(self, "exitstatus", "<UNSET>"),
+485             self.testsfailed,
+486             self.testscollected,
+487         )
+488 
+489     def _node_location_to_relpath(self, node_path: Path) -> str:
+490         # bestrelpath is a quite slow function.
+491         return self._bestrelpathcache[node_path]
+492 
+493     @hookimpl(tryfirst=True)
+494     def pytest_collectstart(self) -> None:
+495         if self.shouldfail:
+496             raise self.Failed(self.shouldfail)
+497         if self.shouldstop:
+498             raise self.Interrupted(self.shouldstop)
+499 
+500     @hookimpl(tryfirst=True)
+501     def pytest_runtest_logreport(
+502         self, report: Union[TestReport, CollectReport]
+503     ) -> None:
+504         if report.failed and not hasattr(report, "wasxfail"):
+505             self.testsfailed += 1
+506             maxfail = self.config.getvalue("maxfail")
+507             if maxfail and self.testsfailed >= maxfail:
+508                 self.shouldfail = "stopping after %d failures" % (self.testsfailed)
+509 
+510     pytest_collectreport = pytest_runtest_logreport
+511 
+512     def isinitpath(self, path: py.path.local) -> bool:
+513         return path in self._initialpaths
+514 
+515     def gethookproxy(self, fspath: py.path.local):
+516         # Check if we have the common case of running
+517         # hooks with all conftest.py files.
+518         pm = self.config.pluginmanager
+519         my_conftestmodules = pm._getconftestmodules(
+520             fspath, self.config.getoption("importmode")
+521         )
+522         remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
+523         if remove_mods:
+524             # One or more conftests are not in use at this fspath.
+525             proxy = FSHookProxy(pm, remove_mods)
+526         else:
+527             # All plugins are active for this fspath.
+528             proxy = self.config.hook
+529         return proxy
+530 
+531     def _recurse(self, direntry: "os.DirEntry[str]") -> bool:
+532         if direntry.name == "__pycache__":
+533             return False
+534         path = py.path.local(direntry.path)
+535         ihook = self.gethookproxy(path.dirpath())
+536         if ihook.pytest_ignore_collect(path=path, config=self.config):
+537             return False
+538         norecursepatterns = self.config.getini("norecursedirs")
+539         if any(path.check(fnmatch=pat) for pat in norecursepatterns):
+540             return False
+541         return True
+542 
+543     def _collectfile(
+544         self, path: py.path.local, handle_dupes: bool = True
+545     ) -> Sequence[nodes.Collector]:
+546         assert (
+547             path.isfile()
+548         ), "{!r} is not a file (isdir={!r}, exists={!r}, islink={!r})".format(
+549             path, path.isdir(), path.exists(), path.islink()
+550         )
+551         ihook = self.gethookproxy(path)
+552         if not self.isinitpath(path):
+553             if ihook.pytest_ignore_collect(path=path, config=self.config):
+554                 return ()
+555 
+556         if handle_dupes:
+557             keepduplicates = self.config.getoption("keepduplicates")
+558             if not keepduplicates:
+559                 duplicate_paths = self.config.pluginmanager._duplicatepaths
+560                 if path in duplicate_paths:
+561                     return ()
+562                 else:
+563                     duplicate_paths.add(path)
+564 
+565         return ihook.pytest_collect_file(path=path, parent=self)  # type: ignore[no-any-return]
+566 
+567     @overload
+568     def perform_collect(
+569         self, args: Optional[Sequence[str]] = ..., genitems: "Literal[True]" = ...
+570     ) -> Sequence[nodes.Item]:
+571         ...
+572 
+573     @overload
+574     def perform_collect(
+575         self, args: Optional[Sequence[str]] = ..., genitems: bool = ...
+576     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+577         ...
+578 
+579     def perform_collect(
+580         self, args: Optional[Sequence[str]] = None, genitems: bool = True
+581     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+582         """Perform the collection phase for this session.
+583 
+584         This is called by the default
+585         :func:`pytest_collection <_pytest.hookspec.pytest_collection>` hook
+586         implementation; see the documentation of this hook for more details.
+587         For testing purposes, it may also be called directly on a fresh
+588         ``Session``.
+589 
+590         This function normally recursively expands any collectors collected
+591         from the session to their items, and only items are returned. For
+592         testing purposes, this may be suppressed by passing ``genitems=False``,
+593         in which case the return value contains these collectors unexpanded,
+594         and ``session.items`` is empty.
+595         """
+596         if args is None:
+597             args = self.config.args
+598 
+599         self.trace("perform_collect", self, args)
+600         self.trace.root.indent += 1
+601 
+602         self._notfound: List[Tuple[str, Sequence[nodes.Collector]]] = []
+603         self._initial_parts: List[Tuple[py.path.local, List[str]]] = []
+604         self.items: List[nodes.Item] = []
+605 
+606         hook = self.config.hook
+607 
+608         items: Sequence[Union[nodes.Item, nodes.Collector]] = self.items
+609         try:
+610             initialpaths: List[py.path.local] = []
+611             for arg in args:
+612                 fspath, parts = resolve_collection_argument(
+613                     self.config.invocation_params.dir,
+614                     arg,
+615                     as_pypath=self.config.option.pyargs,
+616                 )
+617                 self._initial_parts.append((fspath, parts))
+618                 initialpaths.append(fspath)
+619             self._initialpaths = frozenset(initialpaths)
+620             rep = collect_one_node(self)
+621             self.ihook.pytest_collectreport(report=rep)
+622             self.trace.root.indent -= 1
+623             if self._notfound:
+624                 errors = []
+625                 for arg, cols in self._notfound:
+626                     line = f"(no name {arg!r} in any of {cols!r})"
+627                     errors.append(f"not found: {arg}\n{line}")
+628                 raise UsageError(*errors)
+629             if not genitems:
+630                 items = rep.result
+631             else:
+632                 if rep.passed:
+633                     for node in rep.result:
+634                         self.items.extend(self.genitems(node))
+635 
+636             self.config.pluginmanager.check_pending()
+637             hook.pytest_collection_modifyitems(
+638                 session=self, config=self.config, items=items
+639             )
+640         finally:
+641             hook.pytest_collection_finish(session=self)
+642 
+643         self.testscollected = len(items)
+644         return items
+645 
+646     def collect(self) -> Iterator[Union[nodes.Item, nodes.Collector]]:
+647         from _pytest.python import Package
+648 
+649         # Keep track of any collected nodes in here, so we don't duplicate fixtures.
+650         node_cache1: Dict[py.path.local, Sequence[nodes.Collector]] = {}
+651         node_cache2: Dict[
+652             Tuple[Type[nodes.Collector], py.path.local], nodes.Collector
+653         ] = ({})
+654 
+655         # Keep track of any collected collectors in matchnodes paths, so they
+656         # are not collected more than once.
+657         matchnodes_cache: Dict[Tuple[Type[nodes.Collector], str], CollectReport] = ({})
+658 
+659         # Dirnames of pkgs with dunder-init files.
+660         pkg_roots: Dict[str, Package] = {}
+661 
+662         for argpath, names in self._initial_parts:
+663             self.trace("processing argument", (argpath, names))
+664             self.trace.root.indent += 1
+665 
+666             # Start with a Session root, and delve to argpath item (dir or file)
+667             # and stack all Packages found on the way.
+668             # No point in finding packages when collecting doctests.
+669             if not self.config.getoption("doctestmodules", False):
+670                 pm = self.config.pluginmanager
+671                 for parent in reversed(argpath.parts()):
+672                     if pm._confcutdir and pm._confcutdir.relto(parent):
+673                         break
+674 
+675                     if parent.isdir():
+676                         pkginit = parent.join("__init__.py")
+677                         if pkginit.isfile() and pkginit not in node_cache1:
+678                             col = self._collectfile(pkginit, handle_dupes=False)
+679                             if col:
+680                                 if isinstance(col[0], Package):
+681                                     pkg_roots[str(parent)] = col[0]
+682                                 node_cache1[col[0].fspath] = [col[0]]
+683 
+684             # If it's a directory argument, recurse and look for any Subpackages.
+685             # Let the Package collector deal with subnodes, don't collect here.
+686             if argpath.check(dir=1):
+687                 assert not names, "invalid arg {!r}".format((argpath, names))
+688 
+689                 seen_dirs: Set[py.path.local] = set()
+690                 for direntry in visit(str(argpath), self._recurse):
+691                     if not direntry.is_file():
+692                         continue
+693 
+694                     path = py.path.local(direntry.path)
+695                     dirpath = path.dirpath()
+696 
+697                     if dirpath not in seen_dirs:
+698                         # Collect packages first.
+699                         seen_dirs.add(dirpath)
+700                         pkginit = dirpath.join("__init__.py")
+701                         if pkginit.exists():
+702                             for x in self._collectfile(pkginit):
+703                                 yield x
+704                                 if isinstance(x, Package):
+705                                     pkg_roots[str(dirpath)] = x
+706                     if str(dirpath) in pkg_roots:
+707                         # Do not collect packages here.
+708                         continue
+709 
+710                     for x in self._collectfile(path):
+711                         key = (type(x), x.fspath)
+712                         if key in node_cache2:
+713                             yield node_cache2[key]
+714                         else:
+715                             node_cache2[key] = x
+716                             yield x
+717             else:
+718                 assert argpath.check(file=1)
+719 
+720                 if argpath in node_cache1:
+721                     col = node_cache1[argpath]
+722                 else:
+723                     collect_root = pkg_roots.get(argpath.dirname, self)
+724                     col = collect_root._collectfile(argpath, handle_dupes=False)
+725                     if col:
+726                         node_cache1[argpath] = col
+727 
+728                 matching = []
+729                 work: List[
+730                     Tuple[Sequence[Union[nodes.Item, nodes.Collector]], Sequence[str]]
+731                 ] = [(col, names)]
+732                 while work:
+733                     self.trace("matchnodes", col, names)
+734                     self.trace.root.indent += 1
+735 
+736                     matchnodes, matchnames = work.pop()
+737                     for node in matchnodes:
+738                         if not matchnames:
+739                             matching.append(node)
+740                             continue
+741                         if not isinstance(node, nodes.Collector):
+742                             continue
+743                         key = (type(node), node.nodeid)
+744                         if key in matchnodes_cache:
+745                             rep = matchnodes_cache[key]
+746                         else:
+747                             rep = collect_one_node(node)
+748                             matchnodes_cache[key] = rep
+749                         if rep.passed:
+750                             submatchnodes = []
+751                             for r in rep.result:
+752                                 # TODO: Remove parametrized workaround once collection structure contains
+753                                 # parametrization.
+754                                 if (
+755                                     r.name == matchnames[0]
+756                                     or r.name.split("[")[0] == matchnames[0]
+757                                 ):
+758                                     submatchnodes.append(r)
+759                             if submatchnodes:
+760                                 work.append((submatchnodes, matchnames[1:]))
+761                             # XXX Accept IDs that don't have "()" for class instances.
+762                             elif len(rep.result) == 1 and rep.result[0].name == "()":
+763                                 work.append((rep.result, matchnames))
+764                         else:
+765                             # Report collection failures here to avoid failing to run some test
+766                             # specified in the command line because the module could not be
+767                             # imported (#134).
+768                             node.ihook.pytest_collectreport(report=rep)
+769 
+770                     self.trace("matchnodes finished -> ", len(matching), "nodes")
+771                     self.trace.root.indent -= 1
+772 
+773                 if not matching:
+774                     report_arg = "::".join((str(argpath), *names))
+775                     self._notfound.append((report_arg, col))
+776                     continue
+777 
+778                 # If __init__.py was the only file requested, then the matched
+779                 # node will be the corresponding Package (by default), and the
+780                 # first yielded item will be the __init__ Module itself, so
+781                 # just use that. If this special case isn't taken, then all the
+782                 # files in the package will be yielded.
+783                 if argpath.basename == "__init__.py" and isinstance(
+784                     matching[0], Package
+785                 ):
+786                     try:
+787                         yield next(iter(matching[0].collect()))
+788                     except StopIteration:
+789                         # The package collects nothing with only an __init__.py
+790                         # file in it, which gets ignored by the default
+791                         # "python_files" option.
+792                         pass
+793                     continue
+794 
+795                 yield from matching
+796 
+797             self.trace.root.indent -= 1
+798 
+799     def genitems(
+800         self, node: Union[nodes.Item, nodes.Collector]
+801     ) -> Iterator[nodes.Item]:
+802         self.trace("genitems", node)
+803         if isinstance(node, nodes.Item):
+804             node.ihook.pytest_itemcollected(item=node)
+805             yield node
+806         else:
+807             assert isinstance(node, nodes.Collector)
+808             rep = collect_one_node(node)
+809             if rep.passed:
+810                 for subnode in rep.result:
+811                     yield from self.genitems(subnode)
+812             node.ihook.pytest_collectreport(report=rep)
+
+</code><intended_behavior>Integrate sys.unraisablehook to catch and log unraisable exceptions occurring during the test session lifecycle. This entails adding a new method or modifying existing methods within the Session class to set sys.unraisablehook at the start of a test session. The hook should capture unraisable exceptions and associate them with the specific tests or setup/teardown phases they occur in, enhancing error reporting. The implementation should ensure this hook is only active during a pytest test session and restores the original hook (if any) after the session ends to prevent side effects in other parts of the system or subsequent test runs. This can be ensured by storing the original hook before setting the new one and resetting it at the end of the session or through a context manager approach within the test execution flow. The method setting sys.unraisablehook could be invoked in the test session setup phase and ensure restoration in the teardown phase, ensuring broad capture of exceptions throughout the test lifecycle while preserving pytest's existing functionality and behavior.</intended_behavior>]
+2026-01-15 16:18:22.729 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 16:18:22.729 | INFO     | Search-only: skipping patch selection
+2026-01-15 16:18:22.793 | INFO     | Task pytest-dev__pytest-8055 completed successfully.
+2026-01-15 16:18:22.794 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,1617 @@
+2026-01-15 00:51:31.043 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:51:34.990 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=288, output_tokens=12, cost=0.003240
+2026-01-15 00:51:34.998 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 00:51:35.006 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:51:41.141 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=597, output_tokens=250, cost=0.013470
+2026-01-15 00:51:41.148 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:51:45.594 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=604, output_tokens=68, cost=0.008080
+2026-01-15 00:51:45.596 | DEBUG    | Extracted a valid json.
+2026-01-15 00:51:45.596 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"ModelAdmin\")",
+        "search_method(\"lookup_allowed\")",
+        "search_method(\"get_list_filter\")",
+        "search_code(\"for filter_item in self.list_filter:\")",
+        "search_method(\"get_filters\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 00:51:45.719 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:51:45.720 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:52:04.271 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=4642, output_tokens=821, cost=0.071050
+2026-01-15 00:52:04.293 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:52:12.244 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=5679, output_tokens=356, cost=0.067470
+2026-01-15 00:52:12.248 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:52:20.378 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=710, output_tokens=360, cost=0.017900
+2026-01-15 00:52:20.380 | DEBUG    | Extracted a valid json.
+2026-01-15 00:52:20.380 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[
+        {
+            "file": "django/contrib/admin/options.py",
+            "class": "BaseModelAdmin",
+            "method": "lookup_allowed",
+            "intended_behavior": "Modify the method to iterate over the filters returned by `get_list_filter(request)` instead of directly accessing `self.list_filter`. This involves changing the current loop `for filter_item in self.list_filter:` to dynamically fetch the list filters using the overridden `get_list_filter` method that can take the `request` as a parameter, thereby accommodating dynamic list filters. This requires also adjusting the method signature of `lookup_allowed` to accept a `request` parameter so it can be passed to `get_list_filter(request)`. Care needs to be taken to preserve the existing functionality for users who are not using dynamic list filters, ensuring backward compatibility. The change must ensure that all existing calls to `lookup_allowed` are updated to pass the `request` object where needed."
+        },
+        {
+            "file": "django/contrib/admin/views/main.py",
+            "class": "",
+            "method": "get_filters",
+            "intended_behavior": "Since the signature of `lookup_allowed` will change to include a `request` parameter, all calls to this method must be updated to pass the current `request` object. This ensures that dynamic list filters that might rely on request-specific information are correctly evaluated when determining if a lookup is allowed. This will likely involve examining each occurrence of `lookup_allowed` being called and modifying it to pass `request`. Given this method is fundamental to validating admin changelist queries, special attention must be given to ensure that the additional parameter does not disrupt existing functionality or filter validation logic."
+        }
+    ]
+}
+2026-01-15 00:52:20.394 | DEBUG    | Bug location extracted successfully: [<file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             # It is allowed to filter on values that would be found from local
+465             # model anyways. For example, if you filter on employee__department__id,
+466             # then the id value would be found already from employee__department_id.
+467             if not prev_field or (
+468                 prev_field.is_relation
+469                 and field not in prev_field.path_infos[-1].target_fields
+470             ):
+471                 relation_parts.append(part)
+472             if not getattr(field, "path_infos", None):
+473                 # This is not a relational field, so further parts
+474                 # must be transforms.
+475                 break
+476             prev_field = field
+477             model = field.path_infos[-1].to_opts.model
+478 
+479         if len(relation_parts) <= 1:
+480             # Either a local field filter, or no fields at all.
+481             return True
+482         valid_lookups = {self.date_hierarchy}
+483         for filter_item in self.list_filter:
+484             if isinstance(filter_item, type) and issubclass(
+485                 filter_item, SimpleListFilter
+486             ):
+487                 valid_lookups.add(filter_item.parameter_name)
+488             elif isinstance(filter_item, (list, tuple)):
+489                 valid_lookups.add(filter_item[0])
+490             else:
+491                 valid_lookups.add(filter_item)
+492 
+493         # Is it a valid relational lookup?
+494         return not {
+495             LOOKUP_SEP.join(relation_parts),
+496             LOOKUP_SEP.join(relation_parts + [part]),
+497         }.isdisjoint(valid_lookups)
+498 
+499     def to_field_allowed(self, request, to_field):
+
+</code><intended_behavior>Modify the method to iterate over the filters returned by `get_list_filter(request)` instead of directly accessing `self.list_filter`. This involves changing the current loop `for filter_item in self.list_filter:` to dynamically fetch the list filters using the overridden `get_list_filter` method that can take the `request` as a parameter, thereby accommodating dynamic list filters. This requires also adjusting the method signature of `lookup_allowed` to accept a `request` parameter so it can be passed to `get_list_filter(request)`. Care needs to be taken to preserve the existing functionality for users who are not using dynamic list filters, ensuring backward compatibility. The change must ensure that all existing calls to `lookup_allowed` are updated to pass the `request` object where needed.</intended_behavior>, <file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>None</method>
+<code>
+124 class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
+125     """Functionality common to both ModelAdmin and InlineAdmin."""
+126 
+127     autocomplete_fields = ()
+128     raw_id_fields = ()
+129     fields = None
+130     exclude = None
+131     fieldsets = None
+132     form = forms.ModelForm
+133     filter_vertical = ()
+134     filter_horizontal = ()
+135     radio_fields = {}
+136     prepopulated_fields = {}
+137     formfield_overrides = {}
+138     readonly_fields = ()
+139     ordering = None
+140     sortable_by = None
+141     view_on_site = True
+142     show_full_result_count = True
+143     checks_class = BaseModelAdminChecks
+144 
+145     def check(self, **kwargs):
+146         return self.checks_class().check(self, **kwargs)
+147 
+148     def __init__(self):
+149         # Merge FORMFIELD_FOR_DBFIELD_DEFAULTS with the formfield_overrides
+150         # rather than simply overwriting.
+151         overrides = copy.deepcopy(FORMFIELD_FOR_DBFIELD_DEFAULTS)
+152         for k, v in self.formfield_overrides.items():
+153             overrides.setdefault(k, {}).update(v)
+154         self.formfield_overrides = overrides
+155 
+156     def formfield_for_dbfield(self, db_field, request, **kwargs):
+157         """
+158         Hook for specifying the form Field instance for a given database Field
+159         instance.
+160 
+161         If kwargs are given, they're passed to the form Field's constructor.
+162         """
+163         # If the field specifies choices, we don't need to look for special
+164         # admin widgets - we just need to use a select widget of some kind.
+165         if db_field.choices:
+166             return self.formfield_for_choice_field(db_field, request, **kwargs)
+167 
+168         # ForeignKey or ManyToManyFields
+169         if isinstance(db_field, (models.ForeignKey, models.ManyToManyField)):
+170             # Combine the field kwargs with any options for formfield_overrides.
+171             # Make sure the passed in **kwargs override anything in
+172             # formfield_overrides because **kwargs is more specific, and should
+173             # always win.
+174             if db_field.__class__ in self.formfield_overrides:
+175                 kwargs = {**self.formfield_overrides[db_field.__class__], **kwargs}
+176 
+177             # Get the correct formfield.
+178             if isinstance(db_field, models.ForeignKey):
+179                 formfield = self.formfield_for_foreignkey(db_field, request, **kwargs)
+180             elif isinstance(db_field, models.ManyToManyField):
+181                 formfield = self.formfield_for_manytomany(db_field, request, **kwargs)
+182 
+183             # For non-raw_id fields, wrap the widget with a wrapper that adds
+184             # extra HTML -- the "add other" interface -- to the end of the
+185             # rendered output. formfield can be None if it came from a
+186             # OneToOneField with parent_link=True or a M2M intermediary.
+187             if formfield and db_field.name not in self.raw_id_fields:
+188                 related_modeladmin = self.admin_site._registry.get(
+189                     db_field.remote_field.model
+190                 )
+191                 wrapper_kwargs = {}
+192                 if related_modeladmin:
+193                     wrapper_kwargs.update(
+194                         can_add_related=related_modeladmin.has_add_permission(request),
+195                         can_change_related=related_modeladmin.has_change_permission(
+196                             request
+197                         ),
+198                         can_delete_related=related_modeladmin.has_delete_permission(
+199                             request
+200                         ),
+201                         can_view_related=related_modeladmin.has_view_permission(
+202                             request
+203                         ),
+204                     )
+205                 formfield.widget = widgets.RelatedFieldWidgetWrapper(
+206                     formfield.widget,
+207                     db_field.remote_field,
+208                     self.admin_site,
+209                     **wrapper_kwargs,
+210                 )
+211 
+212             return formfield
+213 
+214         # If we've got overrides for the formfield defined, use 'em. **kwargs
+215         # passed to formfield_for_dbfield override the defaults.
+216         for klass in db_field.__class__.mro():
+217             if klass in self.formfield_overrides:
+218                 kwargs = {**copy.deepcopy(self.formfield_overrides[klass]), **kwargs}
+219                 return db_field.formfield(**kwargs)
+220 
+221         # For any other type of field, just call its formfield() method.
+222         return db_field.formfield(**kwargs)
+223 
+224     def formfield_for_choice_field(self, db_field, request, **kwargs):
+225         """
+226         Get a form Field for a database Field that has declared choices.
+227         """
+228         # If the field is named as a radio_field, use a RadioSelect
+229         if db_field.name in self.radio_fields:
+230             # Avoid stomping on custom widget/choices arguments.
+231             if "widget" not in kwargs:
+232                 kwargs["widget"] = widgets.AdminRadioSelect(
+233                     attrs={
+234                         "class": get_ul_class(self.radio_fields[db_field.name]),
+235                     }
+236                 )
+237             if "choices" not in kwargs:
+238                 kwargs["choices"] = db_field.get_choices(
+239                     include_blank=db_field.blank, blank_choice=[("", _("None"))]
+240                 )
+241         return db_field.formfield(**kwargs)
+242 
+243     def get_field_queryset(self, db, db_field, request):
+244         """
+245         If the ModelAdmin specifies ordering, the queryset should respect that
+246         ordering.  Otherwise don't specify the queryset, let the field decide
+247         (return None in that case).
+248         """
+249         related_admin = self.admin_site._registry.get(db_field.remote_field.model)
+250         if related_admin is not None:
+251             ordering = related_admin.get_ordering(request)
+252             if ordering is not None and ordering != ():
+253                 return db_field.remote_field.model._default_manager.using(db).order_by(
+254                     *ordering
+255                 )
+256         return None
+257 
+258     def formfield_for_foreignkey(self, db_field, request, **kwargs):
+259         """
+260         Get a form Field for a ForeignKey.
+261         """
+262         db = kwargs.get("using")
+263 
+264         if "widget" not in kwargs:
+265             if db_field.name in self.get_autocomplete_fields(request):
+266                 kwargs["widget"] = AutocompleteSelect(
+267                     db_field, self.admin_site, using=db
+268                 )
+269             elif db_field.name in self.raw_id_fields:
+270                 kwargs["widget"] = widgets.ForeignKeyRawIdWidget(
+271                     db_field.remote_field, self.admin_site, using=db
+272                 )
+273             elif db_field.name in self.radio_fields:
+274                 kwargs["widget"] = widgets.AdminRadioSelect(
+275                     attrs={
+276                         "class": get_ul_class(self.radio_fields[db_field.name]),
+277                     }
+278                 )
+279                 kwargs["empty_label"] = (
+280                     kwargs.get("empty_label", _("None")) if db_field.blank else None
+281                 )
+282 
+283         if "queryset" not in kwargs:
+284             queryset = self.get_field_queryset(db, db_field, request)
+285             if queryset is not None:
+286                 kwargs["queryset"] = queryset
+287 
+288         return db_field.formfield(**kwargs)
+289 
+290     def formfield_for_manytomany(self, db_field, request, **kwargs):
+291         """
+292         Get a form Field for a ManyToManyField.
+293         """
+294         # If it uses an intermediary model that isn't auto created, don't show
+295         # a field in admin.
+296         if not db_field.remote_field.through._meta.auto_created:
+297             return None
+298         db = kwargs.get("using")
+299 
+300         if "widget" not in kwargs:
+301             autocomplete_fields = self.get_autocomplete_fields(request)
+302             if db_field.name in autocomplete_fields:
+303                 kwargs["widget"] = AutocompleteSelectMultiple(
+304                     db_field,
+305                     self.admin_site,
+306                     using=db,
+307                 )
+308             elif db_field.name in self.raw_id_fields:
+309                 kwargs["widget"] = widgets.ManyToManyRawIdWidget(
+310                     db_field.remote_field,
+311                     self.admin_site,
+312                     using=db,
+313                 )
+314             elif db_field.name in [*self.filter_vertical, *self.filter_horizontal]:
+315                 kwargs["widget"] = widgets.FilteredSelectMultiple(
+316                     db_field.verbose_name, db_field.name in self.filter_vertical
+317                 )
+318         if "queryset" not in kwargs:
+319             queryset = self.get_field_queryset(db, db_field, request)
+320             if queryset is not None:
+321                 kwargs["queryset"] = queryset
+322 
+323         form_field = db_field.formfield(**kwargs)
+324         if (
+325             isinstance(form_field.widget, SelectMultiple)
+326             and form_field.widget.allow_multiple_selected
+327             and not isinstance(
+328                 form_field.widget, (CheckboxSelectMultiple, AutocompleteSelectMultiple)
+329             )
+330         ):
+331             msg = _(
+332                 "Hold down “Control”, or “Command” on a Mac, to select more than one."
+333             )
+334             help_text = form_field.help_text
+335             form_field.help_text = (
+336                 format_lazy("{} {}", help_text, msg) if help_text else msg
+337             )
+338         return form_field
+339 
+340     def get_autocomplete_fields(self, request):
+341         """
+342         Return a list of ForeignKey and/or ManyToMany fields which should use
+343         an autocomplete widget.
+344         """
+345         return self.autocomplete_fields
+346 
+347     def get_view_on_site_url(self, obj=None):
+348         if obj is None or not self.view_on_site:
+349             return None
+350 
+351         if callable(self.view_on_site):
+352             return self.view_on_site(obj)
+353         elif hasattr(obj, "get_absolute_url"):
+354             # use the ContentType lookup if view_on_site is True
+355             return reverse(
+356                 "admin:view_on_site",
+357                 kwargs={
+358                     "content_type_id": get_content_type_for_model(obj).pk,
+359                     "object_id": obj.pk,
+360                 },
+361                 current_app=self.admin_site.name,
+362             )
+363 
+364     def get_empty_value_display(self):
+365         """
+366         Return the empty_value_display set on ModelAdmin or AdminSite.
+367         """
+368         try:
+369             return mark_safe(self.empty_value_display)
+370         except AttributeError:
+371             return mark_safe(self.admin_site.empty_value_display)
+372 
+373     def get_exclude(self, request, obj=None):
+374         """
+375         Hook for specifying exclude.
+376         """
+377         return self.exclude
+378 
+379     def get_fields(self, request, obj=None):
+380         """
+381         Hook for specifying fields.
+382         """
+383         if self.fields:
+384             return self.fields
+385         # _get_form_for_get_fields() is implemented in subclasses.
+386         form = self._get_form_for_get_fields(request, obj)
+387         return [*form.base_fields, *self.get_readonly_fields(request, obj)]
+388 
+389     def get_fieldsets(self, request, obj=None):
+390         """
+391         Hook for specifying fieldsets.
+392         """
+393         if self.fieldsets:
+394             return self.fieldsets
+395         return [(None, {"fields": self.get_fields(request, obj)})]
+396 
+397     def get_inlines(self, request, obj):
+398         """Hook for specifying custom inlines."""
+399         return self.inlines
+400 
+401     def get_ordering(self, request):
+402         """
+403         Hook for specifying field ordering.
+404         """
+405         return self.ordering or ()  # otherwise we might try to *None, which is bad ;)
+406 
+407     def get_readonly_fields(self, request, obj=None):
+408         """
+409         Hook for specifying custom readonly fields.
+410         """
+411         return self.readonly_fields
+412 
+413     def get_prepopulated_fields(self, request, obj=None):
+414         """
+415         Hook for specifying custom prepopulated fields.
+416         """
+417         return self.prepopulated_fields
+418 
+419     def get_queryset(self, request):
+420         """
+421         Return a QuerySet of all model instances that can be edited by the
+422         admin site. This is used by changelist_view.
+423         """
+424         qs = self.model._default_manager.get_queryset()
+425         # TODO: this should be handled by some parameter to the ChangeList.
+426         ordering = self.get_ordering(request)
+427         if ordering:
+428             qs = qs.order_by(*ordering)
+429         return qs
+430 
+431     def get_sortable_by(self, request):
+432         """Hook for specifying which fields can be sorted in the changelist."""
+433         return (
+434             self.sortable_by
+435             if self.sortable_by is not None
+436             else self.get_list_display(request)
+437         )
+438 
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             # It is allowed to filter on values that would be found from local
+465             # model anyways. For example, if you filter on employee__department__id,
+466             # then the id value would be found already from employee__department_id.
+467             if not prev_field or (
+468                 prev_field.is_relation
+469                 and field not in prev_field.path_infos[-1].target_fields
+470             ):
+471                 relation_parts.append(part)
+472             if not getattr(field, "path_infos", None):
+473                 # This is not a relational field, so further parts
+474                 # must be transforms.
+475                 break
+476             prev_field = field
+477             model = field.path_infos[-1].to_opts.model
+478 
+479         if len(relation_parts) <= 1:
+480             # Either a local field filter, or no fields at all.
+481             return True
+482         valid_lookups = {self.date_hierarchy}
+483         for filter_item in self.list_filter:
+484             if isinstance(filter_item, type) and issubclass(
+485                 filter_item, SimpleListFilter
+486             ):
+487                 valid_lookups.add(filter_item.parameter_name)
+488             elif isinstance(filter_item, (list, tuple)):
+489                 valid_lookups.add(filter_item[0])
+490             else:
+491                 valid_lookups.add(filter_item)
+492 
+493         # Is it a valid relational lookup?
+494         return not {
+495             LOOKUP_SEP.join(relation_parts),
+496             LOOKUP_SEP.join(relation_parts + [part]),
+497         }.isdisjoint(valid_lookups)
+498 
+499     def to_field_allowed(self, request, to_field):
+500         """
+501         Return True if the model associated with this admin should be
+502         allowed to be referenced by the specified field.
+503         """
+504         try:
+505             field = self.opts.get_field(to_field)
+506         except FieldDoesNotExist:
+507             return False
+508 
+509         # Always allow referencing the primary key since it's already possible
+510         # to get this information from the change view URL.
+511         if field.primary_key:
+512             return True
+513 
+514         # Allow reverse relationships to models defining m2m fields if they
+515         # target the specified field.
+516         for many_to_many in self.opts.many_to_many:
+517             if many_to_many.m2m_target_field_name() == to_field:
+518                 return True
+519 
+520         # Make sure at least one of the models registered for this site
+521         # references this field through a FK or a M2M relationship.
+522         registered_models = set()
+523         for model, admin in self.admin_site._registry.items():
+524             registered_models.add(model)
+525             for inline in admin.inlines:
+526                 registered_models.add(inline.model)
+527 
+528         related_objects = (
+529             f
+530             for f in self.opts.get_fields(include_hidden=True)
+531             if (f.auto_created and not f.concrete)
+532         )
+533         for related_object in related_objects:
+534             related_model = related_object.related_model
+535             remote_field = related_object.field.remote_field
+536             if (
+537                 any(issubclass(model, related_model) for model in registered_models)
+538                 and hasattr(remote_field, "get_related_field")
+539                 and remote_field.get_related_field() == field
+540             ):
+541                 return True
+542 
+543         return False
+544 
+545     def has_add_permission(self, request):
+546         """
+547         Return True if the given request has permission to add an object.
+548         Can be overridden by the user in subclasses.
+549         """
+550         opts = self.opts
+551         codename = get_permission_codename("add", opts)
+552         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+553 
+554     def has_change_permission(self, request, obj=None):
+555         """
+556         Return True if the given request has permission to change the given
+557         Django model instance, the default implementation doesn't examine the
+558         `obj` parameter.
+559 
+560         Can be overridden by the user in subclasses. In such case it should
+561         return True if the given request has permission to change the `obj`
+562         model instance. If `obj` is None, this should return True if the given
+563         request has permission to change *any* object of the given type.
+564         """
+565         opts = self.opts
+566         codename = get_permission_codename("change", opts)
+567         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+568 
+569     def has_delete_permission(self, request, obj=None):
+570         """
+571         Return True if the given request has permission to delete the given
+572         Django model instance, the default implementation doesn't examine the
+573         `obj` parameter.
+574 
+575         Can be overridden by the user in subclasses. In such case it should
+576         return True if the given request has permission to delete the `obj`
+577         model instance. If `obj` is None, this should return True if the given
+578         request has permission to delete *any* object of the given type.
+579         """
+580         opts = self.opts
+581         codename = get_permission_codename("delete", opts)
+582         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+583 
+584     def has_view_permission(self, request, obj=None):
+585         """
+586         Return True if the given request has permission to view the given
+587         Django model instance. The default implementation doesn't examine the
+588         `obj` parameter.
+589 
+590         If overridden by the user in subclasses, it should return True if the
+591         given request has permission to view the `obj` model instance. If `obj`
+592         is None, it should return True if the request has permission to view
+593         any object of the given type.
+594         """
+595         opts = self.opts
+596         codename_view = get_permission_codename("view", opts)
+597         codename_change = get_permission_codename("change", opts)
+598         return request.user.has_perm(
+599             "%s.%s" % (opts.app_label, codename_view)
+600         ) or request.user.has_perm("%s.%s" % (opts.app_label, codename_change))
+601 
+602     def has_view_or_change_permission(self, request, obj=None):
+603         return self.has_view_permission(request, obj) or self.has_change_permission(
+604             request, obj
+605         )
+606 
+607     def has_module_permission(self, request):
+608         """
+609         Return True if the given request has any permission in the given
+610         app label.
+611 
+612         Can be overridden by the user in subclasses. In such case it should
+613         return True if the given request has permission to view the module on
+614         the admin index page and access the module's index page. Overriding it
+615         does not restrict access to the add, change or delete views. Use
+616         `ModelAdmin.has_(add|change|delete)_permission` for that.
+617         """
+618         return request.user.has_module_perms(self.opts.app_label)
+619 
+620 
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>None</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Since the signature of `lookup_allowed` will change to include a `request` parameter, all calls to this method must be updated to pass the current `request` object. This ensures that dynamic list filters that might rely on request-specific information are correctly evaluated when determining if a lookup is allowed. This will likely involve examining each occurrence of `lookup_allowed` being called and modifying it to pass `request`. Given this method is fundamental to validating admin changelist queries, special attention must be given to ensure that the additional parameter does not disrupt existing functionality or filter validation logic.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Since the signature of `lookup_allowed` will change to include a `request` parameter, all calls to this method must be updated to pass the current `request` object. This ensures that dynamic list filters that might rely on request-specific information are correctly evaluated when determining if a lookup is allowed. This will likely involve examining each occurrence of `lookup_allowed` being called and modifying it to pass `request`. Given this method is fundamental to validating admin changelist queries, special attention must be given to ensure that the additional parameter does not disrupt existing functionality or filter validation logic.</intended_behavior>]
+2026-01-15 00:52:20.394 | INFO     | Search completed. Bug locations: [<file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>lookup_allowed</method>
+<code>
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             # It is allowed to filter on values that would be found from local
+465             # model anyways. For example, if you filter on employee__department__id,
+466             # then the id value would be found already from employee__department_id.
+467             if not prev_field or (
+468                 prev_field.is_relation
+469                 and field not in prev_field.path_infos[-1].target_fields
+470             ):
+471                 relation_parts.append(part)
+472             if not getattr(field, "path_infos", None):
+473                 # This is not a relational field, so further parts
+474                 # must be transforms.
+475                 break
+476             prev_field = field
+477             model = field.path_infos[-1].to_opts.model
+478 
+479         if len(relation_parts) <= 1:
+480             # Either a local field filter, or no fields at all.
+481             return True
+482         valid_lookups = {self.date_hierarchy}
+483         for filter_item in self.list_filter:
+484             if isinstance(filter_item, type) and issubclass(
+485                 filter_item, SimpleListFilter
+486             ):
+487                 valid_lookups.add(filter_item.parameter_name)
+488             elif isinstance(filter_item, (list, tuple)):
+489                 valid_lookups.add(filter_item[0])
+490             else:
+491                 valid_lookups.add(filter_item)
+492 
+493         # Is it a valid relational lookup?
+494         return not {
+495             LOOKUP_SEP.join(relation_parts),
+496             LOOKUP_SEP.join(relation_parts + [part]),
+497         }.isdisjoint(valid_lookups)
+498 
+499     def to_field_allowed(self, request, to_field):
+
+</code><intended_behavior>Modify the method to iterate over the filters returned by `get_list_filter(request)` instead of directly accessing `self.list_filter`. This involves changing the current loop `for filter_item in self.list_filter:` to dynamically fetch the list filters using the overridden `get_list_filter` method that can take the `request` as a parameter, thereby accommodating dynamic list filters. This requires also adjusting the method signature of `lookup_allowed` to accept a `request` parameter so it can be passed to `get_list_filter(request)`. Care needs to be taken to preserve the existing functionality for users who are not using dynamic list filters, ensuring backward compatibility. The change must ensure that all existing calls to `lookup_allowed` are updated to pass the `request` object where needed.</intended_behavior>, <file>django/contrib/admin/options.py</file>
+<class>BaseModelAdmin</class>
+<method>None</method>
+<code>
+124 class BaseModelAdmin(metaclass=forms.MediaDefiningClass):
+125     """Functionality common to both ModelAdmin and InlineAdmin."""
+126 
+127     autocomplete_fields = ()
+128     raw_id_fields = ()
+129     fields = None
+130     exclude = None
+131     fieldsets = None
+132     form = forms.ModelForm
+133     filter_vertical = ()
+134     filter_horizontal = ()
+135     radio_fields = {}
+136     prepopulated_fields = {}
+137     formfield_overrides = {}
+138     readonly_fields = ()
+139     ordering = None
+140     sortable_by = None
+141     view_on_site = True
+142     show_full_result_count = True
+143     checks_class = BaseModelAdminChecks
+144 
+145     def check(self, **kwargs):
+146         return self.checks_class().check(self, **kwargs)
+147 
+148     def __init__(self):
+149         # Merge FORMFIELD_FOR_DBFIELD_DEFAULTS with the formfield_overrides
+150         # rather than simply overwriting.
+151         overrides = copy.deepcopy(FORMFIELD_FOR_DBFIELD_DEFAULTS)
+152         for k, v in self.formfield_overrides.items():
+153             overrides.setdefault(k, {}).update(v)
+154         self.formfield_overrides = overrides
+155 
+156     def formfield_for_dbfield(self, db_field, request, **kwargs):
+157         """
+158         Hook for specifying the form Field instance for a given database Field
+159         instance.
+160 
+161         If kwargs are given, they're passed to the form Field's constructor.
+162         """
+163         # If the field specifies choices, we don't need to look for special
+164         # admin widgets - we just need to use a select widget of some kind.
+165         if db_field.choices:
+166             return self.formfield_for_choice_field(db_field, request, **kwargs)
+167 
+168         # ForeignKey or ManyToManyFields
+169         if isinstance(db_field, (models.ForeignKey, models.ManyToManyField)):
+170             # Combine the field kwargs with any options for formfield_overrides.
+171             # Make sure the passed in **kwargs override anything in
+172             # formfield_overrides because **kwargs is more specific, and should
+173             # always win.
+174             if db_field.__class__ in self.formfield_overrides:
+175                 kwargs = {**self.formfield_overrides[db_field.__class__], **kwargs}
+176 
+177             # Get the correct formfield.
+178             if isinstance(db_field, models.ForeignKey):
+179                 formfield = self.formfield_for_foreignkey(db_field, request, **kwargs)
+180             elif isinstance(db_field, models.ManyToManyField):
+181                 formfield = self.formfield_for_manytomany(db_field, request, **kwargs)
+182 
+183             # For non-raw_id fields, wrap the widget with a wrapper that adds
+184             # extra HTML -- the "add other" interface -- to the end of the
+185             # rendered output. formfield can be None if it came from a
+186             # OneToOneField with parent_link=True or a M2M intermediary.
+187             if formfield and db_field.name not in self.raw_id_fields:
+188                 related_modeladmin = self.admin_site._registry.get(
+189                     db_field.remote_field.model
+190                 )
+191                 wrapper_kwargs = {}
+192                 if related_modeladmin:
+193                     wrapper_kwargs.update(
+194                         can_add_related=related_modeladmin.has_add_permission(request),
+195                         can_change_related=related_modeladmin.has_change_permission(
+196                             request
+197                         ),
+198                         can_delete_related=related_modeladmin.has_delete_permission(
+199                             request
+200                         ),
+201                         can_view_related=related_modeladmin.has_view_permission(
+202                             request
+203                         ),
+204                     )
+205                 formfield.widget = widgets.RelatedFieldWidgetWrapper(
+206                     formfield.widget,
+207                     db_field.remote_field,
+208                     self.admin_site,
+209                     **wrapper_kwargs,
+210                 )
+211 
+212             return formfield
+213 
+214         # If we've got overrides for the formfield defined, use 'em. **kwargs
+215         # passed to formfield_for_dbfield override the defaults.
+216         for klass in db_field.__class__.mro():
+217             if klass in self.formfield_overrides:
+218                 kwargs = {**copy.deepcopy(self.formfield_overrides[klass]), **kwargs}
+219                 return db_field.formfield(**kwargs)
+220 
+221         # For any other type of field, just call its formfield() method.
+222         return db_field.formfield(**kwargs)
+223 
+224     def formfield_for_choice_field(self, db_field, request, **kwargs):
+225         """
+226         Get a form Field for a database Field that has declared choices.
+227         """
+228         # If the field is named as a radio_field, use a RadioSelect
+229         if db_field.name in self.radio_fields:
+230             # Avoid stomping on custom widget/choices arguments.
+231             if "widget" not in kwargs:
+232                 kwargs["widget"] = widgets.AdminRadioSelect(
+233                     attrs={
+234                         "class": get_ul_class(self.radio_fields[db_field.name]),
+235                     }
+236                 )
+237             if "choices" not in kwargs:
+238                 kwargs["choices"] = db_field.get_choices(
+239                     include_blank=db_field.blank, blank_choice=[("", _("None"))]
+240                 )
+241         return db_field.formfield(**kwargs)
+242 
+243     def get_field_queryset(self, db, db_field, request):
+244         """
+245         If the ModelAdmin specifies ordering, the queryset should respect that
+246         ordering.  Otherwise don't specify the queryset, let the field decide
+247         (return None in that case).
+248         """
+249         related_admin = self.admin_site._registry.get(db_field.remote_field.model)
+250         if related_admin is not None:
+251             ordering = related_admin.get_ordering(request)
+252             if ordering is not None and ordering != ():
+253                 return db_field.remote_field.model._default_manager.using(db).order_by(
+254                     *ordering
+255                 )
+256         return None
+257 
+258     def formfield_for_foreignkey(self, db_field, request, **kwargs):
+259         """
+260         Get a form Field for a ForeignKey.
+261         """
+262         db = kwargs.get("using")
+263 
+264         if "widget" not in kwargs:
+265             if db_field.name in self.get_autocomplete_fields(request):
+266                 kwargs["widget"] = AutocompleteSelect(
+267                     db_field, self.admin_site, using=db
+268                 )
+269             elif db_field.name in self.raw_id_fields:
+270                 kwargs["widget"] = widgets.ForeignKeyRawIdWidget(
+271                     db_field.remote_field, self.admin_site, using=db
+272                 )
+273             elif db_field.name in self.radio_fields:
+274                 kwargs["widget"] = widgets.AdminRadioSelect(
+275                     attrs={
+276                         "class": get_ul_class(self.radio_fields[db_field.name]),
+277                     }
+278                 )
+279                 kwargs["empty_label"] = (
+280                     kwargs.get("empty_label", _("None")) if db_field.blank else None
+281                 )
+282 
+283         if "queryset" not in kwargs:
+284             queryset = self.get_field_queryset(db, db_field, request)
+285             if queryset is not None:
+286                 kwargs["queryset"] = queryset
+287 
+288         return db_field.formfield(**kwargs)
+289 
+290     def formfield_for_manytomany(self, db_field, request, **kwargs):
+291         """
+292         Get a form Field for a ManyToManyField.
+293         """
+294         # If it uses an intermediary model that isn't auto created, don't show
+295         # a field in admin.
+296         if not db_field.remote_field.through._meta.auto_created:
+297             return None
+298         db = kwargs.get("using")
+299 
+300         if "widget" not in kwargs:
+301             autocomplete_fields = self.get_autocomplete_fields(request)
+302             if db_field.name in autocomplete_fields:
+303                 kwargs["widget"] = AutocompleteSelectMultiple(
+304                     db_field,
+305                     self.admin_site,
+306                     using=db,
+307                 )
+308             elif db_field.name in self.raw_id_fields:
+309                 kwargs["widget"] = widgets.ManyToManyRawIdWidget(
+310                     db_field.remote_field,
+311                     self.admin_site,
+312                     using=db,
+313                 )
+314             elif db_field.name in [*self.filter_vertical, *self.filter_horizontal]:
+315                 kwargs["widget"] = widgets.FilteredSelectMultiple(
+316                     db_field.verbose_name, db_field.name in self.filter_vertical
+317                 )
+318         if "queryset" not in kwargs:
+319             queryset = self.get_field_queryset(db, db_field, request)
+320             if queryset is not None:
+321                 kwargs["queryset"] = queryset
+322 
+323         form_field = db_field.formfield(**kwargs)
+324         if (
+325             isinstance(form_field.widget, SelectMultiple)
+326             and form_field.widget.allow_multiple_selected
+327             and not isinstance(
+328                 form_field.widget, (CheckboxSelectMultiple, AutocompleteSelectMultiple)
+329             )
+330         ):
+331             msg = _(
+332                 "Hold down “Control”, or “Command” on a Mac, to select more than one."
+333             )
+334             help_text = form_field.help_text
+335             form_field.help_text = (
+336                 format_lazy("{} {}", help_text, msg) if help_text else msg
+337             )
+338         return form_field
+339 
+340     def get_autocomplete_fields(self, request):
+341         """
+342         Return a list of ForeignKey and/or ManyToMany fields which should use
+343         an autocomplete widget.
+344         """
+345         return self.autocomplete_fields
+346 
+347     def get_view_on_site_url(self, obj=None):
+348         if obj is None or not self.view_on_site:
+349             return None
+350 
+351         if callable(self.view_on_site):
+352             return self.view_on_site(obj)
+353         elif hasattr(obj, "get_absolute_url"):
+354             # use the ContentType lookup if view_on_site is True
+355             return reverse(
+356                 "admin:view_on_site",
+357                 kwargs={
+358                     "content_type_id": get_content_type_for_model(obj).pk,
+359                     "object_id": obj.pk,
+360                 },
+361                 current_app=self.admin_site.name,
+362             )
+363 
+364     def get_empty_value_display(self):
+365         """
+366         Return the empty_value_display set on ModelAdmin or AdminSite.
+367         """
+368         try:
+369             return mark_safe(self.empty_value_display)
+370         except AttributeError:
+371             return mark_safe(self.admin_site.empty_value_display)
+372 
+373     def get_exclude(self, request, obj=None):
+374         """
+375         Hook for specifying exclude.
+376         """
+377         return self.exclude
+378 
+379     def get_fields(self, request, obj=None):
+380         """
+381         Hook for specifying fields.
+382         """
+383         if self.fields:
+384             return self.fields
+385         # _get_form_for_get_fields() is implemented in subclasses.
+386         form = self._get_form_for_get_fields(request, obj)
+387         return [*form.base_fields, *self.get_readonly_fields(request, obj)]
+388 
+389     def get_fieldsets(self, request, obj=None):
+390         """
+391         Hook for specifying fieldsets.
+392         """
+393         if self.fieldsets:
+394             return self.fieldsets
+395         return [(None, {"fields": self.get_fields(request, obj)})]
+396 
+397     def get_inlines(self, request, obj):
+398         """Hook for specifying custom inlines."""
+399         return self.inlines
+400 
+401     def get_ordering(self, request):
+402         """
+403         Hook for specifying field ordering.
+404         """
+405         return self.ordering or ()  # otherwise we might try to *None, which is bad ;)
+406 
+407     def get_readonly_fields(self, request, obj=None):
+408         """
+409         Hook for specifying custom readonly fields.
+410         """
+411         return self.readonly_fields
+412 
+413     def get_prepopulated_fields(self, request, obj=None):
+414         """
+415         Hook for specifying custom prepopulated fields.
+416         """
+417         return self.prepopulated_fields
+418 
+419     def get_queryset(self, request):
+420         """
+421         Return a QuerySet of all model instances that can be edited by the
+422         admin site. This is used by changelist_view.
+423         """
+424         qs = self.model._default_manager.get_queryset()
+425         # TODO: this should be handled by some parameter to the ChangeList.
+426         ordering = self.get_ordering(request)
+427         if ordering:
+428             qs = qs.order_by(*ordering)
+429         return qs
+430 
+431     def get_sortable_by(self, request):
+432         """Hook for specifying which fields can be sorted in the changelist."""
+433         return (
+434             self.sortable_by
+435             if self.sortable_by is not None
+436             else self.get_list_display(request)
+437         )
+438 
+439     def lookup_allowed(self, lookup, value):
+440         from django.contrib.admin.filters import SimpleListFilter
+441 
+442         model = self.model
+443         # Check FKey lookups that are allowed, so that popups produced by
+444         # ForeignKeyRawIdWidget, on the basis of ForeignKey.limit_choices_to,
+445         # are allowed to work.
+446         for fk_lookup in model._meta.related_fkey_lookups:
+447             # As ``limit_choices_to`` can be a callable, invoke it here.
+448             if callable(fk_lookup):
+449                 fk_lookup = fk_lookup()
+450             if (lookup, value) in widgets.url_params_from_lookup_dict(
+451                 fk_lookup
+452             ).items():
+453                 return True
+454 
+455         relation_parts = []
+456         prev_field = None
+457         for part in lookup.split(LOOKUP_SEP):
+458             try:
+459                 field = model._meta.get_field(part)
+460             except FieldDoesNotExist:
+461                 # Lookups on nonexistent fields are ok, since they're ignored
+462                 # later.
+463                 break
+464             # It is allowed to filter on values that would be found from local
+465             # model anyways. For example, if you filter on employee__department__id,
+466             # then the id value would be found already from employee__department_id.
+467             if not prev_field or (
+468                 prev_field.is_relation
+469                 and field not in prev_field.path_infos[-1].target_fields
+470             ):
+471                 relation_parts.append(part)
+472             if not getattr(field, "path_infos", None):
+473                 # This is not a relational field, so further parts
+474                 # must be transforms.
+475                 break
+476             prev_field = field
+477             model = field.path_infos[-1].to_opts.model
+478 
+479         if len(relation_parts) <= 1:
+480             # Either a local field filter, or no fields at all.
+481             return True
+482         valid_lookups = {self.date_hierarchy}
+483         for filter_item in self.list_filter:
+484             if isinstance(filter_item, type) and issubclass(
+485                 filter_item, SimpleListFilter
+486             ):
+487                 valid_lookups.add(filter_item.parameter_name)
+488             elif isinstance(filter_item, (list, tuple)):
+489                 valid_lookups.add(filter_item[0])
+490             else:
+491                 valid_lookups.add(filter_item)
+492 
+493         # Is it a valid relational lookup?
+494         return not {
+495             LOOKUP_SEP.join(relation_parts),
+496             LOOKUP_SEP.join(relation_parts + [part]),
+497         }.isdisjoint(valid_lookups)
+498 
+499     def to_field_allowed(self, request, to_field):
+500         """
+501         Return True if the model associated with this admin should be
+502         allowed to be referenced by the specified field.
+503         """
+504         try:
+505             field = self.opts.get_field(to_field)
+506         except FieldDoesNotExist:
+507             return False
+508 
+509         # Always allow referencing the primary key since it's already possible
+510         # to get this information from the change view URL.
+511         if field.primary_key:
+512             return True
+513 
+514         # Allow reverse relationships to models defining m2m fields if they
+515         # target the specified field.
+516         for many_to_many in self.opts.many_to_many:
+517             if many_to_many.m2m_target_field_name() == to_field:
+518                 return True
+519 
+520         # Make sure at least one of the models registered for this site
+521         # references this field through a FK or a M2M relationship.
+522         registered_models = set()
+523         for model, admin in self.admin_site._registry.items():
+524             registered_models.add(model)
+525             for inline in admin.inlines:
+526                 registered_models.add(inline.model)
+527 
+528         related_objects = (
+529             f
+530             for f in self.opts.get_fields(include_hidden=True)
+531             if (f.auto_created and not f.concrete)
+532         )
+533         for related_object in related_objects:
+534             related_model = related_object.related_model
+535             remote_field = related_object.field.remote_field
+536             if (
+537                 any(issubclass(model, related_model) for model in registered_models)
+538                 and hasattr(remote_field, "get_related_field")
+539                 and remote_field.get_related_field() == field
+540             ):
+541                 return True
+542 
+543         return False
+544 
+545     def has_add_permission(self, request):
+546         """
+547         Return True if the given request has permission to add an object.
+548         Can be overridden by the user in subclasses.
+549         """
+550         opts = self.opts
+551         codename = get_permission_codename("add", opts)
+552         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+553 
+554     def has_change_permission(self, request, obj=None):
+555         """
+556         Return True if the given request has permission to change the given
+557         Django model instance, the default implementation doesn't examine the
+558         `obj` parameter.
+559 
+560         Can be overridden by the user in subclasses. In such case it should
+561         return True if the given request has permission to change the `obj`
+562         model instance. If `obj` is None, this should return True if the given
+563         request has permission to change *any* object of the given type.
+564         """
+565         opts = self.opts
+566         codename = get_permission_codename("change", opts)
+567         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+568 
+569     def has_delete_permission(self, request, obj=None):
+570         """
+571         Return True if the given request has permission to delete the given
+572         Django model instance, the default implementation doesn't examine the
+573         `obj` parameter.
+574 
+575         Can be overridden by the user in subclasses. In such case it should
+576         return True if the given request has permission to delete the `obj`
+577         model instance. If `obj` is None, this should return True if the given
+578         request has permission to delete *any* object of the given type.
+579         """
+580         opts = self.opts
+581         codename = get_permission_codename("delete", opts)
+582         return request.user.has_perm("%s.%s" % (opts.app_label, codename))
+583 
+584     def has_view_permission(self, request, obj=None):
+585         """
+586         Return True if the given request has permission to view the given
+587         Django model instance. The default implementation doesn't examine the
+588         `obj` parameter.
+589 
+590         If overridden by the user in subclasses, it should return True if the
+591         given request has permission to view the `obj` model instance. If `obj`
+592         is None, it should return True if the request has permission to view
+593         any object of the given type.
+594         """
+595         opts = self.opts
+596         codename_view = get_permission_codename("view", opts)
+597         codename_change = get_permission_codename("change", opts)
+598         return request.user.has_perm(
+599             "%s.%s" % (opts.app_label, codename_view)
+600         ) or request.user.has_perm("%s.%s" % (opts.app_label, codename_change))
+601 
+602     def has_view_or_change_permission(self, request, obj=None):
+603         return self.has_view_permission(request, obj) or self.has_change_permission(
+604             request, obj
+605         )
+606 
+607     def has_module_permission(self, request):
+608         """
+609         Return True if the given request has any permission in the given
+610         app label.
+611 
+612         Can be overridden by the user in subclasses. In such case it should
+613         return True if the given request has permission to view the module on
+614         the admin index page and access the module's index page. Overriding it
+615         does not restrict access to the add, change or delete views. Use
+616         `ModelAdmin.has_(add|change|delete)_permission` for that.
+617         """
+618         return request.user.has_module_perms(self.opts.app_label)
+619 
+620 
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>None</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Since the signature of `lookup_allowed` will change to include a `request` parameter, all calls to this method must be updated to pass the current `request` object. This ensures that dynamic list filters that might rely on request-specific information are correctly evaluated when determining if a lookup is allowed. This will likely involve examining each occurrence of `lookup_allowed` being called and modifying it to pass `request`. Given this method is fundamental to validating admin changelist queries, special attention must be given to ensure that the additional parameter does not disrupt existing functionality or filter validation logic.</intended_behavior>, <file>django/contrib/admin/views/main.py</file>
+<class>ChangeList</class>
+<method>get_filters</method>
+<code>
+172     def get_filters(self, request):
+173         lookup_params = self.get_filters_params()
+174         may_have_duplicates = False
+175         has_active_filters = False
+176 
+177         for key, value_list in lookup_params.items():
+178             for value in value_list:
+179                 if not self.model_admin.lookup_allowed(key, value):
+180                     raise DisallowedModelAdminLookup(f"Filtering by {key} not allowed")
+181 
+182         filter_specs = []
+183         for list_filter in self.list_filter:
+184             lookup_params_count = len(lookup_params)
+185             if callable(list_filter):
+186                 # This is simply a custom list filter class.
+187                 spec = list_filter(request, lookup_params, self.model, self.model_admin)
+188             else:
+189                 field_path = None
+190                 if isinstance(list_filter, (tuple, list)):
+191                     # This is a custom FieldListFilter class for a given field.
+192                     field, field_list_filter_class = list_filter
+193                 else:
+194                     # This is simply a field name, so use the default
+195                     # FieldListFilter class that has been registered for the
+196                     # type of the given field.
+197                     field, field_list_filter_class = list_filter, FieldListFilter.create
+198                 if not isinstance(field, Field):
+199                     field_path = field
+200                     field = get_fields_from_path(self.model, field_path)[-1]
+201 
+202                 spec = field_list_filter_class(
+203                     field,
+204                     request,
+205                     lookup_params,
+206                     self.model,
+207                     self.model_admin,
+208                     field_path=field_path,
+209                 )
+210                 # field_list_filter_class removes any lookup_params it
+211                 # processes. If that happened, check if duplicates should be
+212                 # removed.
+213                 if lookup_params_count > len(lookup_params):
+214                     may_have_duplicates |= lookup_spawns_duplicates(
+215                         self.lookup_opts,
+216                         field_path,
+217                     )
+218             if spec and spec.has_output():
+219                 filter_specs.append(spec)
+220                 if lookup_params_count > len(lookup_params):
+221                     has_active_filters = True
+222 
+223         if self.date_hierarchy:
+224             # Create bounded lookup parameters so that the query is more
+225             # efficient.
+226             year = lookup_params.pop("%s__year" % self.date_hierarchy, None)
+227             if year is not None:
+228                 month = lookup_params.pop("%s__month" % self.date_hierarchy, None)
+229                 day = lookup_params.pop("%s__day" % self.date_hierarchy, None)
+230                 try:
+231                     from_date = datetime(
+232                         int(year[-1]),
+233                         int(month[-1] if month is not None else 1),
+234                         int(day[-1] if day is not None else 1),
+235                     )
+236                 except ValueError as e:
+237                     raise IncorrectLookupParameters(e) from e
+238                 if day:
+239                     to_date = from_date + timedelta(days=1)
+240                 elif month:
+241                     # In this branch, from_date will always be the first of a
+242                     # month, so advancing 32 days gives the next month.
+243                     to_date = (from_date + timedelta(days=32)).replace(day=1)
+244                 else:
+245                     to_date = from_date.replace(year=from_date.year + 1)
+246                 if settings.USE_TZ:
+247                     from_date = make_aware(from_date)
+248                     to_date = make_aware(to_date)
+249                 lookup_params.update(
+250                     {
+251                         "%s__gte" % self.date_hierarchy: [from_date],
+252                         "%s__lt" % self.date_hierarchy: [to_date],
+253                     }
+254                 )
+255 
+256         # At this point, all the parameters used by the various ListFilters
+257         # have been removed from lookup_params, which now only contains other
+258         # parameters passed via the query string. We now loop through the
+259         # remaining parameters both to ensure that all the parameters are valid
+260         # fields and to determine if at least one of them spawns duplicates. If
+261         # the lookup parameters aren't real fields, then bail out.
+262         try:
+263             for key, value in lookup_params.items():
+264                 lookup_params[key] = prepare_lookup_value(key, value)
+265                 may_have_duplicates |= lookup_spawns_duplicates(self.lookup_opts, key)
+266             return (
+267                 filter_specs,
+268                 bool(filter_specs),
+269                 lookup_params,
+270                 may_have_duplicates,
+271                 has_active_filters,
+272             )
+273         except FieldDoesNotExist as e:
+274             raise IncorrectLookupParameters(e) from e
+
+</code><intended_behavior>Since the signature of `lookup_allowed` will change to include a `request` parameter, all calls to this method must be updated to pass the current `request` object. This ensures that dynamic list filters that might rely on request-specific information are correctly evaluated when determining if a lookup is allowed. This will likely involve examining each occurrence of `lookup_allowed` being called and modifying it to pass `request`. Given this method is fundamental to validating admin changelist queries, special attention must be given to ensure that the additional parameter does not disrupt existing functionality or filter validation logic.</intended_behavior>]
+2026-01-15 00:52:20.394 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:52:20.395 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:52:20.635 | INFO     | Task django__django-16759 completed successfully.
+2026-01-15 00:52:20.637 | INFO     | No patch generated. You can try running ACR again.

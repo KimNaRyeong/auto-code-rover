@@ -1,0 +1,497 @@
+2026-01-15 00:48:20.475 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:48:25.583 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=403, output_tokens=12, cost=0.004390
+2026-01-15 00:48:25.585 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 00:48:25.591 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:48:31.068 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=705, output_tokens=254, cost=0.014670
+2026-01-15 00:48:31.074 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:48:33.972 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=608, output_tokens=31, cost=0.007010
+2026-01-15 00:48:33.973 | DEBUG    | Extracted a valid json.
+2026-01-15 00:48:33.973 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": ["search_method(\"bulk_create\")", "search_class(\"ActivityBlackListed\")"],
+    "bug_locations": []
+}
+2026-01-15 00:48:34.002 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:48:34.002 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:48:49.392 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3189, output_tokens=720, cost=0.053490
+2026-01-15 00:48:49.406 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:49:01.471 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=4125, output_tokens=501, cost=0.056280
+2026-01-15 00:49:01.526 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:49:12.469 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=855, output_tokens=424, cost=0.021270
+2026-01-15 00:49:12.470 | DEBUG    | Extracted a valid json.
+2026-01-15 00:49:12.470 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/db/models/query.py",
+            "class": "",
+            "method": "bulk_create",
+            "intended_behavior": "In the `bulk_create` method, within the handling of `unique_fields` and `update_fields` parameters, the method should ensure that when translating the field names provided in these parameters to SQL column names, it correctly uses the `db_column` attribute of the model fields if specified. This adaptation should occur before the SQL generation for the \"ON CONFLICT\" clause.\n\nSpecifically, the translation should account for the `db_column` value of each field listed in `unique_fields` and `update_fields`, ensuring that the actual database column names are included in the generated SQL. This involves modifying the list construction for `unique_fields` (around lines 786-790) and ensuring that `update_fields` also undergoes a similar translation process. This translation is critical for properly handling models with columns whose names do not directly match their field names in Django.\n\nFor `unique_fields`, the update might look something like this (pseudocode for illustrative purposes):\n\n```python\nunique_fields = [\n    opts.get_field(name).db_column if opts.get_field(name).db_column else name for name in unique_fields\n]\n```\n\nAnd a similar approach would be needed where `update_fields` are processed to ensure the column names are correctly handled. This logic would ensure that when Django constructs the SQL for handling \"ON CONFLICT\", it uses the correct database column names, thereby avoiding the syntax error described in the issue.\n\nPreserving existing functionality involves ensuring that if a `db_column` attribute is not specified for a field, the field name itself is used, maintaining backward compatibility with models that do not specify custom column names. This approach targets the error where PostgreSQL does not recognize the column name due to incorrect handling of case sensitivity and naming discrepancies between the model field names and the database column names."
+        }
+    ]
+}
+2026-01-15 00:49:12.481 | DEBUG    | Bug location extracted successfully: [<file>django/db/models/query.py</file>
+<class>None</class>
+<method>bulk_create</method>
+<code>
+746     def bulk_create(
+747         self,
+748         objs,
+749         batch_size=None,
+750         ignore_conflicts=False,
+751         update_conflicts=False,
+752         update_fields=None,
+753         unique_fields=None,
+754     ):
+755         """
+756         Insert each of the instances into the database. Do *not* call
+757         save() on each of the instances, do not send any pre/post_save
+758         signals, and do not set the primary key attribute if it is an
+759         autoincrement field (except if features.can_return_rows_from_bulk_insert=True).
+760         Multi-table models are not supported.
+761         """
+762         # When you bulk insert you don't get the primary keys back (if it's an
+763         # autoincrement, except if can_return_rows_from_bulk_insert=True), so
+764         # you can't insert into the child tables which references this. There
+765         # are two workarounds:
+766         # 1) This could be implemented if you didn't have an autoincrement pk
+767         # 2) You could do it by doing O(n) normal inserts into the parent
+768         #    tables to get the primary keys back and then doing a single bulk
+769         #    insert into the childmost table.
+770         # We currently set the primary keys on the objects when using
+771         # PostgreSQL via the RETURNING ID clause. It should be possible for
+772         # Oracle as well, but the semantics for extracting the primary keys is
+773         # trickier so it's not done yet.
+774         if batch_size is not None and batch_size <= 0:
+775             raise ValueError("Batch size must be a positive integer.")
+776         # Check that the parents share the same concrete model with the our
+777         # model to detect the inheritance pattern ConcreteGrandParent ->
+778         # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
+779         # would not identify that case as involving multiple tables.
+780         for parent in self.model._meta.get_parent_list():
+781             if parent._meta.concrete_model is not self.model._meta.concrete_model:
+782                 raise ValueError("Can't bulk create a multi-table inherited model")
+783         if not objs:
+784             return objs
+785         opts = self.model._meta
+786         if unique_fields:
+787             # Primary key is allowed in unique_fields.
+788             unique_fields = [
+789                 opts.pk.name if name == "pk" else name for name in unique_fields
+790             ]
+791         on_conflict = self._check_bulk_create_options(
+792             ignore_conflicts,
+793             update_conflicts,
+794             update_fields,
+795             unique_fields,
+796         )
+797         self._for_write = True
+798         fields = opts.concrete_fields
+799         objs = list(objs)
+800         self._prepare_for_bulk_create(objs)
+801         with transaction.atomic(using=self.db, savepoint=False):
+802             objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
+803             if objs_with_pk:
+804                 returned_columns = self._batched_insert(
+805                     objs_with_pk,
+806                     fields,
+807                     batch_size,
+808                     on_conflict=on_conflict,
+809                     update_fields=update_fields,
+810                     unique_fields=unique_fields,
+811                 )
+812                 for obj_with_pk, results in zip(objs_with_pk, returned_columns):
+813                     for result, field in zip(results, opts.db_returning_fields):
+814                         if field != opts.pk:
+815                             setattr(obj_with_pk, field.attname, result)
+816                 for obj_with_pk in objs_with_pk:
+817                     obj_with_pk._state.adding = False
+818                     obj_with_pk._state.db = self.db
+819             if objs_without_pk:
+820                 fields = [f for f in fields if not isinstance(f, AutoField)]
+821                 returned_columns = self._batched_insert(
+822                     objs_without_pk,
+823                     fields,
+824                     batch_size,
+825                     on_conflict=on_conflict,
+826                     update_fields=update_fields,
+827                     unique_fields=unique_fields,
+828                 )
+829                 connection = connections[self.db]
+830                 if (
+831                     connection.features.can_return_rows_from_bulk_insert
+832                     and on_conflict is None
+833                 ):
+834                     assert len(returned_columns) == len(objs_without_pk)
+835                 for obj_without_pk, results in zip(objs_without_pk, returned_columns):
+836                     for result, field in zip(results, opts.db_returning_fields):
+837                         setattr(obj_without_pk, field.attname, result)
+838                     obj_without_pk._state.adding = False
+839                     obj_without_pk._state.db = self.db
+840 
+841         return objs
+
+</code><intended_behavior>In the `bulk_create` method, within the handling of `unique_fields` and `update_fields` parameters, the method should ensure that when translating the field names provided in these parameters to SQL column names, it correctly uses the `db_column` attribute of the model fields if specified. This adaptation should occur before the SQL generation for the "ON CONFLICT" clause.
+
+Specifically, the translation should account for the `db_column` value of each field listed in `unique_fields` and `update_fields`, ensuring that the actual database column names are included in the generated SQL. This involves modifying the list construction for `unique_fields` (around lines 786-790) and ensuring that `update_fields` also undergoes a similar translation process. This translation is critical for properly handling models with columns whose names do not directly match their field names in Django.
+
+For `unique_fields`, the update might look something like this (pseudocode for illustrative purposes):
+
+```python
+unique_fields = [
+    opts.get_field(name).db_column if opts.get_field(name).db_column else name for name in unique_fields
+]
+```
+
+And a similar approach would be needed where `update_fields` are processed to ensure the column names are correctly handled. This logic would ensure that when Django constructs the SQL for handling "ON CONFLICT", it uses the correct database column names, thereby avoiding the syntax error described in the issue.
+
+Preserving existing functionality involves ensuring that if a `db_column` attribute is not specified for a field, the field name itself is used, maintaining backward compatibility with models that do not specify custom column names. This approach targets the error where PostgreSQL does not recognize the column name due to incorrect handling of case sensitivity and naming discrepancies between the model field names and the database column names.</intended_behavior>, <file>django/db/models/query.py</file>
+<class>QuerySet</class>
+<method>bulk_create</method>
+<code>
+746     def bulk_create(
+747         self,
+748         objs,
+749         batch_size=None,
+750         ignore_conflicts=False,
+751         update_conflicts=False,
+752         update_fields=None,
+753         unique_fields=None,
+754     ):
+755         """
+756         Insert each of the instances into the database. Do *not* call
+757         save() on each of the instances, do not send any pre/post_save
+758         signals, and do not set the primary key attribute if it is an
+759         autoincrement field (except if features.can_return_rows_from_bulk_insert=True).
+760         Multi-table models are not supported.
+761         """
+762         # When you bulk insert you don't get the primary keys back (if it's an
+763         # autoincrement, except if can_return_rows_from_bulk_insert=True), so
+764         # you can't insert into the child tables which references this. There
+765         # are two workarounds:
+766         # 1) This could be implemented if you didn't have an autoincrement pk
+767         # 2) You could do it by doing O(n) normal inserts into the parent
+768         #    tables to get the primary keys back and then doing a single bulk
+769         #    insert into the childmost table.
+770         # We currently set the primary keys on the objects when using
+771         # PostgreSQL via the RETURNING ID clause. It should be possible for
+772         # Oracle as well, but the semantics for extracting the primary keys is
+773         # trickier so it's not done yet.
+774         if batch_size is not None and batch_size <= 0:
+775             raise ValueError("Batch size must be a positive integer.")
+776         # Check that the parents share the same concrete model with the our
+777         # model to detect the inheritance pattern ConcreteGrandParent ->
+778         # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
+779         # would not identify that case as involving multiple tables.
+780         for parent in self.model._meta.get_parent_list():
+781             if parent._meta.concrete_model is not self.model._meta.concrete_model:
+782                 raise ValueError("Can't bulk create a multi-table inherited model")
+783         if not objs:
+784             return objs
+785         opts = self.model._meta
+786         if unique_fields:
+787             # Primary key is allowed in unique_fields.
+788             unique_fields = [
+789                 opts.pk.name if name == "pk" else name for name in unique_fields
+790             ]
+791         on_conflict = self._check_bulk_create_options(
+792             ignore_conflicts,
+793             update_conflicts,
+794             update_fields,
+795             unique_fields,
+796         )
+797         self._for_write = True
+798         fields = opts.concrete_fields
+799         objs = list(objs)
+800         self._prepare_for_bulk_create(objs)
+801         with transaction.atomic(using=self.db, savepoint=False):
+802             objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
+803             if objs_with_pk:
+804                 returned_columns = self._batched_insert(
+805                     objs_with_pk,
+806                     fields,
+807                     batch_size,
+808                     on_conflict=on_conflict,
+809                     update_fields=update_fields,
+810                     unique_fields=unique_fields,
+811                 )
+812                 for obj_with_pk, results in zip(objs_with_pk, returned_columns):
+813                     for result, field in zip(results, opts.db_returning_fields):
+814                         if field != opts.pk:
+815                             setattr(obj_with_pk, field.attname, result)
+816                 for obj_with_pk in objs_with_pk:
+817                     obj_with_pk._state.adding = False
+818                     obj_with_pk._state.db = self.db
+819             if objs_without_pk:
+820                 fields = [f for f in fields if not isinstance(f, AutoField)]
+821                 returned_columns = self._batched_insert(
+822                     objs_without_pk,
+823                     fields,
+824                     batch_size,
+825                     on_conflict=on_conflict,
+826                     update_fields=update_fields,
+827                     unique_fields=unique_fields,
+828                 )
+829                 connection = connections[self.db]
+830                 if (
+831                     connection.features.can_return_rows_from_bulk_insert
+832                     and on_conflict is None
+833                 ):
+834                     assert len(returned_columns) == len(objs_without_pk)
+835                 for obj_without_pk, results in zip(objs_without_pk, returned_columns):
+836                     for result, field in zip(results, opts.db_returning_fields):
+837                         setattr(obj_without_pk, field.attname, result)
+838                     obj_without_pk._state.adding = False
+839                     obj_without_pk._state.db = self.db
+840 
+841         return objs
+
+</code><intended_behavior>In the `bulk_create` method, within the handling of `unique_fields` and `update_fields` parameters, the method should ensure that when translating the field names provided in these parameters to SQL column names, it correctly uses the `db_column` attribute of the model fields if specified. This adaptation should occur before the SQL generation for the "ON CONFLICT" clause.
+
+Specifically, the translation should account for the `db_column` value of each field listed in `unique_fields` and `update_fields`, ensuring that the actual database column names are included in the generated SQL. This involves modifying the list construction for `unique_fields` (around lines 786-790) and ensuring that `update_fields` also undergoes a similar translation process. This translation is critical for properly handling models with columns whose names do not directly match their field names in Django.
+
+For `unique_fields`, the update might look something like this (pseudocode for illustrative purposes):
+
+```python
+unique_fields = [
+    opts.get_field(name).db_column if opts.get_field(name).db_column else name for name in unique_fields
+]
+```
+
+And a similar approach would be needed where `update_fields` are processed to ensure the column names are correctly handled. This logic would ensure that when Django constructs the SQL for handling "ON CONFLICT", it uses the correct database column names, thereby avoiding the syntax error described in the issue.
+
+Preserving existing functionality involves ensuring that if a `db_column` attribute is not specified for a field, the field name itself is used, maintaining backward compatibility with models that do not specify custom column names. This approach targets the error where PostgreSQL does not recognize the column name due to incorrect handling of case sensitivity and naming discrepancies between the model field names and the database column names.</intended_behavior>]
+2026-01-15 00:49:12.481 | INFO     | Search completed. Bug locations: [<file>django/db/models/query.py</file>
+<class>None</class>
+<method>bulk_create</method>
+<code>
+746     def bulk_create(
+747         self,
+748         objs,
+749         batch_size=None,
+750         ignore_conflicts=False,
+751         update_conflicts=False,
+752         update_fields=None,
+753         unique_fields=None,
+754     ):
+755         """
+756         Insert each of the instances into the database. Do *not* call
+757         save() on each of the instances, do not send any pre/post_save
+758         signals, and do not set the primary key attribute if it is an
+759         autoincrement field (except if features.can_return_rows_from_bulk_insert=True).
+760         Multi-table models are not supported.
+761         """
+762         # When you bulk insert you don't get the primary keys back (if it's an
+763         # autoincrement, except if can_return_rows_from_bulk_insert=True), so
+764         # you can't insert into the child tables which references this. There
+765         # are two workarounds:
+766         # 1) This could be implemented if you didn't have an autoincrement pk
+767         # 2) You could do it by doing O(n) normal inserts into the parent
+768         #    tables to get the primary keys back and then doing a single bulk
+769         #    insert into the childmost table.
+770         # We currently set the primary keys on the objects when using
+771         # PostgreSQL via the RETURNING ID clause. It should be possible for
+772         # Oracle as well, but the semantics for extracting the primary keys is
+773         # trickier so it's not done yet.
+774         if batch_size is not None and batch_size <= 0:
+775             raise ValueError("Batch size must be a positive integer.")
+776         # Check that the parents share the same concrete model with the our
+777         # model to detect the inheritance pattern ConcreteGrandParent ->
+778         # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
+779         # would not identify that case as involving multiple tables.
+780         for parent in self.model._meta.get_parent_list():
+781             if parent._meta.concrete_model is not self.model._meta.concrete_model:
+782                 raise ValueError("Can't bulk create a multi-table inherited model")
+783         if not objs:
+784             return objs
+785         opts = self.model._meta
+786         if unique_fields:
+787             # Primary key is allowed in unique_fields.
+788             unique_fields = [
+789                 opts.pk.name if name == "pk" else name for name in unique_fields
+790             ]
+791         on_conflict = self._check_bulk_create_options(
+792             ignore_conflicts,
+793             update_conflicts,
+794             update_fields,
+795             unique_fields,
+796         )
+797         self._for_write = True
+798         fields = opts.concrete_fields
+799         objs = list(objs)
+800         self._prepare_for_bulk_create(objs)
+801         with transaction.atomic(using=self.db, savepoint=False):
+802             objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
+803             if objs_with_pk:
+804                 returned_columns = self._batched_insert(
+805                     objs_with_pk,
+806                     fields,
+807                     batch_size,
+808                     on_conflict=on_conflict,
+809                     update_fields=update_fields,
+810                     unique_fields=unique_fields,
+811                 )
+812                 for obj_with_pk, results in zip(objs_with_pk, returned_columns):
+813                     for result, field in zip(results, opts.db_returning_fields):
+814                         if field != opts.pk:
+815                             setattr(obj_with_pk, field.attname, result)
+816                 for obj_with_pk in objs_with_pk:
+817                     obj_with_pk._state.adding = False
+818                     obj_with_pk._state.db = self.db
+819             if objs_without_pk:
+820                 fields = [f for f in fields if not isinstance(f, AutoField)]
+821                 returned_columns = self._batched_insert(
+822                     objs_without_pk,
+823                     fields,
+824                     batch_size,
+825                     on_conflict=on_conflict,
+826                     update_fields=update_fields,
+827                     unique_fields=unique_fields,
+828                 )
+829                 connection = connections[self.db]
+830                 if (
+831                     connection.features.can_return_rows_from_bulk_insert
+832                     and on_conflict is None
+833                 ):
+834                     assert len(returned_columns) == len(objs_without_pk)
+835                 for obj_without_pk, results in zip(objs_without_pk, returned_columns):
+836                     for result, field in zip(results, opts.db_returning_fields):
+837                         setattr(obj_without_pk, field.attname, result)
+838                     obj_without_pk._state.adding = False
+839                     obj_without_pk._state.db = self.db
+840 
+841         return objs
+
+</code><intended_behavior>In the `bulk_create` method, within the handling of `unique_fields` and `update_fields` parameters, the method should ensure that when translating the field names provided in these parameters to SQL column names, it correctly uses the `db_column` attribute of the model fields if specified. This adaptation should occur before the SQL generation for the "ON CONFLICT" clause.
+
+Specifically, the translation should account for the `db_column` value of each field listed in `unique_fields` and `update_fields`, ensuring that the actual database column names are included in the generated SQL. This involves modifying the list construction for `unique_fields` (around lines 786-790) and ensuring that `update_fields` also undergoes a similar translation process. This translation is critical for properly handling models with columns whose names do not directly match their field names in Django.
+
+For `unique_fields`, the update might look something like this (pseudocode for illustrative purposes):
+
+```python
+unique_fields = [
+    opts.get_field(name).db_column if opts.get_field(name).db_column else name for name in unique_fields
+]
+```
+
+And a similar approach would be needed where `update_fields` are processed to ensure the column names are correctly handled. This logic would ensure that when Django constructs the SQL for handling "ON CONFLICT", it uses the correct database column names, thereby avoiding the syntax error described in the issue.
+
+Preserving existing functionality involves ensuring that if a `db_column` attribute is not specified for a field, the field name itself is used, maintaining backward compatibility with models that do not specify custom column names. This approach targets the error where PostgreSQL does not recognize the column name due to incorrect handling of case sensitivity and naming discrepancies between the model field names and the database column names.</intended_behavior>, <file>django/db/models/query.py</file>
+<class>QuerySet</class>
+<method>bulk_create</method>
+<code>
+746     def bulk_create(
+747         self,
+748         objs,
+749         batch_size=None,
+750         ignore_conflicts=False,
+751         update_conflicts=False,
+752         update_fields=None,
+753         unique_fields=None,
+754     ):
+755         """
+756         Insert each of the instances into the database. Do *not* call
+757         save() on each of the instances, do not send any pre/post_save
+758         signals, and do not set the primary key attribute if it is an
+759         autoincrement field (except if features.can_return_rows_from_bulk_insert=True).
+760         Multi-table models are not supported.
+761         """
+762         # When you bulk insert you don't get the primary keys back (if it's an
+763         # autoincrement, except if can_return_rows_from_bulk_insert=True), so
+764         # you can't insert into the child tables which references this. There
+765         # are two workarounds:
+766         # 1) This could be implemented if you didn't have an autoincrement pk
+767         # 2) You could do it by doing O(n) normal inserts into the parent
+768         #    tables to get the primary keys back and then doing a single bulk
+769         #    insert into the childmost table.
+770         # We currently set the primary keys on the objects when using
+771         # PostgreSQL via the RETURNING ID clause. It should be possible for
+772         # Oracle as well, but the semantics for extracting the primary keys is
+773         # trickier so it's not done yet.
+774         if batch_size is not None and batch_size <= 0:
+775             raise ValueError("Batch size must be a positive integer.")
+776         # Check that the parents share the same concrete model with the our
+777         # model to detect the inheritance pattern ConcreteGrandParent ->
+778         # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
+779         # would not identify that case as involving multiple tables.
+780         for parent in self.model._meta.get_parent_list():
+781             if parent._meta.concrete_model is not self.model._meta.concrete_model:
+782                 raise ValueError("Can't bulk create a multi-table inherited model")
+783         if not objs:
+784             return objs
+785         opts = self.model._meta
+786         if unique_fields:
+787             # Primary key is allowed in unique_fields.
+788             unique_fields = [
+789                 opts.pk.name if name == "pk" else name for name in unique_fields
+790             ]
+791         on_conflict = self._check_bulk_create_options(
+792             ignore_conflicts,
+793             update_conflicts,
+794             update_fields,
+795             unique_fields,
+796         )
+797         self._for_write = True
+798         fields = opts.concrete_fields
+799         objs = list(objs)
+800         self._prepare_for_bulk_create(objs)
+801         with transaction.atomic(using=self.db, savepoint=False):
+802             objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
+803             if objs_with_pk:
+804                 returned_columns = self._batched_insert(
+805                     objs_with_pk,
+806                     fields,
+807                     batch_size,
+808                     on_conflict=on_conflict,
+809                     update_fields=update_fields,
+810                     unique_fields=unique_fields,
+811                 )
+812                 for obj_with_pk, results in zip(objs_with_pk, returned_columns):
+813                     for result, field in zip(results, opts.db_returning_fields):
+814                         if field != opts.pk:
+815                             setattr(obj_with_pk, field.attname, result)
+816                 for obj_with_pk in objs_with_pk:
+817                     obj_with_pk._state.adding = False
+818                     obj_with_pk._state.db = self.db
+819             if objs_without_pk:
+820                 fields = [f for f in fields if not isinstance(f, AutoField)]
+821                 returned_columns = self._batched_insert(
+822                     objs_without_pk,
+823                     fields,
+824                     batch_size,
+825                     on_conflict=on_conflict,
+826                     update_fields=update_fields,
+827                     unique_fields=unique_fields,
+828                 )
+829                 connection = connections[self.db]
+830                 if (
+831                     connection.features.can_return_rows_from_bulk_insert
+832                     and on_conflict is None
+833                 ):
+834                     assert len(returned_columns) == len(objs_without_pk)
+835                 for obj_without_pk, results in zip(objs_without_pk, returned_columns):
+836                     for result, field in zip(results, opts.db_returning_fields):
+837                         setattr(obj_without_pk, field.attname, result)
+838                     obj_without_pk._state.adding = False
+839                     obj_without_pk._state.db = self.db
+840 
+841         return objs
+
+</code><intended_behavior>In the `bulk_create` method, within the handling of `unique_fields` and `update_fields` parameters, the method should ensure that when translating the field names provided in these parameters to SQL column names, it correctly uses the `db_column` attribute of the model fields if specified. This adaptation should occur before the SQL generation for the "ON CONFLICT" clause.
+
+Specifically, the translation should account for the `db_column` value of each field listed in `unique_fields` and `update_fields`, ensuring that the actual database column names are included in the generated SQL. This involves modifying the list construction for `unique_fields` (around lines 786-790) and ensuring that `update_fields` also undergoes a similar translation process. This translation is critical for properly handling models with columns whose names do not directly match their field names in Django.
+
+For `unique_fields`, the update might look something like this (pseudocode for illustrative purposes):
+
+```python
+unique_fields = [
+    opts.get_field(name).db_column if opts.get_field(name).db_column else name for name in unique_fields
+]
+```
+
+And a similar approach would be needed where `update_fields` are processed to ensure the column names are correctly handled. This logic would ensure that when Django constructs the SQL for handling "ON CONFLICT", it uses the correct database column names, thereby avoiding the syntax error described in the issue.
+
+Preserving existing functionality involves ensuring that if a `db_column` attribute is not specified for a field, the field name itself is used, maintaining backward compatibility with models that do not specify custom column names. This approach targets the error where PostgreSQL does not recognize the column name due to incorrect handling of case sensitivity and naming discrepancies between the model field names and the database column names.</intended_behavior>]
+2026-01-15 00:49:12.481 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:49:12.481 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:49:12.653 | INFO     | Task django__django-16315 completed successfully.
+2026-01-15 00:49:12.655 | INFO     | No patch generated. You can try running ACR again.

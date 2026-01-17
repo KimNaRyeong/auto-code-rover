@@ -1,0 +1,292 @@
+[
+    {
+        "rel_file_path": "django/db/migrations/serializer.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/migrations/serializer.py",
+        "start": 1,
+        "end": 339,
+        "class_name": null,
+        "method_name": null,
+        "code": "1 import builtins\n2 import collections.abc\n3 import datetime\n4 import decimal\n5 import enum\n6 import functools\n7 import math\n8 import re\n9 import types\n10 import uuid\n11 \n12 from django.conf import SettingsReference\n13 from django.db import models\n14 from django.db.migrations.operations.base import Operation\n15 from django.db.migrations.utils import COMPILED_REGEX_TYPE, RegexObject\n16 from django.utils.functional import LazyObject, Promise\n17 from django.utils.timezone import utc\n18 from django.utils.version import get_docs_version\n19 \n20 \n21 class BaseSerializer:\n22     def __init__(self, value):\n23         self.value = value\n24 \n25     def serialize(self):\n26         raise NotImplementedError('Subclasses of BaseSerializer must implement the serialize() method.')\n27 \n28 \n29 class BaseSequenceSerializer(BaseSerializer):\n30     def _format(self):\n31         raise NotImplementedError('Subclasses of BaseSequenceSerializer must implement the _format() method.')\n32 \n33     def serialize(self):\n34         imports = set()\n35         strings = []\n36         for item in self.value:\n37             item_string, item_imports = serializer_factory(item).serialize()\n38             imports.update(item_imports)\n39             strings.append(item_string)\n40         value = self._format()\n41         return value % (\", \".join(strings)), imports\n42 \n43 \n44 class BaseSimpleSerializer(BaseSerializer):\n45     def serialize(self):\n46         return repr(self.value), set()\n47 \n48 \n49 class ChoicesSerializer(BaseSerializer):\n50     def serialize(self):\n51         return serializer_factory(self.value.value).serialize()\n52 \n53 \n54 class DateTimeSerializer(BaseSerializer):\n55     \"\"\"For datetime.*, except datetime.datetime.\"\"\"\n56     def serialize(self):\n57         return repr(self.value), {'import datetime'}\n58 \n59 \n60 class DatetimeDatetimeSerializer(BaseSerializer):\n61     \"\"\"For datetime.datetime.\"\"\"\n62     def serialize(self):\n63         if self.value.tzinfo is not None and self.value.tzinfo != utc:\n64             self.value = self.value.astimezone(utc)\n65         imports = [\"import datetime\"]\n66         if self.value.tzinfo is not None:\n67             imports.append(\"from django.utils.timezone import utc\")\n68         return repr(self.value).replace('<UTC>', 'utc'), set(imports)\n69 \n70 \n71 class DecimalSerializer(BaseSerializer):\n72     def serialize(self):\n73         return repr(self.value), {\"from decimal import Decimal\"}\n74 \n75 \n76 class DeconstructableSerializer(BaseSerializer):\n77     @staticmethod\n78     def serialize_deconstructed(path, args, kwargs):\n79         name, imports = DeconstructableSerializer._serialize_path(path)\n80         strings = []\n81         for arg in args:\n82             arg_string, arg_imports = serializer_factory(arg).serialize()\n83             strings.append(arg_string)\n84             imports.update(arg_imports)\n85         for kw, arg in sorted(kwargs.items()):\n86             arg_string, arg_imports = serializer_factory(arg).serialize()\n87             imports.update(arg_imports)\n88             strings.append(\"%s=%s\" % (kw, arg_string))\n89         return \"%s(%s)\" % (name, \", \".join(strings)), imports\n90 \n91     @staticmethod\n92     def _serialize_path(path):\n93         module, name = path.rsplit(\".\", 1)\n94         if module == \"django.db.models\":\n95             imports = {\"from django.db import models\"}\n96             name = \"models.%s\" % name\n97         else:\n98             imports = {\"import %s\" % module}\n99             name = path\n100         return name, imports\n101 \n102     def serialize(self):\n103         return self.serialize_deconstructed(*self.value.deconstruct())\n104 \n105 \n106 class DictionarySerializer(BaseSerializer):\n107     def serialize(self):\n108         imports = set()\n109         strings = []\n110         for k, v in sorted(self.value.items()):\n111             k_string, k_imports = serializer_factory(k).serialize()\n112             v_string, v_imports = serializer_factory(v).serialize()\n113             imports.update(k_imports)\n114             imports.update(v_imports)\n115             strings.append((k_string, v_string))\n116         return \"{%s}\" % (\", \".join(\"%s: %s\" % (k, v) for k, v in strings)), imports\n117 \n118 \n119 class EnumSerializer(BaseSerializer):\n120     def serialize(self):\n121         enum_class = self.value.__class__\n122         module = enum_class.__module__\n123         v_string, v_imports = serializer_factory(self.value.value).serialize()\n124         imports = {'import %s' % module, *v_imports}\n125         return \"%s.%s(%s)\" % (module, enum_class.__name__, v_string), imports\n126 \n127 \n128 class FloatSerializer(BaseSimpleSerializer):\n129     def serialize(self):\n130         if math.isnan(self.value) or math.isinf(self.value):\n131             return 'float(\"{}\")'.format(self.value), set()\n132         return super().serialize()\n133 \n134 \n135 class FrozensetSerializer(BaseSequenceSerializer):\n136     def _format(self):\n137         return \"frozenset([%s])\"\n138 \n139 \n140 class FunctionTypeSerializer(BaseSerializer):\n141     def serialize(self):\n142         if getattr(self.value, \"__self__\", None) and isinstance(self.value.__self__, type):\n143             klass = self.value.__self__\n144             module = klass.__module__\n145             return \"%s.%s.%s\" % (module, klass.__name__, self.value.__name__), {\"import %s\" % module}\n146         # Further error checking\n147         if self.value.__name__ == '<lambda>':\n148             raise ValueError(\"Cannot serialize function: lambda\")\n149         if self.value.__module__ is None:\n150             raise ValueError(\"Cannot serialize function %r: No module\" % self.value)\n151 \n152         module_name = self.value.__module__\n153 \n154         if '<' not in self.value.__qualname__:  # Qualname can include <locals>\n155             return '%s.%s' % (module_name, self.value.__qualname__), {'import %s' % self.value.__module__}\n156 \n157         raise ValueError(\n158             'Could not find function %s in %s.\\n' % (self.value.__name__, module_name)\n159         )\n160 \n161 \n162 class FunctoolsPartialSerializer(BaseSerializer):\n163     def serialize(self):\n164         # Serialize functools.partial() arguments\n165         func_string, func_imports = serializer_factory(self.value.func).serialize()\n166         args_string, args_imports = serializer_factory(self.value.args).serialize()\n167         keywords_string, keywords_imports = serializer_factory(self.value.keywords).serialize()\n168         # Add any imports needed by arguments\n169         imports = {'import functools', *func_imports, *args_imports, *keywords_imports}\n170         return (\n171             'functools.%s(%s, *%s, **%s)' % (\n172                 self.value.__class__.__name__,\n173                 func_string,\n174                 args_string,\n175                 keywords_string,\n176             ),\n177             imports,\n178         )\n179 \n180 \n181 class IterableSerializer(BaseSerializer):\n182     def serialize(self):\n183         imports = set()\n184         strings = []\n185         for item in self.value:\n186             item_string, item_imports = serializer_factory(item).serialize()\n187             imports.update(item_imports)\n188             strings.append(item_string)\n189         # When len(strings)==0, the empty iterable should be serialized as\n190         # \"()\", not \"(,)\" because (,) is invalid Python syntax.\n191         value = \"(%s)\" if len(strings) != 1 else \"(%s,)\"\n192         return value % (\", \".join(strings)), imports\n193 \n194 \n195 class ModelFieldSerializer(DeconstructableSerializer):\n196     def serialize(self):\n197         attr_name, path, args, kwargs = self.value.deconstruct()\n198         return self.serialize_deconstructed(path, args, kwargs)\n199 \n200 \n201 class ModelManagerSerializer(DeconstructableSerializer):\n202     def serialize(self):\n203         as_manager, manager_path, qs_path, args, kwargs = self.value.deconstruct()\n204         if as_manager:\n205             name, imports = self._serialize_path(qs_path)\n206             return \"%s.as_manager()\" % name, imports\n207         else:\n208             return self.serialize_deconstructed(manager_path, args, kwargs)\n209 \n210 \n211 class OperationSerializer(BaseSerializer):\n212     def serialize(self):\n213         from django.db.migrations.writer import OperationWriter\n214         string, imports = OperationWriter(self.value, indentation=0).serialize()\n215         # Nested operation, trailing comma is handled in upper OperationWriter._write()\n216         return string.rstrip(','), imports\n217 \n218 \n219 class RegexSerializer(BaseSerializer):\n220     def serialize(self):\n221         regex_pattern, pattern_imports = serializer_factory(self.value.pattern).serialize()\n222         # Turn off default implicit flags (e.g. re.U) because regexes with the\n223         # same implicit and explicit flags aren't equal.\n224         flags = self.value.flags ^ re.compile('').flags\n225         regex_flags, flag_imports = serializer_factory(flags).serialize()\n226         imports = {'import re', *pattern_imports, *flag_imports}\n227         args = [regex_pattern]\n228         if flags:\n229             args.append(regex_flags)\n230         return \"re.compile(%s)\" % ', '.join(args), imports\n231 \n232 \n233 class SequenceSerializer(BaseSequenceSerializer):\n234     def _format(self):\n235         return \"[%s]\"\n236 \n237 \n238 class SetSerializer(BaseSequenceSerializer):\n239     def _format(self):\n240         # Serialize as a set literal except when value is empty because {}\n241         # is an empty dict.\n242         return '{%s}' if self.value else 'set(%s)'\n243 \n244 \n245 class SettingsReferenceSerializer(BaseSerializer):\n246     def serialize(self):\n247         return \"settings.%s\" % self.value.setting_name, {\"from django.conf import settings\"}\n248 \n249 \n250 class TupleSerializer(BaseSequenceSerializer):\n251     def _format(self):\n252         # When len(value)==0, the empty tuple should be serialized as \"()\",\n253         # not \"(,)\" because (,) is invalid Python syntax.\n254         return \"(%s)\" if len(self.value) != 1 else \"(%s,)\"\n255 \n256 \n257 class TypeSerializer(BaseSerializer):\n258     def serialize(self):\n259         special_cases = [\n260             (models.Model, \"models.Model\", []),\n261             (type(None), 'type(None)', []),\n262         ]\n263         for case, string, imports in special_cases:\n264             if case is self.value:\n265                 return string, set(imports)\n266         if hasattr(self.value, \"__module__\"):\n267             module = self.value.__module__\n268             if module == builtins.__name__:\n269                 return self.value.__name__, set()\n270             else:\n271                 return \"%s.%s\" % (module, self.value.__name__), {\"import %s\" % module}\n272 \n273 \n274 class UUIDSerializer(BaseSerializer):\n275     def serialize(self):\n276         return \"uuid.%s\" % repr(self.value), {\"import uuid\"}\n277 \n278 \n279 class Serializer:\n280     _registry = {\n281         # Some of these are order-dependent.\n282         frozenset: FrozensetSerializer,\n283         list: SequenceSerializer,\n284         set: SetSerializer,\n285         tuple: TupleSerializer,\n286         dict: DictionarySerializer,\n287         models.Choices: ChoicesSerializer,\n288         enum.Enum: EnumSerializer,\n289         datetime.datetime: DatetimeDatetimeSerializer,\n290         (datetime.date, datetime.timedelta, datetime.time): DateTimeSerializer,\n291         SettingsReference: SettingsReferenceSerializer,\n292         float: FloatSerializer,\n293         (bool, int, type(None), bytes, str, range): BaseSimpleSerializer,\n294         decimal.Decimal: DecimalSerializer,\n295         (functools.partial, functools.partialmethod): FunctoolsPartialSerializer,\n296         (types.FunctionType, types.BuiltinFunctionType, types.MethodType): FunctionTypeSerializer,\n297         collections.abc.Iterable: IterableSerializer,\n298         (COMPILED_REGEX_TYPE, RegexObject): RegexSerializer,\n299         uuid.UUID: UUIDSerializer,\n300     }\n301 \n302     @classmethod\n303     def register(cls, type_, serializer):\n304         if not issubclass(serializer, BaseSerializer):\n305             raise ValueError(\"'%s' must inherit from 'BaseSerializer'.\" % serializer.__name__)\n306         cls._registry[type_] = serializer\n307 \n308     @classmethod\n309     def unregister(cls, type_):\n310         cls._registry.pop(type_)\n311 \n312 \n313 def serializer_factory(value):\n314     if isinstance(value, Promise):\n315         value = str(value)\n316     elif isinstance(value, LazyObject):\n317         # The unwrapped value is returned as the first item of the arguments\n318         # tuple.\n319         value = value.__reduce__()[1][0]\n320 \n321     if isinstance(value, models.Field):\n322         return ModelFieldSerializer(value)\n323     if isinstance(value, models.manager.BaseManager):\n324         return ModelManagerSerializer(value)\n325     if isinstance(value, Operation):\n326         return OperationSerializer(value)\n327     if isinstance(value, type):\n328         return TypeSerializer(value)\n329     # Anything that knows how to deconstruct itself.\n330     if hasattr(value, 'deconstruct'):\n331         return DeconstructableSerializer(value)\n332     for type_, serializer_cls in Serializer._registry.items():\n333         if isinstance(value, type_):\n334             return serializer_cls(value)\n335     raise ValueError(\n336         \"Cannot serialize: %r\\nThere are some values Django cannot serialize into \"\n337         \"migration files.\\nFor more, see https://docs.djangoproject.com/en/%s/\"\n338         \"topics/migrations/#migration-serializing\" % (value, get_docs_version())\n339     )\n",
+        "intended_behavior": "The serializer method handling `Enum` types should be adjusted to ensure that it serializes the `Enum` member's name and not its value. This ensures migration consistency across different environments and languages, addressing the core issue described."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 413,
+        "end": 500,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "413     def deconstruct(self):\n414         \"\"\"\n415         Return enough information to recreate the field as a 4-tuple:\n416 \n417          * The name of the field on the model, if contribute_to_class() has\n418            been run.\n419          * The import path of the field, including the class:e.g.\n420            django.db.models.IntegerField This should be the most portable\n421            version, so less specific may be better.\n422          * A list of positional arguments.\n423          * A dict of keyword arguments.\n424 \n425         Note that the positional or keyword arguments must contain values of\n426         the following types (including inner values of collection types):\n427 \n428          * None, bool, str, int, float, complex, set, frozenset, list, tuple,\n429            dict\n430          * UUID\n431          * datetime.datetime (naive), datetime.date\n432          * top-level classes, top-level functions - will be referenced by their\n433            full import path\n434          * Storage instances - these have their own deconstruct() method\n435 \n436         This is because the values here must be serialized into a text format\n437         (possibly new Python code, possibly JSON) and these are the only types\n438         with encoding handlers defined.\n439 \n440         There's no need to return the exact way the field was instantiated this\n441         time, just ensure that the resulting field is the same - prefer keyword\n442         arguments over positional ones, and omit parameters with their default\n443         values.\n444         \"\"\"\n445         # Short-form way of fetching all the default parameters\n446         keywords = {}\n447         possibles = {\n448             \"verbose_name\": None,\n449             \"primary_key\": False,\n450             \"max_length\": None,\n451             \"unique\": False,\n452             \"blank\": False,\n453             \"null\": False,\n454             \"db_index\": False,\n455             \"default\": NOT_PROVIDED,\n456             \"editable\": True,\n457             \"serialize\": True,\n458             \"unique_for_date\": None,\n459             \"unique_for_month\": None,\n460             \"unique_for_year\": None,\n461             \"choices\": None,\n462             \"help_text\": '',\n463             \"db_column\": None,\n464             \"db_tablespace\": None,\n465             \"auto_created\": False,\n466             \"validators\": [],\n467             \"error_messages\": None,\n468         }\n469         attr_overrides = {\n470             \"unique\": \"_unique\",\n471             \"error_messages\": \"_error_messages\",\n472             \"validators\": \"_validators\",\n473             \"verbose_name\": \"_verbose_name\",\n474             \"db_tablespace\": \"_db_tablespace\",\n475         }\n476         equals_comparison = {\"choices\", \"validators\"}\n477         for name, default in possibles.items():\n478             value = getattr(self, attr_overrides.get(name, name))\n479             # Unroll anything iterable for choices into a concrete list\n480             if name == \"choices\" and isinstance(value, collections.abc.Iterable):\n481                 value = list(value)\n482             # Do correct kind of comparison\n483             if name in equals_comparison:\n484                 if value != default:\n485                     keywords[name] = value\n486             else:\n487                 if value is not default:\n488                     keywords[name] = value\n489         # Work out path - we shorten it for known Django core fields\n490         path = \"%s.%s\" % (self.__class__.__module__, self.__class__.__qualname__)\n491         if path.startswith(\"django.db.models.fields.related\"):\n492             path = path.replace(\"django.db.models.fields.related\", \"django.db.models\")\n493         elif path.startswith(\"django.db.models.fields.files\"):\n494             path = path.replace(\"django.db.models.fields.files\", \"django.db.models\")\n495         elif path.startswith(\"django.db.models.fields.proxy\"):\n496             path = path.replace(\"django.db.models.fields.proxy\", \"django.db.models\")\n497         elif path.startswith(\"django.db.models.fields\"):\n498             path = path.replace(\"django.db.models.fields\", \"django.db.models\")\n499         # Return basic info - other fields should override this.\n500         return (self.name, path, [], keywords)\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1137,
+        "end": 1146,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1137     def deconstruct(self):\n1138         name, path, args, kwargs = super().deconstruct()\n1139         if self.auto_now:\n1140             kwargs['auto_now'] = True\n1141         if self.auto_now_add:\n1142             kwargs['auto_now_add'] = True\n1143         if self.auto_now or self.auto_now_add:\n1144             del kwargs['editable']\n1145             del kwargs['blank']\n1146         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1472,
+        "end": 1478,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1472     def deconstruct(self):\n1473         name, path, args, kwargs = super().deconstruct()\n1474         if self.max_digits is not None:\n1475             kwargs['max_digits'] = self.max_digits\n1476         if self.decimal_places is not None:\n1477             kwargs['decimal_places'] = self.decimal_places\n1478         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1582,
+        "end": 1586,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1582     def deconstruct(self):\n1583         name, path, args, kwargs = super().deconstruct()\n1584         # We do not exclude max_length if it matches default as we want to change\n1585         # the default in future.\n1586         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1624,
+        "end": 1638,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1624     def deconstruct(self):\n1625         name, path, args, kwargs = super().deconstruct()\n1626         if self.path != '':\n1627             kwargs['path'] = self.path\n1628         if self.match is not None:\n1629             kwargs['match'] = self.match\n1630         if self.recursive is not False:\n1631             kwargs['recursive'] = self.recursive\n1632         if self.allow_files is not True:\n1633             kwargs['allow_files'] = self.allow_files\n1634         if self.allow_folders is not False:\n1635             kwargs['allow_folders'] = self.allow_folders\n1636         if kwargs.get(\"max_length\") == 100:\n1637             del kwargs[\"max_length\"]\n1638         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1819,
+        "end": 1822,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1819     def deconstruct(self):\n1820         name, path, args, kwargs = super().deconstruct()\n1821         del kwargs['max_length']\n1822         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1867,
+        "end": 1875,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1867     def deconstruct(self):\n1868         name, path, args, kwargs = super().deconstruct()\n1869         if self.unpack_ipv4 is not False:\n1870             kwargs['unpack_ipv4'] = self.unpack_ipv4\n1871         if self.protocol != \"both\":\n1872             kwargs['protocol'] = self.protocol\n1873         if kwargs.get(\"max_length\") == 39:\n1874             del kwargs['max_length']\n1875         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1926,
+        "end": 1930,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1926     def deconstruct(self):\n1927         name, path, args, kwargs = super().deconstruct()\n1928         del kwargs['null']\n1929         del kwargs['blank']\n1930         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1989,
+        "end": 1999,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "1989     def deconstruct(self):\n1990         name, path, args, kwargs = super().deconstruct()\n1991         if kwargs.get(\"max_length\") == 50:\n1992             del kwargs['max_length']\n1993         if self.db_index is False:\n1994             kwargs['db_index'] = False\n1995         else:\n1996             del kwargs['db_index']\n1997         if self.allow_unicode is not False:\n1998             kwargs['allow_unicode'] = self.allow_unicode\n1999         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2106,
+        "end": 2115,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "2106     def deconstruct(self):\n2107         name, path, args, kwargs = super().deconstruct()\n2108         if self.auto_now is not False:\n2109             kwargs[\"auto_now\"] = self.auto_now\n2110         if self.auto_now_add is not False:\n2111             kwargs[\"auto_now_add\"] = self.auto_now_add\n2112         if self.auto_now or self.auto_now_add:\n2113             del kwargs['blank']\n2114             del kwargs['editable']\n2115         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2185,
+        "end": 2189,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "2185     def deconstruct(self):\n2186         name, path, args, kwargs = super().deconstruct()\n2187         if kwargs.get(\"max_length\") == 200:\n2188             del kwargs['max_length']\n2189         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2225,
+        "end": 2231,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "2225     def deconstruct(self):\n2226         name, path, args, kwargs = super().deconstruct()\n2227         if self.editable:\n2228             kwargs['editable'] = True\n2229         else:\n2230             del kwargs['editable']\n2231         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2275,
+        "end": 2278,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "2275     def deconstruct(self):\n2276         name, path, args, kwargs = super().deconstruct()\n2277         del kwargs['max_length']\n2278         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2342,
+        "end": 2346,
+        "class_name": null,
+        "method_name": "deconstruct",
+        "code": "2342     def deconstruct(self):\n2343         name, path, args, kwargs = super().deconstruct()\n2344         del kwargs['blank']\n2345         kwargs['primary_key'] = True\n2346         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 413,
+        "end": 500,
+        "class_name": "Field",
+        "method_name": "deconstruct",
+        "code": "413     def deconstruct(self):\n414         \"\"\"\n415         Return enough information to recreate the field as a 4-tuple:\n416 \n417          * The name of the field on the model, if contribute_to_class() has\n418            been run.\n419          * The import path of the field, including the class:e.g.\n420            django.db.models.IntegerField This should be the most portable\n421            version, so less specific may be better.\n422          * A list of positional arguments.\n423          * A dict of keyword arguments.\n424 \n425         Note that the positional or keyword arguments must contain values of\n426         the following types (including inner values of collection types):\n427 \n428          * None, bool, str, int, float, complex, set, frozenset, list, tuple,\n429            dict\n430          * UUID\n431          * datetime.datetime (naive), datetime.date\n432          * top-level classes, top-level functions - will be referenced by their\n433            full import path\n434          * Storage instances - these have their own deconstruct() method\n435 \n436         This is because the values here must be serialized into a text format\n437         (possibly new Python code, possibly JSON) and these are the only types\n438         with encoding handlers defined.\n439 \n440         There's no need to return the exact way the field was instantiated this\n441         time, just ensure that the resulting field is the same - prefer keyword\n442         arguments over positional ones, and omit parameters with their default\n443         values.\n444         \"\"\"\n445         # Short-form way of fetching all the default parameters\n446         keywords = {}\n447         possibles = {\n448             \"verbose_name\": None,\n449             \"primary_key\": False,\n450             \"max_length\": None,\n451             \"unique\": False,\n452             \"blank\": False,\n453             \"null\": False,\n454             \"db_index\": False,\n455             \"default\": NOT_PROVIDED,\n456             \"editable\": True,\n457             \"serialize\": True,\n458             \"unique_for_date\": None,\n459             \"unique_for_month\": None,\n460             \"unique_for_year\": None,\n461             \"choices\": None,\n462             \"help_text\": '',\n463             \"db_column\": None,\n464             \"db_tablespace\": None,\n465             \"auto_created\": False,\n466             \"validators\": [],\n467             \"error_messages\": None,\n468         }\n469         attr_overrides = {\n470             \"unique\": \"_unique\",\n471             \"error_messages\": \"_error_messages\",\n472             \"validators\": \"_validators\",\n473             \"verbose_name\": \"_verbose_name\",\n474             \"db_tablespace\": \"_db_tablespace\",\n475         }\n476         equals_comparison = {\"choices\", \"validators\"}\n477         for name, default in possibles.items():\n478             value = getattr(self, attr_overrides.get(name, name))\n479             # Unroll anything iterable for choices into a concrete list\n480             if name == \"choices\" and isinstance(value, collections.abc.Iterable):\n481                 value = list(value)\n482             # Do correct kind of comparison\n483             if name in equals_comparison:\n484                 if value != default:\n485                     keywords[name] = value\n486             else:\n487                 if value is not default:\n488                     keywords[name] = value\n489         # Work out path - we shorten it for known Django core fields\n490         path = \"%s.%s\" % (self.__class__.__module__, self.__class__.__qualname__)\n491         if path.startswith(\"django.db.models.fields.related\"):\n492             path = path.replace(\"django.db.models.fields.related\", \"django.db.models\")\n493         elif path.startswith(\"django.db.models.fields.files\"):\n494             path = path.replace(\"django.db.models.fields.files\", \"django.db.models\")\n495         elif path.startswith(\"django.db.models.fields.proxy\"):\n496             path = path.replace(\"django.db.models.fields.proxy\", \"django.db.models\")\n497         elif path.startswith(\"django.db.models.fields\"):\n498             path = path.replace(\"django.db.models.fields\", \"django.db.models\")\n499         # Return basic info - other fields should override this.\n500         return (self.name, path, [], keywords)\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1472,
+        "end": 1478,
+        "class_name": "DecimalField",
+        "method_name": "deconstruct",
+        "code": "1472     def deconstruct(self):\n1473         name, path, args, kwargs = super().deconstruct()\n1474         if self.max_digits is not None:\n1475             kwargs['max_digits'] = self.max_digits\n1476         if self.decimal_places is not None:\n1477             kwargs['decimal_places'] = self.decimal_places\n1478         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1137,
+        "end": 1146,
+        "class_name": "DateField",
+        "method_name": "deconstruct",
+        "code": "1137     def deconstruct(self):\n1138         name, path, args, kwargs = super().deconstruct()\n1139         if self.auto_now:\n1140             kwargs['auto_now'] = True\n1141         if self.auto_now_add:\n1142             kwargs['auto_now_add'] = True\n1143         if self.auto_now or self.auto_now_add:\n1144             del kwargs['editable']\n1145             del kwargs['blank']\n1146         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2106,
+        "end": 2115,
+        "class_name": "TimeField",
+        "method_name": "deconstruct",
+        "code": "2106     def deconstruct(self):\n2107         name, path, args, kwargs = super().deconstruct()\n2108         if self.auto_now is not False:\n2109             kwargs[\"auto_now\"] = self.auto_now\n2110         if self.auto_now_add is not False:\n2111             kwargs[\"auto_now_add\"] = self.auto_now_add\n2112         if self.auto_now or self.auto_now_add:\n2113             del kwargs['blank']\n2114             del kwargs['editable']\n2115         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1582,
+        "end": 1586,
+        "class_name": "EmailField",
+        "method_name": "deconstruct",
+        "code": "1582     def deconstruct(self):\n1583         name, path, args, kwargs = super().deconstruct()\n1584         # We do not exclude max_length if it matches default as we want to change\n1585         # the default in future.\n1586         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2185,
+        "end": 2189,
+        "class_name": "URLField",
+        "method_name": "deconstruct",
+        "code": "2185     def deconstruct(self):\n2186         name, path, args, kwargs = super().deconstruct()\n2187         if kwargs.get(\"max_length\") == 200:\n2188             del kwargs['max_length']\n2189         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1926,
+        "end": 1930,
+        "class_name": "NullBooleanField",
+        "method_name": "deconstruct",
+        "code": "1926     def deconstruct(self):\n1927         name, path, args, kwargs = super().deconstruct()\n1928         del kwargs['null']\n1929         del kwargs['blank']\n1930         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1624,
+        "end": 1638,
+        "class_name": "FilePathField",
+        "method_name": "deconstruct",
+        "code": "1624     def deconstruct(self):\n1625         name, path, args, kwargs = super().deconstruct()\n1626         if self.path != '':\n1627             kwargs['path'] = self.path\n1628         if self.match is not None:\n1629             kwargs['match'] = self.match\n1630         if self.recursive is not False:\n1631             kwargs['recursive'] = self.recursive\n1632         if self.allow_files is not True:\n1633             kwargs['allow_files'] = self.allow_files\n1634         if self.allow_folders is not False:\n1635             kwargs['allow_folders'] = self.allow_folders\n1636         if kwargs.get(\"max_length\") == 100:\n1637             del kwargs[\"max_length\"]\n1638         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1867,
+        "end": 1875,
+        "class_name": "GenericIPAddressField",
+        "method_name": "deconstruct",
+        "code": "1867     def deconstruct(self):\n1868         name, path, args, kwargs = super().deconstruct()\n1869         if self.unpack_ipv4 is not False:\n1870             kwargs['unpack_ipv4'] = self.unpack_ipv4\n1871         if self.protocol != \"both\":\n1872             kwargs['protocol'] = self.protocol\n1873         if kwargs.get(\"max_length\") == 39:\n1874             del kwargs['max_length']\n1875         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1989,
+        "end": 1999,
+        "class_name": "SlugField",
+        "method_name": "deconstruct",
+        "code": "1989     def deconstruct(self):\n1990         name, path, args, kwargs = super().deconstruct()\n1991         if kwargs.get(\"max_length\") == 50:\n1992             del kwargs['max_length']\n1993         if self.db_index is False:\n1994             kwargs['db_index'] = False\n1995         else:\n1996             del kwargs['db_index']\n1997         if self.allow_unicode is not False:\n1998             kwargs['allow_unicode'] = self.allow_unicode\n1999         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2275,
+        "end": 2278,
+        "class_name": "UUIDField",
+        "method_name": "deconstruct",
+        "code": "2275     def deconstruct(self):\n2276         name, path, args, kwargs = super().deconstruct()\n2277         del kwargs['max_length']\n2278         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 1819,
+        "end": 1822,
+        "class_name": "IPAddressField",
+        "method_name": "deconstruct",
+        "code": "1819     def deconstruct(self):\n1820         name, path, args, kwargs = super().deconstruct()\n1821         del kwargs['max_length']\n1822         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2225,
+        "end": 2231,
+        "class_name": "BinaryField",
+        "method_name": "deconstruct",
+        "code": "2225     def deconstruct(self):\n2226         name, path, args, kwargs = super().deconstruct()\n2227         if self.editable:\n2228             kwargs['editable'] = True\n2229         else:\n2230             del kwargs['editable']\n2231         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    },
+    {
+        "rel_file_path": "django/db/models/fields/__init__.py",
+        "abs_file_path": "/home/kimnal0/auto-code-rover/SWE-bench/testbed/django__django/setup_django__django__3.1/django/db/models/fields/__init__.py",
+        "start": 2342,
+        "end": 2346,
+        "class_name": "AutoFieldMixin",
+        "method_name": "deconstruct",
+        "code": "2342     def deconstruct(self):\n2343         name, path, args, kwargs = super().deconstruct()\n2344         del kwargs['blank']\n2345         kwargs['primary_key'] = True\n2346         return name, path, args, kwargs\n",
+        "intended_behavior": "Ensure the `deconstruct` method explicitly checks for `Enum` types and formats the serialization string to use the `Enum`'s name. This behavior would need to be consistent with the adjusted serialization logic in django/db/migrations/serializer.py, ensuring `Enum` defaults are correctly represented in migration files."
+    }
+]

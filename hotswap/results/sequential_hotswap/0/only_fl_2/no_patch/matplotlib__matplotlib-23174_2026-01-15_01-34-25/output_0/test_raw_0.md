@@ -1,0 +1,48 @@
+```python
+import matplotlib.pyplot as plt
+import numpy as np
+
+def print_stacktrace(e: Exception):
+    import traceback
+    import sys
+    tb = traceback.extract_tb(e.__traceback__)
+    print("Traceback (most recent call last):", file=sys.stderr)
+    for frame in tb:
+        line_number = frame.lineno
+        code_context = frame.line.strip() if frame.line else "Unknown"
+        print(f'  File "{frame.filename}"', file=sys.stderr)
+        print(f"    {line_number}: {code_context}", file=sys.stderr)
+    print(f"{e.__class__.__name__}: {e}", file=sys.stderr)
+
+def test_subfigure_clabel():
+    delta = 0.025
+    x = np.arange(-3.0, 3.0, delta)
+    y = np.arange(-2.0, 2.0, delta)
+    X, Y = np.meshgrid(x, y)
+    Z1 = np.exp(-(X**2) - Y**2)
+    Z2 = np.exp(-((X - 1) ** 2) - (Y - 1) ** 2)
+    Z = (Z1 - Z2) * 2
+
+    fig = plt.figure()
+    figs = fig.subfigures(nrows=1, ncols=2)
+
+    try:
+        for f in figs:
+            ax = f.subplots()
+            CS = ax.contour(X, Y, Z)
+            ax.clabel(CS, inline=True, fontsize=10)
+            ax.set_title("Simplest default with labels")
+
+        plt.show()
+
+        return True  # Assuming success if no exception is raised
+    except Exception as e:
+        print_stacktrace(e)
+        return False
+
+if __name__ == "__main__":
+    result = test_subfigure_clabel()
+    assert result, "The issue is present."  # This line will raise an AssertionError if result is False
+    print("The issue is fixed. Exiting with code 0.")
+    exit(0)
+```

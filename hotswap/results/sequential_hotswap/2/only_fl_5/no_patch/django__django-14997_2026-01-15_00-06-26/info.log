@@ -1,0 +1,1069 @@
+2026-01-15 00:06:26.671 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 00:06:31.923 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1672, output_tokens=12, cost=0.017080
+2026-01-15 00:07:05.969 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1852, output_tokens=1287, cost=0.057130
+2026-01-15 00:07:07.615 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:07:16.991 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1924, output_tokens=330, cost=0.029140
+2026-01-15 00:07:16.997 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:07:20.022 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=684, output_tokens=67, cost=0.008850
+2026-01-15 00:07:20.023 | DEBUG    | Extracted a valid json.
+2026-01-15 00:07:20.024 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"Tag\")",
+        "search_method(\"alter_field\")",
+        "search_method(\"_remake_table\")",
+        "search_code(\"UniqueConstraint\")",
+        "search_code(\"execute(self, sql, params)\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 00:07:20.199 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 00:07:20.200 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 00:07:38.958 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=6122, output_tokens=764, cost=0.084140
+2026-01-15 00:07:38.971 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 00:07:49.325 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=7102, output_tokens=341, cost=0.081250
+2026-01-15 00:07:49.331 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 00:07:59.280 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=695, output_tokens=370, cost=0.018050
+2026-01-15 00:07:59.281 | DEBUG    | Extracted a valid json.
+2026-01-15 00:07:59.281 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "django/db/backends/sqlite3/schema.py",
+            "class": "",
+            "method": "_remake_table",
+            "intended_behavior": "This method should safely handle schema changes, particularly those involving `UniqueConstraint` additions or alterations, without running into SQLite's syntactical limitations. Specifically, when reforming a table to apply schema changes, any SQL statements generated, especially those concerning constraints, must be formulated in a way that SQLite supports. This implies avoiding the use of the \".\" operator in index expressions, which SQLite prohibits. This might involve a more nuanced handling or transformation of constraint definitions into SQLite-compatible SQL commands or temporarily removing problematic constraints and reapplying them in a SQLite-compatible manner after the table remake. The overall functionality—applying schema changes accurately while preserving data integrity—should remain unchanged."
+        },
+        {
+            "file": "django/db/models/constraints.py",
+            "class": "UniqueConstraint",
+            "method": "",
+            "intended_behavior": "While the issue does not directly indicate a flaw within the `UniqueConstraint` class, adjustments here might be necessary to ensure that when `UniqueConstraint`s are translated into SQL for SQLite, they adhere to SQLite's syntactical requirements. This might not involve changing the `UniqueConstraint` class directly but ensuring its interaction with the SQLite schema editor (particularly methods that execute SQL related to constraints) respects SQLite's constraints on syntax. The intended behavior, therefore, is ensuring that any SQL generated from `UniqueConstraint` definitions is compatible with SQLite's expectations, possibly via a compatibility layer or transformation within the SQLite schema editor. This ensures that Django's ORM can continue to abstract away database-specific quirks without sacrificing functionality or data integrity."
+        }
+    ]
+}
+2026-01-15 00:07:59.285 | DEBUG    | Bug location extracted successfully: [<file>django/db/backends/sqlite3/schema.py</file>
+<class>None</class>
+<method>_remake_table</method>
+<code>
+142     def _remake_table(self, model, create_field=None, delete_field=None, alter_field=None):
+143         """
+144         Shortcut to transform a model from old_model into new_model
+145 
+146         This follows the correct procedure to perform non-rename or column
+147         addition operations based on SQLite's documentation
+148 
+149         https://www.sqlite.org/lang_altertable.html#caution
+150 
+151         The essential steps are:
+152           1. Create a table with the updated definition called "new__app_model"
+153           2. Copy the data from the existing "app_model" table to the new table
+154           3. Drop the "app_model" table
+155           4. Rename the "new__app_model" table to "app_model"
+156           5. Restore any index of the previous "app_model" table.
+157         """
+158         # Self-referential fields must be recreated rather than copied from
+159         # the old model to ensure their remote_field.field_name doesn't refer
+160         # to an altered field.
+161         def is_self_referential(f):
+162             return f.is_relation and f.remote_field.model is model
+163         # Work out the new fields dict / mapping
+164         body = {
+165             f.name: f.clone() if is_self_referential(f) else f
+166             for f in model._meta.local_concrete_fields
+167         }
+168         # Since mapping might mix column names and default values,
+169         # its values must be already quoted.
+170         mapping = {f.column: self.quote_name(f.column) for f in model._meta.local_concrete_fields}
+171         # This maps field names (not columns) for things like unique_together
+172         rename_mapping = {}
+173         # If any of the new or altered fields is introducing a new PK,
+174         # remove the old one
+175         restore_pk_field = None
+176         if getattr(create_field, 'primary_key', False) or (
+177                 alter_field and getattr(alter_field[1], 'primary_key', False)):
+178             for name, field in list(body.items()):
+179                 if field.primary_key:
+180                     field.primary_key = False
+181                     restore_pk_field = field
+182                     if field.auto_created:
+183                         del body[name]
+184                         del mapping[field.column]
+185         # Add in any created fields
+186         if create_field:
+187             body[create_field.name] = create_field
+188             # Choose a default and insert it into the copy map
+189             if not create_field.many_to_many and create_field.concrete:
+190                 mapping[create_field.column] = self.quote_value(
+191                     self.effective_default(create_field)
+192                 )
+193         # Add in any altered fields
+194         if alter_field:
+195             old_field, new_field = alter_field
+196             body.pop(old_field.name, None)
+197             mapping.pop(old_field.column, None)
+198             body[new_field.name] = new_field
+199             if old_field.null and not new_field.null:
+200                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+201                     'col': self.quote_name(old_field.column),
+202                     'default': self.quote_value(self.effective_default(new_field))
+203                 }
+204                 mapping[new_field.column] = case_sql
+205             else:
+206                 mapping[new_field.column] = self.quote_name(old_field.column)
+207             rename_mapping[old_field.name] = new_field.name
+208         # Remove any deleted fields
+209         if delete_field:
+210             del body[delete_field.name]
+211             del mapping[delete_field.column]
+212             # Remove any implicit M2M tables
+213             if delete_field.many_to_many and delete_field.remote_field.through._meta.auto_created:
+214                 return self.delete_model(delete_field.remote_field.through)
+215         # Work inside a new app registry
+216         apps = Apps()
+217 
+218         # Work out the new value of unique_together, taking renames into
+219         # account
+220         unique_together = [
+221             [rename_mapping.get(n, n) for n in unique]
+222             for unique in model._meta.unique_together
+223         ]
+224 
+225         # Work out the new value for index_together, taking renames into
+226         # account
+227         index_together = [
+228             [rename_mapping.get(n, n) for n in index]
+229             for index in model._meta.index_together
+230         ]
+231 
+232         indexes = model._meta.indexes
+233         if delete_field:
+234             indexes = [
+235                 index for index in indexes
+236                 if delete_field.name not in index.fields
+237             ]
+238 
+239         constraints = list(model._meta.constraints)
+240 
+241         # Provide isolated instances of the fields to the new model body so
+242         # that the existing model's internals aren't interfered with when
+243         # the dummy model is constructed.
+244         body_copy = copy.deepcopy(body)
+245 
+246         # Construct a new model with the new fields to allow self referential
+247         # primary key to resolve to. This model won't ever be materialized as a
+248         # table and solely exists for foreign key reference resolution purposes.
+249         # This wouldn't be required if the schema editor was operating on model
+250         # states instead of rendered models.
+251         meta_contents = {
+252             'app_label': model._meta.app_label,
+253             'db_table': model._meta.db_table,
+254             'unique_together': unique_together,
+255             'index_together': index_together,
+256             'indexes': indexes,
+257             'constraints': constraints,
+258             'apps': apps,
+259         }
+260         meta = type("Meta", (), meta_contents)
+261         body_copy['Meta'] = meta
+262         body_copy['__module__'] = model.__module__
+263         type(model._meta.object_name, model.__bases__, body_copy)
+264 
+265         # Construct a model with a renamed table name.
+266         body_copy = copy.deepcopy(body)
+267         meta_contents = {
+268             'app_label': model._meta.app_label,
+269             'db_table': 'new__%s' % strip_quotes(model._meta.db_table),
+270             'unique_together': unique_together,
+271             'index_together': index_together,
+272             'indexes': indexes,
+273             'constraints': constraints,
+274             'apps': apps,
+275         }
+276         meta = type("Meta", (), meta_contents)
+277         body_copy['Meta'] = meta
+278         body_copy['__module__'] = model.__module__
+279         new_model = type('New%s' % model._meta.object_name, model.__bases__, body_copy)
+280 
+281         # Create a new table with the updated schema.
+282         self.create_model(new_model)
+283 
+284         # Copy data from the old table into the new table
+285         self.execute("INSERT INTO %s (%s) SELECT %s FROM %s" % (
+286             self.quote_name(new_model._meta.db_table),
+287             ', '.join(self.quote_name(x) for x in mapping),
+288             ', '.join(mapping.values()),
+289             self.quote_name(model._meta.db_table),
+290         ))
+291 
+292         # Delete the old table to make way for the new
+293         self.delete_model(model, handle_autom2m=False)
+294 
+295         # Rename the new table to take way for the old
+296         self.alter_db_table(
+297             new_model, new_model._meta.db_table, model._meta.db_table,
+298             disable_constraints=False,
+299         )
+300 
+301         # Run deferred SQL on correct table
+302         for sql in self.deferred_sql:
+303             self.execute(sql)
+304         self.deferred_sql = []
+305         # Fix any PK-removed field
+306         if restore_pk_field:
+307             restore_pk_field.primary_key = True
+
+</code><intended_behavior>This method should safely handle schema changes, particularly those involving `UniqueConstraint` additions or alterations, without running into SQLite's syntactical limitations. Specifically, when reforming a table to apply schema changes, any SQL statements generated, especially those concerning constraints, must be formulated in a way that SQLite supports. This implies avoiding the use of the "." operator in index expressions, which SQLite prohibits. This might involve a more nuanced handling or transformation of constraint definitions into SQLite-compatible SQL commands or temporarily removing problematic constraints and reapplying them in a SQLite-compatible manner after the table remake. The overall functionality—applying schema changes accurately while preserving data integrity—should remain unchanged.</intended_behavior>, <file>django/db/backends/sqlite3/schema.py</file>
+<class>DatabaseSchemaEditor</class>
+<method>_remake_table</method>
+<code>
+142     def _remake_table(self, model, create_field=None, delete_field=None, alter_field=None):
+143         """
+144         Shortcut to transform a model from old_model into new_model
+145 
+146         This follows the correct procedure to perform non-rename or column
+147         addition operations based on SQLite's documentation
+148 
+149         https://www.sqlite.org/lang_altertable.html#caution
+150 
+151         The essential steps are:
+152           1. Create a table with the updated definition called "new__app_model"
+153           2. Copy the data from the existing "app_model" table to the new table
+154           3. Drop the "app_model" table
+155           4. Rename the "new__app_model" table to "app_model"
+156           5. Restore any index of the previous "app_model" table.
+157         """
+158         # Self-referential fields must be recreated rather than copied from
+159         # the old model to ensure their remote_field.field_name doesn't refer
+160         # to an altered field.
+161         def is_self_referential(f):
+162             return f.is_relation and f.remote_field.model is model
+163         # Work out the new fields dict / mapping
+164         body = {
+165             f.name: f.clone() if is_self_referential(f) else f
+166             for f in model._meta.local_concrete_fields
+167         }
+168         # Since mapping might mix column names and default values,
+169         # its values must be already quoted.
+170         mapping = {f.column: self.quote_name(f.column) for f in model._meta.local_concrete_fields}
+171         # This maps field names (not columns) for things like unique_together
+172         rename_mapping = {}
+173         # If any of the new or altered fields is introducing a new PK,
+174         # remove the old one
+175         restore_pk_field = None
+176         if getattr(create_field, 'primary_key', False) or (
+177                 alter_field and getattr(alter_field[1], 'primary_key', False)):
+178             for name, field in list(body.items()):
+179                 if field.primary_key:
+180                     field.primary_key = False
+181                     restore_pk_field = field
+182                     if field.auto_created:
+183                         del body[name]
+184                         del mapping[field.column]
+185         # Add in any created fields
+186         if create_field:
+187             body[create_field.name] = create_field
+188             # Choose a default and insert it into the copy map
+189             if not create_field.many_to_many and create_field.concrete:
+190                 mapping[create_field.column] = self.quote_value(
+191                     self.effective_default(create_field)
+192                 )
+193         # Add in any altered fields
+194         if alter_field:
+195             old_field, new_field = alter_field
+196             body.pop(old_field.name, None)
+197             mapping.pop(old_field.column, None)
+198             body[new_field.name] = new_field
+199             if old_field.null and not new_field.null:
+200                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+201                     'col': self.quote_name(old_field.column),
+202                     'default': self.quote_value(self.effective_default(new_field))
+203                 }
+204                 mapping[new_field.column] = case_sql
+205             else:
+206                 mapping[new_field.column] = self.quote_name(old_field.column)
+207             rename_mapping[old_field.name] = new_field.name
+208         # Remove any deleted fields
+209         if delete_field:
+210             del body[delete_field.name]
+211             del mapping[delete_field.column]
+212             # Remove any implicit M2M tables
+213             if delete_field.many_to_many and delete_field.remote_field.through._meta.auto_created:
+214                 return self.delete_model(delete_field.remote_field.through)
+215         # Work inside a new app registry
+216         apps = Apps()
+217 
+218         # Work out the new value of unique_together, taking renames into
+219         # account
+220         unique_together = [
+221             [rename_mapping.get(n, n) for n in unique]
+222             for unique in model._meta.unique_together
+223         ]
+224 
+225         # Work out the new value for index_together, taking renames into
+226         # account
+227         index_together = [
+228             [rename_mapping.get(n, n) for n in index]
+229             for index in model._meta.index_together
+230         ]
+231 
+232         indexes = model._meta.indexes
+233         if delete_field:
+234             indexes = [
+235                 index for index in indexes
+236                 if delete_field.name not in index.fields
+237             ]
+238 
+239         constraints = list(model._meta.constraints)
+240 
+241         # Provide isolated instances of the fields to the new model body so
+242         # that the existing model's internals aren't interfered with when
+243         # the dummy model is constructed.
+244         body_copy = copy.deepcopy(body)
+245 
+246         # Construct a new model with the new fields to allow self referential
+247         # primary key to resolve to. This model won't ever be materialized as a
+248         # table and solely exists for foreign key reference resolution purposes.
+249         # This wouldn't be required if the schema editor was operating on model
+250         # states instead of rendered models.
+251         meta_contents = {
+252             'app_label': model._meta.app_label,
+253             'db_table': model._meta.db_table,
+254             'unique_together': unique_together,
+255             'index_together': index_together,
+256             'indexes': indexes,
+257             'constraints': constraints,
+258             'apps': apps,
+259         }
+260         meta = type("Meta", (), meta_contents)
+261         body_copy['Meta'] = meta
+262         body_copy['__module__'] = model.__module__
+263         type(model._meta.object_name, model.__bases__, body_copy)
+264 
+265         # Construct a model with a renamed table name.
+266         body_copy = copy.deepcopy(body)
+267         meta_contents = {
+268             'app_label': model._meta.app_label,
+269             'db_table': 'new__%s' % strip_quotes(model._meta.db_table),
+270             'unique_together': unique_together,
+271             'index_together': index_together,
+272             'indexes': indexes,
+273             'constraints': constraints,
+274             'apps': apps,
+275         }
+276         meta = type("Meta", (), meta_contents)
+277         body_copy['Meta'] = meta
+278         body_copy['__module__'] = model.__module__
+279         new_model = type('New%s' % model._meta.object_name, model.__bases__, body_copy)
+280 
+281         # Create a new table with the updated schema.
+282         self.create_model(new_model)
+283 
+284         # Copy data from the old table into the new table
+285         self.execute("INSERT INTO %s (%s) SELECT %s FROM %s" % (
+286             self.quote_name(new_model._meta.db_table),
+287             ', '.join(self.quote_name(x) for x in mapping),
+288             ', '.join(mapping.values()),
+289             self.quote_name(model._meta.db_table),
+290         ))
+291 
+292         # Delete the old table to make way for the new
+293         self.delete_model(model, handle_autom2m=False)
+294 
+295         # Rename the new table to take way for the old
+296         self.alter_db_table(
+297             new_model, new_model._meta.db_table, model._meta.db_table,
+298             disable_constraints=False,
+299         )
+300 
+301         # Run deferred SQL on correct table
+302         for sql in self.deferred_sql:
+303             self.execute(sql)
+304         self.deferred_sql = []
+305         # Fix any PK-removed field
+306         if restore_pk_field:
+307             restore_pk_field.primary_key = True
+
+</code><intended_behavior>This method should safely handle schema changes, particularly those involving `UniqueConstraint` additions or alterations, without running into SQLite's syntactical limitations. Specifically, when reforming a table to apply schema changes, any SQL statements generated, especially those concerning constraints, must be formulated in a way that SQLite supports. This implies avoiding the use of the "." operator in index expressions, which SQLite prohibits. This might involve a more nuanced handling or transformation of constraint definitions into SQLite-compatible SQL commands or temporarily removing problematic constraints and reapplying them in a SQLite-compatible manner after the table remake. The overall functionality—applying schema changes accurately while preserving data integrity—should remain unchanged.</intended_behavior>, <file>django/db/models/constraints.py</file>
+<class>UniqueConstraint</class>
+<method>None</method>
+<code>
+93 class UniqueConstraint(BaseConstraint):
+94     def __init__(
+95         self,
+96         *expressions,
+97         fields=(),
+98         name=None,
+99         condition=None,
+100         deferrable=None,
+101         include=None,
+102         opclasses=(),
+103     ):
+104         if not name:
+105             raise ValueError('A unique constraint must be named.')
+106         if not expressions and not fields:
+107             raise ValueError(
+108                 'At least one field or expression is required to define a '
+109                 'unique constraint.'
+110             )
+111         if expressions and fields:
+112             raise ValueError(
+113                 'UniqueConstraint.fields and expressions are mutually exclusive.'
+114             )
+115         if not isinstance(condition, (type(None), Q)):
+116             raise ValueError('UniqueConstraint.condition must be a Q instance.')
+117         if condition and deferrable:
+118             raise ValueError(
+119                 'UniqueConstraint with conditions cannot be deferred.'
+120             )
+121         if include and deferrable:
+122             raise ValueError(
+123                 'UniqueConstraint with include fields cannot be deferred.'
+124             )
+125         if opclasses and deferrable:
+126             raise ValueError(
+127                 'UniqueConstraint with opclasses cannot be deferred.'
+128             )
+129         if expressions and deferrable:
+130             raise ValueError(
+131                 'UniqueConstraint with expressions cannot be deferred.'
+132             )
+133         if expressions and opclasses:
+134             raise ValueError(
+135                 'UniqueConstraint.opclasses cannot be used with expressions. '
+136                 'Use django.contrib.postgres.indexes.OpClass() instead.'
+137             )
+138         if not isinstance(deferrable, (type(None), Deferrable)):
+139             raise ValueError(
+140                 'UniqueConstraint.deferrable must be a Deferrable instance.'
+141             )
+142         if not isinstance(include, (type(None), list, tuple)):
+143             raise ValueError('UniqueConstraint.include must be a list or tuple.')
+144         if not isinstance(opclasses, (list, tuple)):
+145             raise ValueError('UniqueConstraint.opclasses must be a list or tuple.')
+146         if opclasses and len(fields) != len(opclasses):
+147             raise ValueError(
+148                 'UniqueConstraint.fields and UniqueConstraint.opclasses must '
+149                 'have the same number of elements.'
+150             )
+151         self.fields = tuple(fields)
+152         self.condition = condition
+153         self.deferrable = deferrable
+154         self.include = tuple(include) if include else ()
+155         self.opclasses = opclasses
+156         self.expressions = tuple(
+157             F(expression) if isinstance(expression, str) else expression
+158             for expression in expressions
+159         )
+160         super().__init__(name)
+161 
+162     @property
+163     def contains_expressions(self):
+164         return bool(self.expressions)
+165 
+166     def _get_condition_sql(self, model, schema_editor):
+167         if self.condition is None:
+168             return None
+169         query = Query(model=model, alias_cols=False)
+170         where = query.build_where(self.condition)
+171         compiler = query.get_compiler(connection=schema_editor.connection)
+172         sql, params = where.as_sql(compiler, schema_editor.connection)
+173         return sql % tuple(schema_editor.quote_value(p) for p in params)
+174 
+175     def _get_index_expressions(self, model, schema_editor):
+176         if not self.expressions:
+177             return None
+178         index_expressions = []
+179         for expression in self.expressions:
+180             index_expression = IndexExpression(expression)
+181             index_expression.set_wrapper_classes(schema_editor.connection)
+182             index_expressions.append(index_expression)
+183         return ExpressionList(*index_expressions).resolve_expression(
+184             Query(model, alias_cols=False),
+185         )
+186 
+187     def constraint_sql(self, model, schema_editor):
+188         fields = [model._meta.get_field(field_name) for field_name in self.fields]
+189         include = [model._meta.get_field(field_name).column for field_name in self.include]
+190         condition = self._get_condition_sql(model, schema_editor)
+191         expressions = self._get_index_expressions(model, schema_editor)
+192         return schema_editor._unique_sql(
+193             model, fields, self.name, condition=condition,
+194             deferrable=self.deferrable, include=include,
+195             opclasses=self.opclasses, expressions=expressions,
+196         )
+197 
+198     def create_sql(self, model, schema_editor):
+199         fields = [model._meta.get_field(field_name) for field_name in self.fields]
+200         include = [model._meta.get_field(field_name).column for field_name in self.include]
+201         condition = self._get_condition_sql(model, schema_editor)
+202         expressions = self._get_index_expressions(model, schema_editor)
+203         return schema_editor._create_unique_sql(
+204             model, fields, self.name, condition=condition,
+205             deferrable=self.deferrable, include=include,
+206             opclasses=self.opclasses, expressions=expressions,
+207         )
+208 
+209     def remove_sql(self, model, schema_editor):
+210         condition = self._get_condition_sql(model, schema_editor)
+211         include = [model._meta.get_field(field_name).column for field_name in self.include]
+212         expressions = self._get_index_expressions(model, schema_editor)
+213         return schema_editor._delete_unique_sql(
+214             model, self.name, condition=condition, deferrable=self.deferrable,
+215             include=include, opclasses=self.opclasses, expressions=expressions,
+216         )
+217 
+218     def __repr__(self):
+219         return '<%s:%s%s%s%s%s%s%s>' % (
+220             self.__class__.__qualname__,
+221             '' if not self.fields else ' fields=%s' % repr(self.fields),
+222             '' if not self.expressions else ' expressions=%s' % repr(self.expressions),
+223             ' name=%s' % repr(self.name),
+224             '' if self.condition is None else ' condition=%s' % self.condition,
+225             '' if self.deferrable is None else ' deferrable=%r' % self.deferrable,
+226             '' if not self.include else ' include=%s' % repr(self.include),
+227             '' if not self.opclasses else ' opclasses=%s' % repr(self.opclasses),
+228         )
+229 
+230     def __eq__(self, other):
+231         if isinstance(other, UniqueConstraint):
+232             return (
+233                 self.name == other.name and
+234                 self.fields == other.fields and
+235                 self.condition == other.condition and
+236                 self.deferrable == other.deferrable and
+237                 self.include == other.include and
+238                 self.opclasses == other.opclasses and
+239                 self.expressions == other.expressions
+240             )
+241         return super().__eq__(other)
+242 
+243     def deconstruct(self):
+244         path, args, kwargs = super().deconstruct()
+245         if self.fields:
+246             kwargs['fields'] = self.fields
+247         if self.condition:
+248             kwargs['condition'] = self.condition
+249         if self.deferrable:
+250             kwargs['deferrable'] = self.deferrable
+251         if self.include:
+252             kwargs['include'] = self.include
+253         if self.opclasses:
+254             kwargs['opclasses'] = self.opclasses
+255         return path, self.expressions, kwargs
+
+</code><intended_behavior>While the issue does not directly indicate a flaw within the `UniqueConstraint` class, adjustments here might be necessary to ensure that when `UniqueConstraint`s are translated into SQL for SQLite, they adhere to SQLite's syntactical requirements. This might not involve changing the `UniqueConstraint` class directly but ensuring its interaction with the SQLite schema editor (particularly methods that execute SQL related to constraints) respects SQLite's constraints on syntax. The intended behavior, therefore, is ensuring that any SQL generated from `UniqueConstraint` definitions is compatible with SQLite's expectations, possibly via a compatibility layer or transformation within the SQLite schema editor. This ensures that Django's ORM can continue to abstract away database-specific quirks without sacrificing functionality or data integrity.</intended_behavior>]
+2026-01-15 00:07:59.286 | INFO     | Search completed. Bug locations: [<file>django/db/backends/sqlite3/schema.py</file>
+<class>None</class>
+<method>_remake_table</method>
+<code>
+142     def _remake_table(self, model, create_field=None, delete_field=None, alter_field=None):
+143         """
+144         Shortcut to transform a model from old_model into new_model
+145 
+146         This follows the correct procedure to perform non-rename or column
+147         addition operations based on SQLite's documentation
+148 
+149         https://www.sqlite.org/lang_altertable.html#caution
+150 
+151         The essential steps are:
+152           1. Create a table with the updated definition called "new__app_model"
+153           2. Copy the data from the existing "app_model" table to the new table
+154           3. Drop the "app_model" table
+155           4. Rename the "new__app_model" table to "app_model"
+156           5. Restore any index of the previous "app_model" table.
+157         """
+158         # Self-referential fields must be recreated rather than copied from
+159         # the old model to ensure their remote_field.field_name doesn't refer
+160         # to an altered field.
+161         def is_self_referential(f):
+162             return f.is_relation and f.remote_field.model is model
+163         # Work out the new fields dict / mapping
+164         body = {
+165             f.name: f.clone() if is_self_referential(f) else f
+166             for f in model._meta.local_concrete_fields
+167         }
+168         # Since mapping might mix column names and default values,
+169         # its values must be already quoted.
+170         mapping = {f.column: self.quote_name(f.column) for f in model._meta.local_concrete_fields}
+171         # This maps field names (not columns) for things like unique_together
+172         rename_mapping = {}
+173         # If any of the new or altered fields is introducing a new PK,
+174         # remove the old one
+175         restore_pk_field = None
+176         if getattr(create_field, 'primary_key', False) or (
+177                 alter_field and getattr(alter_field[1], 'primary_key', False)):
+178             for name, field in list(body.items()):
+179                 if field.primary_key:
+180                     field.primary_key = False
+181                     restore_pk_field = field
+182                     if field.auto_created:
+183                         del body[name]
+184                         del mapping[field.column]
+185         # Add in any created fields
+186         if create_field:
+187             body[create_field.name] = create_field
+188             # Choose a default and insert it into the copy map
+189             if not create_field.many_to_many and create_field.concrete:
+190                 mapping[create_field.column] = self.quote_value(
+191                     self.effective_default(create_field)
+192                 )
+193         # Add in any altered fields
+194         if alter_field:
+195             old_field, new_field = alter_field
+196             body.pop(old_field.name, None)
+197             mapping.pop(old_field.column, None)
+198             body[new_field.name] = new_field
+199             if old_field.null and not new_field.null:
+200                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+201                     'col': self.quote_name(old_field.column),
+202                     'default': self.quote_value(self.effective_default(new_field))
+203                 }
+204                 mapping[new_field.column] = case_sql
+205             else:
+206                 mapping[new_field.column] = self.quote_name(old_field.column)
+207             rename_mapping[old_field.name] = new_field.name
+208         # Remove any deleted fields
+209         if delete_field:
+210             del body[delete_field.name]
+211             del mapping[delete_field.column]
+212             # Remove any implicit M2M tables
+213             if delete_field.many_to_many and delete_field.remote_field.through._meta.auto_created:
+214                 return self.delete_model(delete_field.remote_field.through)
+215         # Work inside a new app registry
+216         apps = Apps()
+217 
+218         # Work out the new value of unique_together, taking renames into
+219         # account
+220         unique_together = [
+221             [rename_mapping.get(n, n) for n in unique]
+222             for unique in model._meta.unique_together
+223         ]
+224 
+225         # Work out the new value for index_together, taking renames into
+226         # account
+227         index_together = [
+228             [rename_mapping.get(n, n) for n in index]
+229             for index in model._meta.index_together
+230         ]
+231 
+232         indexes = model._meta.indexes
+233         if delete_field:
+234             indexes = [
+235                 index for index in indexes
+236                 if delete_field.name not in index.fields
+237             ]
+238 
+239         constraints = list(model._meta.constraints)
+240 
+241         # Provide isolated instances of the fields to the new model body so
+242         # that the existing model's internals aren't interfered with when
+243         # the dummy model is constructed.
+244         body_copy = copy.deepcopy(body)
+245 
+246         # Construct a new model with the new fields to allow self referential
+247         # primary key to resolve to. This model won't ever be materialized as a
+248         # table and solely exists for foreign key reference resolution purposes.
+249         # This wouldn't be required if the schema editor was operating on model
+250         # states instead of rendered models.
+251         meta_contents = {
+252             'app_label': model._meta.app_label,
+253             'db_table': model._meta.db_table,
+254             'unique_together': unique_together,
+255             'index_together': index_together,
+256             'indexes': indexes,
+257             'constraints': constraints,
+258             'apps': apps,
+259         }
+260         meta = type("Meta", (), meta_contents)
+261         body_copy['Meta'] = meta
+262         body_copy['__module__'] = model.__module__
+263         type(model._meta.object_name, model.__bases__, body_copy)
+264 
+265         # Construct a model with a renamed table name.
+266         body_copy = copy.deepcopy(body)
+267         meta_contents = {
+268             'app_label': model._meta.app_label,
+269             'db_table': 'new__%s' % strip_quotes(model._meta.db_table),
+270             'unique_together': unique_together,
+271             'index_together': index_together,
+272             'indexes': indexes,
+273             'constraints': constraints,
+274             'apps': apps,
+275         }
+276         meta = type("Meta", (), meta_contents)
+277         body_copy['Meta'] = meta
+278         body_copy['__module__'] = model.__module__
+279         new_model = type('New%s' % model._meta.object_name, model.__bases__, body_copy)
+280 
+281         # Create a new table with the updated schema.
+282         self.create_model(new_model)
+283 
+284         # Copy data from the old table into the new table
+285         self.execute("INSERT INTO %s (%s) SELECT %s FROM %s" % (
+286             self.quote_name(new_model._meta.db_table),
+287             ', '.join(self.quote_name(x) for x in mapping),
+288             ', '.join(mapping.values()),
+289             self.quote_name(model._meta.db_table),
+290         ))
+291 
+292         # Delete the old table to make way for the new
+293         self.delete_model(model, handle_autom2m=False)
+294 
+295         # Rename the new table to take way for the old
+296         self.alter_db_table(
+297             new_model, new_model._meta.db_table, model._meta.db_table,
+298             disable_constraints=False,
+299         )
+300 
+301         # Run deferred SQL on correct table
+302         for sql in self.deferred_sql:
+303             self.execute(sql)
+304         self.deferred_sql = []
+305         # Fix any PK-removed field
+306         if restore_pk_field:
+307             restore_pk_field.primary_key = True
+
+</code><intended_behavior>This method should safely handle schema changes, particularly those involving `UniqueConstraint` additions or alterations, without running into SQLite's syntactical limitations. Specifically, when reforming a table to apply schema changes, any SQL statements generated, especially those concerning constraints, must be formulated in a way that SQLite supports. This implies avoiding the use of the "." operator in index expressions, which SQLite prohibits. This might involve a more nuanced handling or transformation of constraint definitions into SQLite-compatible SQL commands or temporarily removing problematic constraints and reapplying them in a SQLite-compatible manner after the table remake. The overall functionality—applying schema changes accurately while preserving data integrity—should remain unchanged.</intended_behavior>, <file>django/db/backends/sqlite3/schema.py</file>
+<class>DatabaseSchemaEditor</class>
+<method>_remake_table</method>
+<code>
+142     def _remake_table(self, model, create_field=None, delete_field=None, alter_field=None):
+143         """
+144         Shortcut to transform a model from old_model into new_model
+145 
+146         This follows the correct procedure to perform non-rename or column
+147         addition operations based on SQLite's documentation
+148 
+149         https://www.sqlite.org/lang_altertable.html#caution
+150 
+151         The essential steps are:
+152           1. Create a table with the updated definition called "new__app_model"
+153           2. Copy the data from the existing "app_model" table to the new table
+154           3. Drop the "app_model" table
+155           4. Rename the "new__app_model" table to "app_model"
+156           5. Restore any index of the previous "app_model" table.
+157         """
+158         # Self-referential fields must be recreated rather than copied from
+159         # the old model to ensure their remote_field.field_name doesn't refer
+160         # to an altered field.
+161         def is_self_referential(f):
+162             return f.is_relation and f.remote_field.model is model
+163         # Work out the new fields dict / mapping
+164         body = {
+165             f.name: f.clone() if is_self_referential(f) else f
+166             for f in model._meta.local_concrete_fields
+167         }
+168         # Since mapping might mix column names and default values,
+169         # its values must be already quoted.
+170         mapping = {f.column: self.quote_name(f.column) for f in model._meta.local_concrete_fields}
+171         # This maps field names (not columns) for things like unique_together
+172         rename_mapping = {}
+173         # If any of the new or altered fields is introducing a new PK,
+174         # remove the old one
+175         restore_pk_field = None
+176         if getattr(create_field, 'primary_key', False) or (
+177                 alter_field and getattr(alter_field[1], 'primary_key', False)):
+178             for name, field in list(body.items()):
+179                 if field.primary_key:
+180                     field.primary_key = False
+181                     restore_pk_field = field
+182                     if field.auto_created:
+183                         del body[name]
+184                         del mapping[field.column]
+185         # Add in any created fields
+186         if create_field:
+187             body[create_field.name] = create_field
+188             # Choose a default and insert it into the copy map
+189             if not create_field.many_to_many and create_field.concrete:
+190                 mapping[create_field.column] = self.quote_value(
+191                     self.effective_default(create_field)
+192                 )
+193         # Add in any altered fields
+194         if alter_field:
+195             old_field, new_field = alter_field
+196             body.pop(old_field.name, None)
+197             mapping.pop(old_field.column, None)
+198             body[new_field.name] = new_field
+199             if old_field.null and not new_field.null:
+200                 case_sql = "coalesce(%(col)s, %(default)s)" % {
+201                     'col': self.quote_name(old_field.column),
+202                     'default': self.quote_value(self.effective_default(new_field))
+203                 }
+204                 mapping[new_field.column] = case_sql
+205             else:
+206                 mapping[new_field.column] = self.quote_name(old_field.column)
+207             rename_mapping[old_field.name] = new_field.name
+208         # Remove any deleted fields
+209         if delete_field:
+210             del body[delete_field.name]
+211             del mapping[delete_field.column]
+212             # Remove any implicit M2M tables
+213             if delete_field.many_to_many and delete_field.remote_field.through._meta.auto_created:
+214                 return self.delete_model(delete_field.remote_field.through)
+215         # Work inside a new app registry
+216         apps = Apps()
+217 
+218         # Work out the new value of unique_together, taking renames into
+219         # account
+220         unique_together = [
+221             [rename_mapping.get(n, n) for n in unique]
+222             for unique in model._meta.unique_together
+223         ]
+224 
+225         # Work out the new value for index_together, taking renames into
+226         # account
+227         index_together = [
+228             [rename_mapping.get(n, n) for n in index]
+229             for index in model._meta.index_together
+230         ]
+231 
+232         indexes = model._meta.indexes
+233         if delete_field:
+234             indexes = [
+235                 index for index in indexes
+236                 if delete_field.name not in index.fields
+237             ]
+238 
+239         constraints = list(model._meta.constraints)
+240 
+241         # Provide isolated instances of the fields to the new model body so
+242         # that the existing model's internals aren't interfered with when
+243         # the dummy model is constructed.
+244         body_copy = copy.deepcopy(body)
+245 
+246         # Construct a new model with the new fields to allow self referential
+247         # primary key to resolve to. This model won't ever be materialized as a
+248         # table and solely exists for foreign key reference resolution purposes.
+249         # This wouldn't be required if the schema editor was operating on model
+250         # states instead of rendered models.
+251         meta_contents = {
+252             'app_label': model._meta.app_label,
+253             'db_table': model._meta.db_table,
+254             'unique_together': unique_together,
+255             'index_together': index_together,
+256             'indexes': indexes,
+257             'constraints': constraints,
+258             'apps': apps,
+259         }
+260         meta = type("Meta", (), meta_contents)
+261         body_copy['Meta'] = meta
+262         body_copy['__module__'] = model.__module__
+263         type(model._meta.object_name, model.__bases__, body_copy)
+264 
+265         # Construct a model with a renamed table name.
+266         body_copy = copy.deepcopy(body)
+267         meta_contents = {
+268             'app_label': model._meta.app_label,
+269             'db_table': 'new__%s' % strip_quotes(model._meta.db_table),
+270             'unique_together': unique_together,
+271             'index_together': index_together,
+272             'indexes': indexes,
+273             'constraints': constraints,
+274             'apps': apps,
+275         }
+276         meta = type("Meta", (), meta_contents)
+277         body_copy['Meta'] = meta
+278         body_copy['__module__'] = model.__module__
+279         new_model = type('New%s' % model._meta.object_name, model.__bases__, body_copy)
+280 
+281         # Create a new table with the updated schema.
+282         self.create_model(new_model)
+283 
+284         # Copy data from the old table into the new table
+285         self.execute("INSERT INTO %s (%s) SELECT %s FROM %s" % (
+286             self.quote_name(new_model._meta.db_table),
+287             ', '.join(self.quote_name(x) for x in mapping),
+288             ', '.join(mapping.values()),
+289             self.quote_name(model._meta.db_table),
+290         ))
+291 
+292         # Delete the old table to make way for the new
+293         self.delete_model(model, handle_autom2m=False)
+294 
+295         # Rename the new table to take way for the old
+296         self.alter_db_table(
+297             new_model, new_model._meta.db_table, model._meta.db_table,
+298             disable_constraints=False,
+299         )
+300 
+301         # Run deferred SQL on correct table
+302         for sql in self.deferred_sql:
+303             self.execute(sql)
+304         self.deferred_sql = []
+305         # Fix any PK-removed field
+306         if restore_pk_field:
+307             restore_pk_field.primary_key = True
+
+</code><intended_behavior>This method should safely handle schema changes, particularly those involving `UniqueConstraint` additions or alterations, without running into SQLite's syntactical limitations. Specifically, when reforming a table to apply schema changes, any SQL statements generated, especially those concerning constraints, must be formulated in a way that SQLite supports. This implies avoiding the use of the "." operator in index expressions, which SQLite prohibits. This might involve a more nuanced handling or transformation of constraint definitions into SQLite-compatible SQL commands or temporarily removing problematic constraints and reapplying them in a SQLite-compatible manner after the table remake. The overall functionality—applying schema changes accurately while preserving data integrity—should remain unchanged.</intended_behavior>, <file>django/db/models/constraints.py</file>
+<class>UniqueConstraint</class>
+<method>None</method>
+<code>
+93 class UniqueConstraint(BaseConstraint):
+94     def __init__(
+95         self,
+96         *expressions,
+97         fields=(),
+98         name=None,
+99         condition=None,
+100         deferrable=None,
+101         include=None,
+102         opclasses=(),
+103     ):
+104         if not name:
+105             raise ValueError('A unique constraint must be named.')
+106         if not expressions and not fields:
+107             raise ValueError(
+108                 'At least one field or expression is required to define a '
+109                 'unique constraint.'
+110             )
+111         if expressions and fields:
+112             raise ValueError(
+113                 'UniqueConstraint.fields and expressions are mutually exclusive.'
+114             )
+115         if not isinstance(condition, (type(None), Q)):
+116             raise ValueError('UniqueConstraint.condition must be a Q instance.')
+117         if condition and deferrable:
+118             raise ValueError(
+119                 'UniqueConstraint with conditions cannot be deferred.'
+120             )
+121         if include and deferrable:
+122             raise ValueError(
+123                 'UniqueConstraint with include fields cannot be deferred.'
+124             )
+125         if opclasses and deferrable:
+126             raise ValueError(
+127                 'UniqueConstraint with opclasses cannot be deferred.'
+128             )
+129         if expressions and deferrable:
+130             raise ValueError(
+131                 'UniqueConstraint with expressions cannot be deferred.'
+132             )
+133         if expressions and opclasses:
+134             raise ValueError(
+135                 'UniqueConstraint.opclasses cannot be used with expressions. '
+136                 'Use django.contrib.postgres.indexes.OpClass() instead.'
+137             )
+138         if not isinstance(deferrable, (type(None), Deferrable)):
+139             raise ValueError(
+140                 'UniqueConstraint.deferrable must be a Deferrable instance.'
+141             )
+142         if not isinstance(include, (type(None), list, tuple)):
+143             raise ValueError('UniqueConstraint.include must be a list or tuple.')
+144         if not isinstance(opclasses, (list, tuple)):
+145             raise ValueError('UniqueConstraint.opclasses must be a list or tuple.')
+146         if opclasses and len(fields) != len(opclasses):
+147             raise ValueError(
+148                 'UniqueConstraint.fields and UniqueConstraint.opclasses must '
+149                 'have the same number of elements.'
+150             )
+151         self.fields = tuple(fields)
+152         self.condition = condition
+153         self.deferrable = deferrable
+154         self.include = tuple(include) if include else ()
+155         self.opclasses = opclasses
+156         self.expressions = tuple(
+157             F(expression) if isinstance(expression, str) else expression
+158             for expression in expressions
+159         )
+160         super().__init__(name)
+161 
+162     @property
+163     def contains_expressions(self):
+164         return bool(self.expressions)
+165 
+166     def _get_condition_sql(self, model, schema_editor):
+167         if self.condition is None:
+168             return None
+169         query = Query(model=model, alias_cols=False)
+170         where = query.build_where(self.condition)
+171         compiler = query.get_compiler(connection=schema_editor.connection)
+172         sql, params = where.as_sql(compiler, schema_editor.connection)
+173         return sql % tuple(schema_editor.quote_value(p) for p in params)
+174 
+175     def _get_index_expressions(self, model, schema_editor):
+176         if not self.expressions:
+177             return None
+178         index_expressions = []
+179         for expression in self.expressions:
+180             index_expression = IndexExpression(expression)
+181             index_expression.set_wrapper_classes(schema_editor.connection)
+182             index_expressions.append(index_expression)
+183         return ExpressionList(*index_expressions).resolve_expression(
+184             Query(model, alias_cols=False),
+185         )
+186 
+187     def constraint_sql(self, model, schema_editor):
+188         fields = [model._meta.get_field(field_name) for field_name in self.fields]
+189         include = [model._meta.get_field(field_name).column for field_name in self.include]
+190         condition = self._get_condition_sql(model, schema_editor)
+191         expressions = self._get_index_expressions(model, schema_editor)
+192         return schema_editor._unique_sql(
+193             model, fields, self.name, condition=condition,
+194             deferrable=self.deferrable, include=include,
+195             opclasses=self.opclasses, expressions=expressions,
+196         )
+197 
+198     def create_sql(self, model, schema_editor):
+199         fields = [model._meta.get_field(field_name) for field_name in self.fields]
+200         include = [model._meta.get_field(field_name).column for field_name in self.include]
+201         condition = self._get_condition_sql(model, schema_editor)
+202         expressions = self._get_index_expressions(model, schema_editor)
+203         return schema_editor._create_unique_sql(
+204             model, fields, self.name, condition=condition,
+205             deferrable=self.deferrable, include=include,
+206             opclasses=self.opclasses, expressions=expressions,
+207         )
+208 
+209     def remove_sql(self, model, schema_editor):
+210         condition = self._get_condition_sql(model, schema_editor)
+211         include = [model._meta.get_field(field_name).column for field_name in self.include]
+212         expressions = self._get_index_expressions(model, schema_editor)
+213         return schema_editor._delete_unique_sql(
+214             model, self.name, condition=condition, deferrable=self.deferrable,
+215             include=include, opclasses=self.opclasses, expressions=expressions,
+216         )
+217 
+218     def __repr__(self):
+219         return '<%s:%s%s%s%s%s%s%s>' % (
+220             self.__class__.__qualname__,
+221             '' if not self.fields else ' fields=%s' % repr(self.fields),
+222             '' if not self.expressions else ' expressions=%s' % repr(self.expressions),
+223             ' name=%s' % repr(self.name),
+224             '' if self.condition is None else ' condition=%s' % self.condition,
+225             '' if self.deferrable is None else ' deferrable=%r' % self.deferrable,
+226             '' if not self.include else ' include=%s' % repr(self.include),
+227             '' if not self.opclasses else ' opclasses=%s' % repr(self.opclasses),
+228         )
+229 
+230     def __eq__(self, other):
+231         if isinstance(other, UniqueConstraint):
+232             return (
+233                 self.name == other.name and
+234                 self.fields == other.fields and
+235                 self.condition == other.condition and
+236                 self.deferrable == other.deferrable and
+237                 self.include == other.include and
+238                 self.opclasses == other.opclasses and
+239                 self.expressions == other.expressions
+240             )
+241         return super().__eq__(other)
+242 
+243     def deconstruct(self):
+244         path, args, kwargs = super().deconstruct()
+245         if self.fields:
+246             kwargs['fields'] = self.fields
+247         if self.condition:
+248             kwargs['condition'] = self.condition
+249         if self.deferrable:
+250             kwargs['deferrable'] = self.deferrable
+251         if self.include:
+252             kwargs['include'] = self.include
+253         if self.opclasses:
+254             kwargs['opclasses'] = self.opclasses
+255         return path, self.expressions, kwargs
+
+</code><intended_behavior>While the issue does not directly indicate a flaw within the `UniqueConstraint` class, adjustments here might be necessary to ensure that when `UniqueConstraint`s are translated into SQL for SQLite, they adhere to SQLite's syntactical requirements. This might not involve changing the `UniqueConstraint` class directly but ensuring its interaction with the SQLite schema editor (particularly methods that execute SQL related to constraints) respects SQLite's constraints on syntax. The intended behavior, therefore, is ensuring that any SQL generated from `UniqueConstraint` definitions is compatible with SQLite's expectations, possibly via a compatibility layer or transformation within the SQLite schema editor. This ensures that Django's ORM can continue to abstract away database-specific quirks without sacrificing functionality or data integrity.</intended_behavior>]
+2026-01-15 00:07:59.286 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 00:07:59.286 | INFO     | Search-only: skipping patch selection
+2026-01-15 00:07:59.425 | INFO     | Task django__django-14997 completed successfully.
+2026-01-15 00:07:59.426 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,466 @@
+2026-01-15 02:42:20.548 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 02:42:22.051 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=252, output_tokens=12, cost=0.002880
+2026-01-15 02:42:22.052 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 02:42:22.056 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 02:42:27.832 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=560, output_tokens=172, cost=0.010760
+2026-01-15 02:42:27.836 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 02:42:30.208 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=526, output_tokens=34, cost=0.006280
+2026-01-15 02:42:30.209 | DEBUG    | Extracted a valid json.
+2026-01-15 02:42:30.209 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"Session\")",
+        "search_method(\"resolve_redirects\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 02:42:30.262 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 02:42:30.263 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 02:42:45.278 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3052, output_tokens=644, cost=0.049840
+2026-01-15 02:42:45.290 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 02:42:52.801 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3912, output_tokens=330, cost=0.049020
+2026-01-15 02:42:52.807 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 02:43:01.367 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=684, output_tokens=298, cost=0.015780
+2026-01-15 02:43:01.367 | DEBUG    | Extracted a valid json.
+2026-01-15 02:43:01.368 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "requests/sessions.py",
+            "class": "SessionRedirectMixin",
+            "method": "resolve_redirects",
+            "intended_behavior": "The `resolve_redirects` method should be modified to: maintain modifications to the request object, especially the HTTP method, across redirections within the same redirection chain. This ensures that if a POST request is converted to a GET following a 303 See Other response, this GET method is preserved for any subsequent redirects in the chain, unless another redirect response explicitly requires changing it again (e.g., another 303 See Other response pointing to a POST endpoint). Implement a mechanism to track the current request object or its essential attributes (like the method) across redirects rather than repeatedly copying the original request object. This could involve updating the copied request object after each redirect is processed or maintaining a separate state that reflects any changes that need to persist through the redirection chain. Ensure that the handling of headers, especially those that should be modified or removed based on the change of the method or the target URL's host (like `Authorization`), accurately reflects the state of the most recent request in the chain. This modification will address the current bug by correctly handling HTTP method changes across redirect chains, conforming to the behavior expected from HTTP standards and ensuring that the library handles redirects in a way that's predictable and secure for its users."
+        }
+    ]
+}
+2026-01-15 02:43:01.372 | DEBUG    | Bug location extracted successfully: [<file>requests/sessions.py</file>
+<class>SessionRedirectMixin</class>
+<method>resolve_redirects</method>
+<code>
+84     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+85                           verify=True, cert=None, proxies=None):
+86         """Receives a Response. Returns a generator of Responses."""
+87 
+88         i = 0
+89 
+90         while resp.is_redirect:
+91             prepared_request = req.copy()
+92 
+93             resp.content  # Consume socket so it can be released
+94 
+95             if i >= self.max_redirects:
+96                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+97 
+98             # Release the connection back into the pool.
+99             resp.close()
+100 
+101             url = resp.headers['location']
+102             method = req.method
+103 
+104             # Handle redirection without scheme (see: RFC 1808 Section 4)
+105             if url.startswith('//'):
+106                 parsed_rurl = urlparse(resp.url)
+107                 url = '%s:%s' % (parsed_rurl.scheme, url)
+108 
+109             # The scheme should be lower case...
+110             parsed = urlparse(url)
+111             url = parsed.geturl()
+112 
+113             # Facilitate non-RFC2616-compliant 'location' headers
+114             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+115             # Compliant with RFC3986, we percent encode the url.
+116             if not urlparse(url).netloc:
+117                 url = urljoin(resp.url, requote_uri(url))
+118             else:
+119                 url = requote_uri(url)
+120 
+121             prepared_request.url = to_native_string(url)
+122 
+123             # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.4
+124             if (resp.status_code == codes.see_other and
+125                     method != 'HEAD'):
+126                 method = 'GET'
+127 
+128             # Do what the browsers do, despite standards...
+129             # First, turn 302s into GETs.
+130             if resp.status_code == codes.found and method != 'HEAD':
+131                 method = 'GET'
+132 
+133             # Second, if a POST is responded to with a 301, turn it into a GET.
+134             # This bizarre behaviour is explained in Issue 1704.
+135             if resp.status_code == codes.moved and method == 'POST':
+136                 method = 'GET'
+137 
+138             prepared_request.method = method
+139 
+140             # https://github.com/kennethreitz/requests/issues/1084
+141             if resp.status_code not in (codes.temporary, codes.resume):
+142                 if 'Content-Length' in prepared_request.headers:
+143                     del prepared_request.headers['Content-Length']
+144 
+145                 prepared_request.body = None
+146 
+147             headers = prepared_request.headers
+148             try:
+149                 del headers['Cookie']
+150             except KeyError:
+151                 pass
+152 
+153             extract_cookies_to_jar(prepared_request._cookies, prepared_request, resp.raw)
+154             prepared_request._cookies.update(self.cookies)
+155             prepared_request.prepare_cookies(prepared_request._cookies)
+156 
+157             if 'Authorization' in headers:
+158                 # If we get redirected to a new host, we should strip out any
+159                 # authentication headers.
+160                 original_parsed = urlparse(resp.request.url)
+161                 redirect_parsed = urlparse(url)
+162 
+163                 if (original_parsed.hostname != redirect_parsed.hostname):
+164                     del headers['Authorization']
+165 
+166             # .netrc might have more auth for us.
+167             new_auth = get_netrc_auth(url) if self.trust_env else None
+168             if new_auth is not None:
+169                 prepared_request.prepare_auth(new_auth)
+170 
+171             resp = self.send(
+172                 prepared_request,
+173                 stream=stream,
+174                 timeout=timeout,
+175                 verify=verify,
+176                 cert=cert,
+177                 proxies=proxies,
+178                 allow_redirects=False,
+179             )
+180 
+181             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+182 
+183             i += 1
+184             yield resp
+
+</code><intended_behavior>The `resolve_redirects` method should be modified to: maintain modifications to the request object, especially the HTTP method, across redirections within the same redirection chain. This ensures that if a POST request is converted to a GET following a 303 See Other response, this GET method is preserved for any subsequent redirects in the chain, unless another redirect response explicitly requires changing it again (e.g., another 303 See Other response pointing to a POST endpoint). Implement a mechanism to track the current request object or its essential attributes (like the method) across redirects rather than repeatedly copying the original request object. This could involve updating the copied request object after each redirect is processed or maintaining a separate state that reflects any changes that need to persist through the redirection chain. Ensure that the handling of headers, especially those that should be modified or removed based on the change of the method or the target URL's host (like `Authorization`), accurately reflects the state of the most recent request in the chain. This modification will address the current bug by correctly handling HTTP method changes across redirect chains, conforming to the behavior expected from HTTP standards and ensuring that the library handles redirects in a way that's predictable and secure for its users.</intended_behavior>, <file>requests/sessions.py</file>
+<class>SessionRedirectMixin</class>
+<method>None</method>
+<code>
+83 class SessionRedirectMixin(object):
+84     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+85                           verify=True, cert=None, proxies=None):
+86         """Receives a Response. Returns a generator of Responses."""
+87 
+88         i = 0
+89 
+90         while resp.is_redirect:
+91             prepared_request = req.copy()
+92 
+93             resp.content  # Consume socket so it can be released
+94 
+95             if i >= self.max_redirects:
+96                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+97 
+98             # Release the connection back into the pool.
+99             resp.close()
+100 
+101             url = resp.headers['location']
+102             method = req.method
+103 
+104             # Handle redirection without scheme (see: RFC 1808 Section 4)
+105             if url.startswith('//'):
+106                 parsed_rurl = urlparse(resp.url)
+107                 url = '%s:%s' % (parsed_rurl.scheme, url)
+108 
+109             # The scheme should be lower case...
+110             parsed = urlparse(url)
+111             url = parsed.geturl()
+112 
+113             # Facilitate non-RFC2616-compliant 'location' headers
+114             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+115             # Compliant with RFC3986, we percent encode the url.
+116             if not urlparse(url).netloc:
+117                 url = urljoin(resp.url, requote_uri(url))
+118             else:
+119                 url = requote_uri(url)
+120 
+121             prepared_request.url = to_native_string(url)
+122 
+123             # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.4
+124             if (resp.status_code == codes.see_other and
+125                     method != 'HEAD'):
+126                 method = 'GET'
+127 
+128             # Do what the browsers do, despite standards...
+129             # First, turn 302s into GETs.
+130             if resp.status_code == codes.found and method != 'HEAD':
+131                 method = 'GET'
+132 
+133             # Second, if a POST is responded to with a 301, turn it into a GET.
+134             # This bizarre behaviour is explained in Issue 1704.
+135             if resp.status_code == codes.moved and method == 'POST':
+136                 method = 'GET'
+137 
+138             prepared_request.method = method
+139 
+140             # https://github.com/kennethreitz/requests/issues/1084
+141             if resp.status_code not in (codes.temporary, codes.resume):
+142                 if 'Content-Length' in prepared_request.headers:
+143                     del prepared_request.headers['Content-Length']
+144 
+145                 prepared_request.body = None
+146 
+147             headers = prepared_request.headers
+148             try:
+149                 del headers['Cookie']
+150             except KeyError:
+151                 pass
+152 
+153             extract_cookies_to_jar(prepared_request._cookies, prepared_request, resp.raw)
+154             prepared_request._cookies.update(self.cookies)
+155             prepared_request.prepare_cookies(prepared_request._cookies)
+156 
+157             if 'Authorization' in headers:
+158                 # If we get redirected to a new host, we should strip out any
+159                 # authentication headers.
+160                 original_parsed = urlparse(resp.request.url)
+161                 redirect_parsed = urlparse(url)
+162 
+163                 if (original_parsed.hostname != redirect_parsed.hostname):
+164                     del headers['Authorization']
+165 
+166             # .netrc might have more auth for us.
+167             new_auth = get_netrc_auth(url) if self.trust_env else None
+168             if new_auth is not None:
+169                 prepared_request.prepare_auth(new_auth)
+170 
+171             resp = self.send(
+172                 prepared_request,
+173                 stream=stream,
+174                 timeout=timeout,
+175                 verify=verify,
+176                 cert=cert,
+177                 proxies=proxies,
+178                 allow_redirects=False,
+179             )
+180 
+181             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+182 
+183             i += 1
+184             yield resp
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-15 02:43:01.372 | INFO     | Search completed. Bug locations: [<file>requests/sessions.py</file>
+<class>SessionRedirectMixin</class>
+<method>resolve_redirects</method>
+<code>
+84     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+85                           verify=True, cert=None, proxies=None):
+86         """Receives a Response. Returns a generator of Responses."""
+87 
+88         i = 0
+89 
+90         while resp.is_redirect:
+91             prepared_request = req.copy()
+92 
+93             resp.content  # Consume socket so it can be released
+94 
+95             if i >= self.max_redirects:
+96                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+97 
+98             # Release the connection back into the pool.
+99             resp.close()
+100 
+101             url = resp.headers['location']
+102             method = req.method
+103 
+104             # Handle redirection without scheme (see: RFC 1808 Section 4)
+105             if url.startswith('//'):
+106                 parsed_rurl = urlparse(resp.url)
+107                 url = '%s:%s' % (parsed_rurl.scheme, url)
+108 
+109             # The scheme should be lower case...
+110             parsed = urlparse(url)
+111             url = parsed.geturl()
+112 
+113             # Facilitate non-RFC2616-compliant 'location' headers
+114             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+115             # Compliant with RFC3986, we percent encode the url.
+116             if not urlparse(url).netloc:
+117                 url = urljoin(resp.url, requote_uri(url))
+118             else:
+119                 url = requote_uri(url)
+120 
+121             prepared_request.url = to_native_string(url)
+122 
+123             # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.4
+124             if (resp.status_code == codes.see_other and
+125                     method != 'HEAD'):
+126                 method = 'GET'
+127 
+128             # Do what the browsers do, despite standards...
+129             # First, turn 302s into GETs.
+130             if resp.status_code == codes.found and method != 'HEAD':
+131                 method = 'GET'
+132 
+133             # Second, if a POST is responded to with a 301, turn it into a GET.
+134             # This bizarre behaviour is explained in Issue 1704.
+135             if resp.status_code == codes.moved and method == 'POST':
+136                 method = 'GET'
+137 
+138             prepared_request.method = method
+139 
+140             # https://github.com/kennethreitz/requests/issues/1084
+141             if resp.status_code not in (codes.temporary, codes.resume):
+142                 if 'Content-Length' in prepared_request.headers:
+143                     del prepared_request.headers['Content-Length']
+144 
+145                 prepared_request.body = None
+146 
+147             headers = prepared_request.headers
+148             try:
+149                 del headers['Cookie']
+150             except KeyError:
+151                 pass
+152 
+153             extract_cookies_to_jar(prepared_request._cookies, prepared_request, resp.raw)
+154             prepared_request._cookies.update(self.cookies)
+155             prepared_request.prepare_cookies(prepared_request._cookies)
+156 
+157             if 'Authorization' in headers:
+158                 # If we get redirected to a new host, we should strip out any
+159                 # authentication headers.
+160                 original_parsed = urlparse(resp.request.url)
+161                 redirect_parsed = urlparse(url)
+162 
+163                 if (original_parsed.hostname != redirect_parsed.hostname):
+164                     del headers['Authorization']
+165 
+166             # .netrc might have more auth for us.
+167             new_auth = get_netrc_auth(url) if self.trust_env else None
+168             if new_auth is not None:
+169                 prepared_request.prepare_auth(new_auth)
+170 
+171             resp = self.send(
+172                 prepared_request,
+173                 stream=stream,
+174                 timeout=timeout,
+175                 verify=verify,
+176                 cert=cert,
+177                 proxies=proxies,
+178                 allow_redirects=False,
+179             )
+180 
+181             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+182 
+183             i += 1
+184             yield resp
+
+</code><intended_behavior>The `resolve_redirects` method should be modified to: maintain modifications to the request object, especially the HTTP method, across redirections within the same redirection chain. This ensures that if a POST request is converted to a GET following a 303 See Other response, this GET method is preserved for any subsequent redirects in the chain, unless another redirect response explicitly requires changing it again (e.g., another 303 See Other response pointing to a POST endpoint). Implement a mechanism to track the current request object or its essential attributes (like the method) across redirects rather than repeatedly copying the original request object. This could involve updating the copied request object after each redirect is processed or maintaining a separate state that reflects any changes that need to persist through the redirection chain. Ensure that the handling of headers, especially those that should be modified or removed based on the change of the method or the target URL's host (like `Authorization`), accurately reflects the state of the most recent request in the chain. This modification will address the current bug by correctly handling HTTP method changes across redirect chains, conforming to the behavior expected from HTTP standards and ensuring that the library handles redirects in a way that's predictable and secure for its users.</intended_behavior>, <file>requests/sessions.py</file>
+<class>SessionRedirectMixin</class>
+<method>None</method>
+<code>
+83 class SessionRedirectMixin(object):
+84     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+85                           verify=True, cert=None, proxies=None):
+86         """Receives a Response. Returns a generator of Responses."""
+87 
+88         i = 0
+89 
+90         while resp.is_redirect:
+91             prepared_request = req.copy()
+92 
+93             resp.content  # Consume socket so it can be released
+94 
+95             if i >= self.max_redirects:
+96                 raise TooManyRedirects('Exceeded %s redirects.' % self.max_redirects)
+97 
+98             # Release the connection back into the pool.
+99             resp.close()
+100 
+101             url = resp.headers['location']
+102             method = req.method
+103 
+104             # Handle redirection without scheme (see: RFC 1808 Section 4)
+105             if url.startswith('//'):
+106                 parsed_rurl = urlparse(resp.url)
+107                 url = '%s:%s' % (parsed_rurl.scheme, url)
+108 
+109             # The scheme should be lower case...
+110             parsed = urlparse(url)
+111             url = parsed.geturl()
+112 
+113             # Facilitate non-RFC2616-compliant 'location' headers
+114             # (e.g. '/path/to/resource' instead of 'http://domain.tld/path/to/resource')
+115             # Compliant with RFC3986, we percent encode the url.
+116             if not urlparse(url).netloc:
+117                 url = urljoin(resp.url, requote_uri(url))
+118             else:
+119                 url = requote_uri(url)
+120 
+121             prepared_request.url = to_native_string(url)
+122 
+123             # http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.4
+124             if (resp.status_code == codes.see_other and
+125                     method != 'HEAD'):
+126                 method = 'GET'
+127 
+128             # Do what the browsers do, despite standards...
+129             # First, turn 302s into GETs.
+130             if resp.status_code == codes.found and method != 'HEAD':
+131                 method = 'GET'
+132 
+133             # Second, if a POST is responded to with a 301, turn it into a GET.
+134             # This bizarre behaviour is explained in Issue 1704.
+135             if resp.status_code == codes.moved and method == 'POST':
+136                 method = 'GET'
+137 
+138             prepared_request.method = method
+139 
+140             # https://github.com/kennethreitz/requests/issues/1084
+141             if resp.status_code not in (codes.temporary, codes.resume):
+142                 if 'Content-Length' in prepared_request.headers:
+143                     del prepared_request.headers['Content-Length']
+144 
+145                 prepared_request.body = None
+146 
+147             headers = prepared_request.headers
+148             try:
+149                 del headers['Cookie']
+150             except KeyError:
+151                 pass
+152 
+153             extract_cookies_to_jar(prepared_request._cookies, prepared_request, resp.raw)
+154             prepared_request._cookies.update(self.cookies)
+155             prepared_request.prepare_cookies(prepared_request._cookies)
+156 
+157             if 'Authorization' in headers:
+158                 # If we get redirected to a new host, we should strip out any
+159                 # authentication headers.
+160                 original_parsed = urlparse(resp.request.url)
+161                 redirect_parsed = urlparse(url)
+162 
+163                 if (original_parsed.hostname != redirect_parsed.hostname):
+164                     del headers['Authorization']
+165 
+166             # .netrc might have more auth for us.
+167             new_auth = get_netrc_auth(url) if self.trust_env else None
+168             if new_auth is not None:
+169                 prepared_request.prepare_auth(new_auth)
+170 
+171             resp = self.send(
+172                 prepared_request,
+173                 stream=stream,
+174                 timeout=timeout,
+175                 verify=verify,
+176                 cert=cert,
+177                 proxies=proxies,
+178                 allow_redirects=False,
+179             )
+180 
+181             extract_cookies_to_jar(self.cookies, prepared_request, resp.raw)
+182 
+183             i += 1
+184             yield resp
+
+</code><intended_behavior>This class provides additional context to the issue.</intended_behavior>]
+2026-01-15 02:43:01.372 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 02:43:01.372 | INFO     | Search-only: skipping patch selection
+2026-01-15 02:43:01.435 | INFO     | Task psf__requests-1963 completed successfully.
+2026-01-15 02:43:01.436 | INFO     | No patch generated. You can try running ACR again.

@@ -1,0 +1,2958 @@
+2026-01-14 15:39:03.992 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-14 15:39:06.014 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=153, output_tokens=12, cost=0.001890
+2026-01-14 15:39:06.016 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-14 15:39:06.023 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 15:39:14.103 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=460, output_tokens=265, cost=0.012550
+2026-01-14 15:39:14.111 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 15:39:18.229 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=619, output_tokens=53, cost=0.007780
+2026-01-14 15:39:18.230 | DEBUG    | Extracted a valid json.
+2026-01-14 15:39:18.230 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"--strict\")",
+        "search_method(\"parse_options\")",
+        "search_method(\"addoption\")",
+        "search_code(\"deprecate\")"
+    ],
+    "bug_locations": []
+}
+2026-01-14 15:39:18.343 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-14 15:39:18.343 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-14 15:39:36.407 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1249, output_tokens=674, cost=0.032710
+2026-01-14 15:39:36.419 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 15:39:45.004 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2139, output_tokens=349, cost=0.031860
+2026-01-14 15:39:45.008 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 15:39:53.087 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=703, output_tokens=319, cost=0.016600
+2026-01-14 15:39:53.088 | DEBUG    | Extracted a valid json.
+2026-01-14 15:39:53.088 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "src/_pytest/main.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "Ensure the `--strict` flag functions as intended, controlling strictness levels within pytest. If `--strict` is re-introduced after deprecation, ensure it integrates seamlessly with existing functionality, possibly providing enhanced controls or clarity on strictness in tests without breaking backward compatibility. This might also involve updating the handling around command line arguments or configuration handling where `--strict` plays a role."
+        },
+        {
+            "file": "src/_pytest/config/argparsing.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "This file should continue to facilitate the addition of command-line options, including `--strict`. Modifications or patches should ensure that if `--strict` remains, it is clearly defined what its behavior is, how it affects pytest execution, and that it’s clearly documented within the context of this file. This is crucial for maintainability and usability."
+        },
+        {
+            "file": "src/_pytest/deprecated.py",
+            "class": "",
+            "method": "",
+            "intended_behavior": "If `--strict` deprecation is rolled back or managed, this file should provide clear guidance or mechanisms on how that deprecation warning is handled. It should offer users clear instructions on how `--strict` is to be used going forward and how it impacts their current usage."
+        }
+    ]
+}
+2026-01-14 15:39:53.099 | DEBUG    | Bug location extracted successfully: [<file>src/_pytest/main.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Core implementation of the testing process: init, session, runtest loop."""
+2 import argparse
+3 import fnmatch
+4 import functools
+5 import importlib
+6 import os
+7 import sys
+8 from pathlib import Path
+9 from typing import Callable
+10 from typing import Dict
+11 from typing import FrozenSet
+12 from typing import Iterator
+13 from typing import List
+14 from typing import Optional
+15 from typing import overload
+16 from typing import Sequence
+17 from typing import Set
+18 from typing import Tuple
+19 from typing import Type
+20 from typing import TYPE_CHECKING
+21 from typing import Union
+22 
+23 import attr
+24 import py
+25 
+26 import _pytest._code
+27 from _pytest import nodes
+28 from _pytest.compat import final
+29 from _pytest.config import Config
+30 from _pytest.config import directory_arg
+31 from _pytest.config import ExitCode
+32 from _pytest.config import hookimpl
+33 from _pytest.config import PytestPluginManager
+34 from _pytest.config import UsageError
+35 from _pytest.config.argparsing import Parser
+36 from _pytest.fixtures import FixtureManager
+37 from _pytest.outcomes import exit
+38 from _pytest.pathlib import absolutepath
+39 from _pytest.pathlib import bestrelpath
+40 from _pytest.pathlib import visit
+41 from _pytest.reports import CollectReport
+42 from _pytest.reports import TestReport
+43 from _pytest.runner import collect_one_node
+44 from _pytest.runner import SetupState
+45 
+46 
+47 if TYPE_CHECKING:
+48     from typing_extensions import Literal
+49 
+50 
+51 def pytest_addoption(parser: Parser) -> None:
+52     parser.addini(
+53         "norecursedirs",
+54         "directory patterns to avoid for recursion",
+55         type="args",
+56         default=[".*", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg", "venv"],
+57     )
+58     parser.addini(
+59         "testpaths",
+60         "directories to search for tests when no files or directories are given in the "
+61         "command line.",
+62         type="args",
+63         default=[],
+64     )
+65     group = parser.getgroup("general", "running and selection options")
+66     group._addoption(
+67         "-x",
+68         "--exitfirst",
+69         action="store_const",
+70         dest="maxfail",
+71         const=1,
+72         help="exit instantly on first error or failed test.",
+73     )
+74     group = parser.getgroup("pytest-warnings")
+75     group.addoption(
+76         "-W",
+77         "--pythonwarnings",
+78         action="append",
+79         help="set which warnings to report, see -W option of python itself.",
+80     )
+81     parser.addini(
+82         "filterwarnings",
+83         type="linelist",
+84         help="Each line specifies a pattern for "
+85         "warnings.filterwarnings. "
+86         "Processed after -W/--pythonwarnings.",
+87     )
+88     group._addoption(
+89         "--maxfail",
+90         metavar="num",
+91         action="store",
+92         type=int,
+93         dest="maxfail",
+94         default=0,
+95         help="exit after first num failures or errors.",
+96     )
+97     group._addoption(
+98         "--strict-config",
+99         action="store_true",
+100         help="any warnings encountered while parsing the `pytest` section of the configuration file raise errors.",
+101     )
+102     group._addoption(
+103         "--strict-markers",
+104         "--strict",
+105         action="store_true",
+106         help="markers not registered in the `markers` section of the configuration file raise errors.",
+107     )
+108     group._addoption(
+109         "-c",
+110         metavar="file",
+111         type=str,
+112         dest="inifilename",
+113         help="load configuration from `file` instead of trying to locate one of the implicit "
+114         "configuration files.",
+115     )
+116     group._addoption(
+117         "--continue-on-collection-errors",
+118         action="store_true",
+119         default=False,
+120         dest="continue_on_collection_errors",
+121         help="Force test execution even if collection errors occur.",
+122     )
+123     group._addoption(
+124         "--rootdir",
+125         action="store",
+126         dest="rootdir",
+127         help="Define root directory for tests. Can be relative path: 'root_dir', './root_dir', "
+128         "'root_dir/another_dir/'; absolute path: '/home/user/root_dir'; path with variables: "
+129         "'$HOME/root_dir'.",
+130     )
+131 
+132     group = parser.getgroup("collect", "collection")
+133     group.addoption(
+134         "--collectonly",
+135         "--collect-only",
+136         "--co",
+137         action="store_true",
+138         help="only collect tests, don't execute them.",
+139     )
+140     group.addoption(
+141         "--pyargs",
+142         action="store_true",
+143         help="try to interpret all arguments as python packages.",
+144     )
+145     group.addoption(
+146         "--ignore",
+147         action="append",
+148         metavar="path",
+149         help="ignore path during collection (multi-allowed).",
+150     )
+151     group.addoption(
+152         "--ignore-glob",
+153         action="append",
+154         metavar="path",
+155         help="ignore path pattern during collection (multi-allowed).",
+156     )
+157     group.addoption(
+158         "--deselect",
+159         action="append",
+160         metavar="nodeid_prefix",
+161         help="deselect item (via node id prefix) during collection (multi-allowed).",
+162     )
+163     group.addoption(
+164         "--confcutdir",
+165         dest="confcutdir",
+166         default=None,
+167         metavar="dir",
+168         type=functools.partial(directory_arg, optname="--confcutdir"),
+169         help="only load conftest.py's relative to specified dir.",
+170     )
+171     group.addoption(
+172         "--noconftest",
+173         action="store_true",
+174         dest="noconftest",
+175         default=False,
+176         help="Don't load any conftest.py files.",
+177     )
+178     group.addoption(
+179         "--keepduplicates",
+180         "--keep-duplicates",
+181         action="store_true",
+182         dest="keepduplicates",
+183         default=False,
+184         help="Keep duplicate tests.",
+185     )
+186     group.addoption(
+187         "--collect-in-virtualenv",
+188         action="store_true",
+189         dest="collect_in_virtualenv",
+190         default=False,
+191         help="Don't ignore tests in a local virtualenv directory",
+192     )
+193     group.addoption(
+194         "--import-mode",
+195         default="prepend",
+196         choices=["prepend", "append", "importlib"],
+197         dest="importmode",
+198         help="prepend/append to sys.path when importing test modules and conftest files, "
+199         "default is to prepend.",
+200     )
+201 
+202     group = parser.getgroup("debugconfig", "test session debugging and configuration")
+203     group.addoption(
+204         "--basetemp",
+205         dest="basetemp",
+206         default=None,
+207         type=validate_basetemp,
+208         metavar="dir",
+209         help=(
+210             "base temporary directory for this test run."
+211             "(warning: this directory is removed if it exists)"
+212         ),
+213     )
+214 
+215 
+216 def validate_basetemp(path: str) -> str:
+217     # GH 7119
+218     msg = "basetemp must not be empty, the current working directory or any parent directory of it"
+219 
+220     # empty path
+221     if not path:
+222         raise argparse.ArgumentTypeError(msg)
+223 
+224     def is_ancestor(base: Path, query: Path) -> bool:
+225         """Return whether query is an ancestor of base."""
+226         if base == query:
+227             return True
+228         for parent in base.parents:
+229             if parent == query:
+230                 return True
+231         return False
+232 
+233     # check if path is an ancestor of cwd
+234     if is_ancestor(Path.cwd(), Path(path).absolute()):
+235         raise argparse.ArgumentTypeError(msg)
+236 
+237     # check symlinks for ancestors
+238     if is_ancestor(Path.cwd().resolve(), Path(path).resolve()):
+239         raise argparse.ArgumentTypeError(msg)
+240 
+241     return path
+242 
+243 
+244 def wrap_session(
+245     config: Config, doit: Callable[[Config, "Session"], Optional[Union[int, ExitCode]]]
+246 ) -> Union[int, ExitCode]:
+247     """Skeleton command line program."""
+248     session = Session.from_config(config)
+249     session.exitstatus = ExitCode.OK
+250     initstate = 0
+251     try:
+252         try:
+253             config._do_configure()
+254             initstate = 1
+255             config.hook.pytest_sessionstart(session=session)
+256             initstate = 2
+257             session.exitstatus = doit(config, session) or 0
+258         except UsageError:
+259             session.exitstatus = ExitCode.USAGE_ERROR
+260             raise
+261         except Failed:
+262             session.exitstatus = ExitCode.TESTS_FAILED
+263         except (KeyboardInterrupt, exit.Exception):
+264             excinfo = _pytest._code.ExceptionInfo.from_current()
+265             exitstatus: Union[int, ExitCode] = ExitCode.INTERRUPTED
+266             if isinstance(excinfo.value, exit.Exception):
+267                 if excinfo.value.returncode is not None:
+268                     exitstatus = excinfo.value.returncode
+269                 if initstate < 2:
+270                     sys.stderr.write(f"{excinfo.typename}: {excinfo.value.msg}\n")
+271             config.hook.pytest_keyboard_interrupt(excinfo=excinfo)
+272             session.exitstatus = exitstatus
+273         except BaseException:
+274             session.exitstatus = ExitCode.INTERNAL_ERROR
+275             excinfo = _pytest._code.ExceptionInfo.from_current()
+276             try:
+277                 config.notify_exception(excinfo, config.option)
+278             except exit.Exception as exc:
+279                 if exc.returncode is not None:
+280                     session.exitstatus = exc.returncode
+281                 sys.stderr.write("{}: {}\n".format(type(exc).__name__, exc))
+282             else:
+283                 if isinstance(excinfo.value, SystemExit):
+284                     sys.stderr.write("mainloop: caught unexpected SystemExit!\n")
+285 
+286     finally:
+287         # Explicitly break reference cycle.
+288         excinfo = None  # type: ignore
+289         session.startdir.chdir()
+290         if initstate >= 2:
+291             try:
+292                 config.hook.pytest_sessionfinish(
+293                     session=session, exitstatus=session.exitstatus
+294                 )
+295             except exit.Exception as exc:
+296                 if exc.returncode is not None:
+297                     session.exitstatus = exc.returncode
+298                 sys.stderr.write("{}: {}\n".format(type(exc).__name__, exc))
+299         config._ensure_unconfigure()
+300     return session.exitstatus
+301 
+302 
+303 def pytest_cmdline_main(config: Config) -> Union[int, ExitCode]:
+304     return wrap_session(config, _main)
+305 
+306 
+307 def _main(config: Config, session: "Session") -> Optional[Union[int, ExitCode]]:
+308     """Default command line protocol for initialization, session,
+309     running tests and reporting."""
+310     config.hook.pytest_collection(session=session)
+311     config.hook.pytest_runtestloop(session=session)
+312 
+313     if session.testsfailed:
+314         return ExitCode.TESTS_FAILED
+315     elif session.testscollected == 0:
+316         return ExitCode.NO_TESTS_COLLECTED
+317     return None
+318 
+319 
+320 def pytest_collection(session: "Session") -> None:
+321     session.perform_collect()
+322 
+323 
+324 def pytest_runtestloop(session: "Session") -> bool:
+325     if session.testsfailed and not session.config.option.continue_on_collection_errors:
+326         raise session.Interrupted(
+327             "%d error%s during collection"
+328             % (session.testsfailed, "s" if session.testsfailed != 1 else "")
+329         )
+330 
+331     if session.config.option.collectonly:
+332         return True
+333 
+334     for i, item in enumerate(session.items):
+335         nextitem = session.items[i + 1] if i + 1 < len(session.items) else None
+336         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+337         if session.shouldfail:
+338             raise session.Failed(session.shouldfail)
+339         if session.shouldstop:
+340             raise session.Interrupted(session.shouldstop)
+341     return True
+342 
+343 
+344 def _in_venv(path: py.path.local) -> bool:
+345     """Attempt to detect if ``path`` is the root of a Virtual Environment by
+346     checking for the existence of the appropriate activate script."""
+347     bindir = path.join("Scripts" if sys.platform.startswith("win") else "bin")
+348     if not bindir.isdir():
+349         return False
+350     activates = (
+351         "activate",
+352         "activate.csh",
+353         "activate.fish",
+354         "Activate",
+355         "Activate.bat",
+356         "Activate.ps1",
+357     )
+358     return any([fname.basename in activates for fname in bindir.listdir()])
+359 
+360 
+361 def pytest_ignore_collect(path: py.path.local, config: Config) -> Optional[bool]:
+362     ignore_paths = config._getconftest_pathlist("collect_ignore", path=path.dirpath())
+363     ignore_paths = ignore_paths or []
+364     excludeopt = config.getoption("ignore")
+365     if excludeopt:
+366         ignore_paths.extend([py.path.local(x) for x in excludeopt])
+367 
+368     if py.path.local(path) in ignore_paths:
+369         return True
+370 
+371     ignore_globs = config._getconftest_pathlist(
+372         "collect_ignore_glob", path=path.dirpath()
+373     )
+374     ignore_globs = ignore_globs or []
+375     excludeglobopt = config.getoption("ignore_glob")
+376     if excludeglobopt:
+377         ignore_globs.extend([py.path.local(x) for x in excludeglobopt])
+378 
+379     if any(fnmatch.fnmatch(str(path), str(glob)) for glob in ignore_globs):
+380         return True
+381 
+382     allow_in_venv = config.getoption("collect_in_virtualenv")
+383     if not allow_in_venv and _in_venv(path):
+384         return True
+385     return None
+386 
+387 
+388 def pytest_collection_modifyitems(items: List[nodes.Item], config: Config) -> None:
+389     deselect_prefixes = tuple(config.getoption("deselect") or [])
+390     if not deselect_prefixes:
+391         return
+392 
+393     remaining = []
+394     deselected = []
+395     for colitem in items:
+396         if colitem.nodeid.startswith(deselect_prefixes):
+397             deselected.append(colitem)
+398         else:
+399             remaining.append(colitem)
+400 
+401     if deselected:
+402         config.hook.pytest_deselected(items=deselected)
+403         items[:] = remaining
+404 
+405 
+406 class FSHookProxy:
+407     def __init__(self, pm: PytestPluginManager, remove_mods) -> None:
+408         self.pm = pm
+409         self.remove_mods = remove_mods
+410 
+411     def __getattr__(self, name: str):
+412         x = self.pm.subset_hook_caller(name, remove_plugins=self.remove_mods)
+413         self.__dict__[name] = x
+414         return x
+415 
+416 
+417 class Interrupted(KeyboardInterrupt):
+418     """Signals that the test run was interrupted."""
+419 
+420     __module__ = "builtins"  # For py3.
+421 
+422 
+423 class Failed(Exception):
+424     """Signals a stop as failed test run."""
+425 
+426 
+427 @attr.s
+428 class _bestrelpath_cache(Dict[Path, str]):
+429     path = attr.ib(type=Path)
+430 
+431     def __missing__(self, path: Path) -> str:
+432         r = bestrelpath(self.path, path)
+433         self[path] = r
+434         return r
+435 
+436 
+437 @final
+438 class Session(nodes.FSCollector):
+439     Interrupted = Interrupted
+440     Failed = Failed
+441     # Set on the session by runner.pytest_sessionstart.
+442     _setupstate: SetupState
+443     # Set on the session by fixtures.pytest_sessionstart.
+444     _fixturemanager: FixtureManager
+445     exitstatus: Union[int, ExitCode]
+446 
+447     def __init__(self, config: Config) -> None:
+448         super().__init__(
+449             config.rootdir, parent=None, config=config, session=self, nodeid=""
+450         )
+451         self.testsfailed = 0
+452         self.testscollected = 0
+453         self.shouldstop: Union[bool, str] = False
+454         self.shouldfail: Union[bool, str] = False
+455         self.trace = config.trace.root.get("collection")
+456         self.startdir = config.invocation_dir
+457         self._initialpaths: FrozenSet[py.path.local] = frozenset()
+458 
+459         self._bestrelpathcache: Dict[Path, str] = _bestrelpath_cache(config.rootpath)
+460 
+461         self.config.pluginmanager.register(self, name="session")
+462 
+463     @classmethod
+464     def from_config(cls, config: Config) -> "Session":
+465         session: Session = cls._create(config)
+466         return session
+467 
+468     def __repr__(self) -> str:
+469         return "<%s %s exitstatus=%r testsfailed=%d testscollected=%d>" % (
+470             self.__class__.__name__,
+471             self.name,
+472             getattr(self, "exitstatus", "<UNSET>"),
+473             self.testsfailed,
+474             self.testscollected,
+475         )
+476 
+477     def _node_location_to_relpath(self, node_path: Path) -> str:
+478         # bestrelpath is a quite slow function.
+479         return self._bestrelpathcache[node_path]
+480 
+481     @hookimpl(tryfirst=True)
+482     def pytest_collectstart(self) -> None:
+483         if self.shouldfail:
+484             raise self.Failed(self.shouldfail)
+485         if self.shouldstop:
+486             raise self.Interrupted(self.shouldstop)
+487 
+488     @hookimpl(tryfirst=True)
+489     def pytest_runtest_logreport(
+490         self, report: Union[TestReport, CollectReport]
+491     ) -> None:
+492         if report.failed and not hasattr(report, "wasxfail"):
+493             self.testsfailed += 1
+494             maxfail = self.config.getvalue("maxfail")
+495             if maxfail and self.testsfailed >= maxfail:
+496                 self.shouldfail = "stopping after %d failures" % (self.testsfailed)
+497 
+498     pytest_collectreport = pytest_runtest_logreport
+499 
+500     def isinitpath(self, path: py.path.local) -> bool:
+501         return path in self._initialpaths
+502 
+503     def gethookproxy(self, fspath: py.path.local):
+504         # Check if we have the common case of running
+505         # hooks with all conftest.py files.
+506         pm = self.config.pluginmanager
+507         my_conftestmodules = pm._getconftestmodules(
+508             fspath, self.config.getoption("importmode")
+509         )
+510         remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
+511         if remove_mods:
+512             # One or more conftests are not in use at this fspath.
+513             proxy = FSHookProxy(pm, remove_mods)
+514         else:
+515             # All plugins are active for this fspath.
+516             proxy = self.config.hook
+517         return proxy
+518 
+519     def _recurse(self, direntry: "os.DirEntry[str]") -> bool:
+520         if direntry.name == "__pycache__":
+521             return False
+522         path = py.path.local(direntry.path)
+523         ihook = self.gethookproxy(path.dirpath())
+524         if ihook.pytest_ignore_collect(path=path, config=self.config):
+525             return False
+526         norecursepatterns = self.config.getini("norecursedirs")
+527         if any(path.check(fnmatch=pat) for pat in norecursepatterns):
+528             return False
+529         return True
+530 
+531     def _collectfile(
+532         self, path: py.path.local, handle_dupes: bool = True
+533     ) -> Sequence[nodes.Collector]:
+534         assert (
+535             path.isfile()
+536         ), "{!r} is not a file (isdir={!r}, exists={!r}, islink={!r})".format(
+537             path, path.isdir(), path.exists(), path.islink()
+538         )
+539         ihook = self.gethookproxy(path)
+540         if not self.isinitpath(path):
+541             if ihook.pytest_ignore_collect(path=path, config=self.config):
+542                 return ()
+543 
+544         if handle_dupes:
+545             keepduplicates = self.config.getoption("keepduplicates")
+546             if not keepduplicates:
+547                 duplicate_paths = self.config.pluginmanager._duplicatepaths
+548                 if path in duplicate_paths:
+549                     return ()
+550                 else:
+551                     duplicate_paths.add(path)
+552 
+553         return ihook.pytest_collect_file(path=path, parent=self)  # type: ignore[no-any-return]
+554 
+555     @overload
+556     def perform_collect(
+557         self, args: Optional[Sequence[str]] = ..., genitems: "Literal[True]" = ...
+558     ) -> Sequence[nodes.Item]:
+559         ...
+560 
+561     @overload
+562     def perform_collect(
+563         self, args: Optional[Sequence[str]] = ..., genitems: bool = ...
+564     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+565         ...
+566 
+567     def perform_collect(
+568         self, args: Optional[Sequence[str]] = None, genitems: bool = True
+569     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+570         """Perform the collection phase for this session.
+571 
+572         This is called by the default
+573         :func:`pytest_collection <_pytest.hookspec.pytest_collection>` hook
+574         implementation; see the documentation of this hook for more details.
+575         For testing purposes, it may also be called directly on a fresh
+576         ``Session``.
+577 
+578         This function normally recursively expands any collectors collected
+579         from the session to their items, and only items are returned. For
+580         testing purposes, this may be suppressed by passing ``genitems=False``,
+581         in which case the return value contains these collectors unexpanded,
+582         and ``session.items`` is empty.
+583         """
+584         if args is None:
+585             args = self.config.args
+586 
+587         self.trace("perform_collect", self, args)
+588         self.trace.root.indent += 1
+589 
+590         self._notfound: List[Tuple[str, Sequence[nodes.Collector]]] = []
+591         self._initial_parts: List[Tuple[py.path.local, List[str]]] = []
+592         self.items: List[nodes.Item] = []
+593 
+594         hook = self.config.hook
+595 
+596         items: Sequence[Union[nodes.Item, nodes.Collector]] = self.items
+597         try:
+598             initialpaths: List[py.path.local] = []
+599             for arg in args:
+600                 fspath, parts = resolve_collection_argument(
+601                     self.config.invocation_params.dir,
+602                     arg,
+603                     as_pypath=self.config.option.pyargs,
+604                 )
+605                 self._initial_parts.append((fspath, parts))
+606                 initialpaths.append(fspath)
+607             self._initialpaths = frozenset(initialpaths)
+608             rep = collect_one_node(self)
+609             self.ihook.pytest_collectreport(report=rep)
+610             self.trace.root.indent -= 1
+611             if self._notfound:
+612                 errors = []
+613                 for arg, cols in self._notfound:
+614                     line = f"(no name {arg!r} in any of {cols!r})"
+615                     errors.append(f"not found: {arg}\n{line}")
+616                 raise UsageError(*errors)
+617             if not genitems:
+618                 items = rep.result
+619             else:
+620                 if rep.passed:
+621                     for node in rep.result:
+622                         self.items.extend(self.genitems(node))
+623 
+624             self.config.pluginmanager.check_pending()
+625             hook.pytest_collection_modifyitems(
+626                 session=self, config=self.config, items=items
+627             )
+628         finally:
+629             hook.pytest_collection_finish(session=self)
+630 
+631         self.testscollected = len(items)
+632         return items
+633 
+634     def collect(self) -> Iterator[Union[nodes.Item, nodes.Collector]]:
+635         from _pytest.python import Package
+636 
+637         # Keep track of any collected nodes in here, so we don't duplicate fixtures.
+638         node_cache1: Dict[py.path.local, Sequence[nodes.Collector]] = {}
+639         node_cache2: Dict[
+640             Tuple[Type[nodes.Collector], py.path.local], nodes.Collector
+641         ] = ({})
+642 
+643         # Keep track of any collected collectors in matchnodes paths, so they
+644         # are not collected more than once.
+645         matchnodes_cache: Dict[Tuple[Type[nodes.Collector], str], CollectReport] = ({})
+646 
+647         # Dirnames of pkgs with dunder-init files.
+648         pkg_roots: Dict[str, Package] = {}
+649 
+650         for argpath, names in self._initial_parts:
+651             self.trace("processing argument", (argpath, names))
+652             self.trace.root.indent += 1
+653 
+654             # Start with a Session root, and delve to argpath item (dir or file)
+655             # and stack all Packages found on the way.
+656             # No point in finding packages when collecting doctests.
+657             if not self.config.getoption("doctestmodules", False):
+658                 pm = self.config.pluginmanager
+659                 for parent in reversed(argpath.parts()):
+660                     if pm._confcutdir and pm._confcutdir.relto(parent):
+661                         break
+662 
+663                     if parent.isdir():
+664                         pkginit = parent.join("__init__.py")
+665                         if pkginit.isfile() and pkginit not in node_cache1:
+666                             col = self._collectfile(pkginit, handle_dupes=False)
+667                             if col:
+668                                 if isinstance(col[0], Package):
+669                                     pkg_roots[str(parent)] = col[0]
+670                                 node_cache1[col[0].fspath] = [col[0]]
+671 
+672             # If it's a directory argument, recurse and look for any Subpackages.
+673             # Let the Package collector deal with subnodes, don't collect here.
+674             if argpath.check(dir=1):
+675                 assert not names, "invalid arg {!r}".format((argpath, names))
+676 
+677                 seen_dirs: Set[py.path.local] = set()
+678                 for direntry in visit(str(argpath), self._recurse):
+679                     if not direntry.is_file():
+680                         continue
+681 
+682                     path = py.path.local(direntry.path)
+683                     dirpath = path.dirpath()
+684 
+685                     if dirpath not in seen_dirs:
+686                         # Collect packages first.
+687                         seen_dirs.add(dirpath)
+688                         pkginit = dirpath.join("__init__.py")
+689                         if pkginit.exists():
+690                             for x in self._collectfile(pkginit):
+691                                 yield x
+692                                 if isinstance(x, Package):
+693                                     pkg_roots[str(dirpath)] = x
+694                     if str(dirpath) in pkg_roots:
+695                         # Do not collect packages here.
+696                         continue
+697 
+698                     for x in self._collectfile(path):
+699                         key = (type(x), x.fspath)
+700                         if key in node_cache2:
+701                             yield node_cache2[key]
+702                         else:
+703                             node_cache2[key] = x
+704                             yield x
+705             else:
+706                 assert argpath.check(file=1)
+707 
+708                 if argpath in node_cache1:
+709                     col = node_cache1[argpath]
+710                 else:
+711                     collect_root = pkg_roots.get(argpath.dirname, self)
+712                     col = collect_root._collectfile(argpath, handle_dupes=False)
+713                     if col:
+714                         node_cache1[argpath] = col
+715 
+716                 matching = []
+717                 work: List[
+718                     Tuple[Sequence[Union[nodes.Item, nodes.Collector]], Sequence[str]]
+719                 ] = [(col, names)]
+720                 while work:
+721                     self.trace("matchnodes", col, names)
+722                     self.trace.root.indent += 1
+723 
+724                     matchnodes, matchnames = work.pop()
+725                     for node in matchnodes:
+726                         if not matchnames:
+727                             matching.append(node)
+728                             continue
+729                         if not isinstance(node, nodes.Collector):
+730                             continue
+731                         key = (type(node), node.nodeid)
+732                         if key in matchnodes_cache:
+733                             rep = matchnodes_cache[key]
+734                         else:
+735                             rep = collect_one_node(node)
+736                             matchnodes_cache[key] = rep
+737                         if rep.passed:
+738                             submatchnodes = []
+739                             for r in rep.result:
+740                                 # TODO: Remove parametrized workaround once collection structure contains
+741                                 # parametrization.
+742                                 if (
+743                                     r.name == matchnames[0]
+744                                     or r.name.split("[")[0] == matchnames[0]
+745                                 ):
+746                                     submatchnodes.append(r)
+747                             if submatchnodes:
+748                                 work.append((submatchnodes, matchnames[1:]))
+749                             # XXX Accept IDs that don't have "()" for class instances.
+750                             elif len(rep.result) == 1 and rep.result[0].name == "()":
+751                                 work.append((rep.result, matchnames))
+752                         else:
+753                             # Report collection failures here to avoid failing to run some test
+754                             # specified in the command line because the module could not be
+755                             # imported (#134).
+756                             node.ihook.pytest_collectreport(report=rep)
+757 
+758                     self.trace("matchnodes finished -> ", len(matching), "nodes")
+759                     self.trace.root.indent -= 1
+760 
+761                 if not matching:
+762                     report_arg = "::".join((str(argpath), *names))
+763                     self._notfound.append((report_arg, col))
+764                     continue
+765 
+766                 # If __init__.py was the only file requested, then the matched node will be
+767                 # the corresponding Package, and the first yielded item will be the __init__
+768                 # Module itself, so just use that. If this special case isn't taken, then all
+769                 # the files in the package will be yielded.
+770                 if argpath.basename == "__init__.py":
+771                     assert isinstance(matching[0], nodes.Collector)
+772                     try:
+773                         yield next(iter(matching[0].collect()))
+774                     except StopIteration:
+775                         # The package collects nothing with only an __init__.py
+776                         # file in it, which gets ignored by the default
+777                         # "python_files" option.
+778                         pass
+779                     continue
+780 
+781                 yield from matching
+782 
+783             self.trace.root.indent -= 1
+784 
+785     def genitems(
+786         self, node: Union[nodes.Item, nodes.Collector]
+787     ) -> Iterator[nodes.Item]:
+788         self.trace("genitems", node)
+789         if isinstance(node, nodes.Item):
+790             node.ihook.pytest_itemcollected(item=node)
+791             yield node
+792         else:
+793             assert isinstance(node, nodes.Collector)
+794             rep = collect_one_node(node)
+795             if rep.passed:
+796                 for subnode in rep.result:
+797                     yield from self.genitems(subnode)
+798             node.ihook.pytest_collectreport(report=rep)
+799 
+800 
+801 def search_pypath(module_name: str) -> str:
+802     """Search sys.path for the given a dotted module name, and return its file system path."""
+803     try:
+804         spec = importlib.util.find_spec(module_name)
+805     # AttributeError: looks like package module, but actually filename
+806     # ImportError: module does not exist
+807     # ValueError: not a module name
+808     except (AttributeError, ImportError, ValueError):
+809         return module_name
+810     if spec is None or spec.origin is None or spec.origin == "namespace":
+811         return module_name
+812     elif spec.submodule_search_locations:
+813         return os.path.dirname(spec.origin)
+814     else:
+815         return spec.origin
+816 
+817 
+818 def resolve_collection_argument(
+819     invocation_path: Path, arg: str, *, as_pypath: bool = False
+820 ) -> Tuple[py.path.local, List[str]]:
+821     """Parse path arguments optionally containing selection parts and return (fspath, names).
+822 
+823     Command-line arguments can point to files and/or directories, and optionally contain
+824     parts for specific tests selection, for example:
+825 
+826         "pkg/tests/test_foo.py::TestClass::test_foo"
+827 
+828     This function ensures the path exists, and returns a tuple:
+829 
+830         (py.path.path("/full/path/to/pkg/tests/test_foo.py"), ["TestClass", "test_foo"])
+831 
+832     When as_pypath is True, expects that the command-line argument actually contains
+833     module paths instead of file-system paths:
+834 
+835         "pkg.tests.test_foo::TestClass::test_foo"
+836 
+837     In which case we search sys.path for a matching module, and then return the *path* to the
+838     found module.
+839 
+840     If the path doesn't exist, raise UsageError.
+841     If the path is a directory and selection parts are present, raise UsageError.
+842     """
+843     strpath, *parts = str(arg).split("::")
+844     if as_pypath:
+845         strpath = search_pypath(strpath)
+846     fspath = invocation_path / strpath
+847     fspath = absolutepath(fspath)
+848     if not fspath.exists():
+849         msg = (
+850             "module or package not found: {arg} (missing __init__.py?)"
+851             if as_pypath
+852             else "file or directory not found: {arg}"
+853         )
+854         raise UsageError(msg.format(arg=arg))
+855     if parts and fspath.is_dir():
+856         msg = (
+857             "package argument cannot contain :: selection parts: {arg}"
+858             if as_pypath
+859             else "directory argument cannot contain :: selection parts: {arg}"
+860         )
+861         raise UsageError(msg.format(arg=arg))
+862     return py.path.local(str(fspath)), parts
+
+</code><intended_behavior>Ensure the `--strict` flag functions as intended, controlling strictness levels within pytest. If `--strict` is re-introduced after deprecation, ensure it integrates seamlessly with existing functionality, possibly providing enhanced controls or clarity on strictness in tests without breaking backward compatibility. This might also involve updating the handling around command line arguments or configuration handling where `--strict` plays a role.</intended_behavior>, <file>src/_pytest/config/argparsing.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import argparse
+2 import sys
+3 import warnings
+4 from gettext import gettext
+5 from typing import Any
+6 from typing import Callable
+7 from typing import cast
+8 from typing import Dict
+9 from typing import List
+10 from typing import Mapping
+11 from typing import Optional
+12 from typing import Sequence
+13 from typing import Tuple
+14 from typing import TYPE_CHECKING
+15 from typing import Union
+16 
+17 import py
+18 
+19 import _pytest._io
+20 from _pytest.compat import final
+21 from _pytest.config.exceptions import UsageError
+22 
+23 if TYPE_CHECKING:
+24     from typing import NoReturn
+25     from typing_extensions import Literal
+26 
+27 FILE_OR_DIR = "file_or_dir"
+28 
+29 
+30 @final
+31 class Parser:
+32     """Parser for command line arguments and ini-file values.
+33 
+34     :ivar extra_info: Dict of generic param -> value to display in case
+35         there's an error processing the command line arguments.
+36     """
+37 
+38     prog: Optional[str] = None
+39 
+40     def __init__(
+41         self,
+42         usage: Optional[str] = None,
+43         processopt: Optional[Callable[["Argument"], None]] = None,
+44     ) -> None:
+45         self._anonymous = OptionGroup("custom options", parser=self)
+46         self._groups: List[OptionGroup] = []
+47         self._processopt = processopt
+48         self._usage = usage
+49         self._inidict: Dict[str, Tuple[str, Optional[str], Any]] = {}
+50         self._ininames: List[str] = []
+51         self.extra_info: Dict[str, Any] = {}
+52 
+53     def processoption(self, option: "Argument") -> None:
+54         if self._processopt:
+55             if option.dest:
+56                 self._processopt(option)
+57 
+58     def getgroup(
+59         self, name: str, description: str = "", after: Optional[str] = None
+60     ) -> "OptionGroup":
+61         """Get (or create) a named option Group.
+62 
+63         :name: Name of the option group.
+64         :description: Long description for --help output.
+65         :after: Name of another group, used for ordering --help output.
+66 
+67         The returned group object has an ``addoption`` method with the same
+68         signature as :py:func:`parser.addoption
+69         <_pytest.config.argparsing.Parser.addoption>` but will be shown in the
+70         respective group in the output of ``pytest. --help``.
+71         """
+72         for group in self._groups:
+73             if group.name == name:
+74                 return group
+75         group = OptionGroup(name, description, parser=self)
+76         i = 0
+77         for i, grp in enumerate(self._groups):
+78             if grp.name == after:
+79                 break
+80         self._groups.insert(i + 1, group)
+81         return group
+82 
+83     def addoption(self, *opts: str, **attrs: Any) -> None:
+84         """Register a command line option.
+85 
+86         :opts: Option names, can be short or long options.
+87         :attrs: Same attributes which the ``add_argument()`` function of the
+88            `argparse library <https://docs.python.org/library/argparse.html>`_
+89            accepts.
+90 
+91         After command line parsing, options are available on the pytest config
+92         object via ``config.option.NAME`` where ``NAME`` is usually set
+93         by passing a ``dest`` attribute, for example
+94         ``addoption("--long", dest="NAME", ...)``.
+95         """
+96         self._anonymous.addoption(*opts, **attrs)
+97 
+98     def parse(
+99         self,
+100         args: Sequence[Union[str, py.path.local]],
+101         namespace: Optional[argparse.Namespace] = None,
+102     ) -> argparse.Namespace:
+103         from _pytest._argcomplete import try_argcomplete
+104 
+105         self.optparser = self._getparser()
+106         try_argcomplete(self.optparser)
+107         strargs = [str(x) if isinstance(x, py.path.local) else x for x in args]
+108         return self.optparser.parse_args(strargs, namespace=namespace)
+109 
+110     def _getparser(self) -> "MyOptionParser":
+111         from _pytest._argcomplete import filescompleter
+112 
+113         optparser = MyOptionParser(self, self.extra_info, prog=self.prog)
+114         groups = self._groups + [self._anonymous]
+115         for group in groups:
+116             if group.options:
+117                 desc = group.description or group.name
+118                 arggroup = optparser.add_argument_group(desc)
+119                 for option in group.options:
+120                     n = option.names()
+121                     a = option.attrs()
+122                     arggroup.add_argument(*n, **a)
+123         file_or_dir_arg = optparser.add_argument(FILE_OR_DIR, nargs="*")
+124         # bash like autocompletion for dirs (appending '/')
+125         # Type ignored because typeshed doesn't know about argcomplete.
+126         file_or_dir_arg.completer = filescompleter  # type: ignore
+127         return optparser
+128 
+129     def parse_setoption(
+130         self,
+131         args: Sequence[Union[str, py.path.local]],
+132         option: argparse.Namespace,
+133         namespace: Optional[argparse.Namespace] = None,
+134     ) -> List[str]:
+135         parsedoption = self.parse(args, namespace=namespace)
+136         for name, value in parsedoption.__dict__.items():
+137             setattr(option, name, value)
+138         return cast(List[str], getattr(parsedoption, FILE_OR_DIR))
+139 
+140     def parse_known_args(
+141         self,
+142         args: Sequence[Union[str, py.path.local]],
+143         namespace: Optional[argparse.Namespace] = None,
+144     ) -> argparse.Namespace:
+145         """Parse and return a namespace object with known arguments at this point."""
+146         return self.parse_known_and_unknown_args(args, namespace=namespace)[0]
+147 
+148     def parse_known_and_unknown_args(
+149         self,
+150         args: Sequence[Union[str, py.path.local]],
+151         namespace: Optional[argparse.Namespace] = None,
+152     ) -> Tuple[argparse.Namespace, List[str]]:
+153         """Parse and return a namespace object with known arguments, and
+154         the remaining arguments unknown at this point."""
+155         optparser = self._getparser()
+156         strargs = [str(x) if isinstance(x, py.path.local) else x for x in args]
+157         return optparser.parse_known_args(strargs, namespace=namespace)
+158 
+159     def addini(
+160         self,
+161         name: str,
+162         help: str,
+163         type: Optional[
+164             "Literal['string', 'pathlist', 'args', 'linelist', 'bool']"
+165         ] = None,
+166         default=None,
+167     ) -> None:
+168         """Register an ini-file option.
+169 
+170         :name: Name of the ini-variable.
+171         :type: Type of the variable, can be ``string``, ``pathlist``, ``args``,
+172                ``linelist`` or ``bool``.  Defaults to ``string`` if ``None`` or
+173                not passed.
+174         :default: Default value if no ini-file option exists but is queried.
+175 
+176         The value of ini-variables can be retrieved via a call to
+177         :py:func:`config.getini(name) <_pytest.config.Config.getini>`.
+178         """
+179         assert type in (None, "string", "pathlist", "args", "linelist", "bool")
+180         self._inidict[name] = (help, type, default)
+181         self._ininames.append(name)
+182 
+183 
+184 class ArgumentError(Exception):
+185     """Raised if an Argument instance is created with invalid or
+186     inconsistent arguments."""
+187 
+188     def __init__(self, msg: str, option: Union["Argument", str]) -> None:
+189         self.msg = msg
+190         self.option_id = str(option)
+191 
+192     def __str__(self) -> str:
+193         if self.option_id:
+194             return f"option {self.option_id}: {self.msg}"
+195         else:
+196             return self.msg
+197 
+198 
+199 class Argument:
+200     """Class that mimics the necessary behaviour of optparse.Option.
+201 
+202     It's currently a least effort implementation and ignoring choices
+203     and integer prefixes.
+204 
+205     https://docs.python.org/3/library/optparse.html#optparse-standard-option-types
+206     """
+207 
+208     _typ_map = {"int": int, "string": str, "float": float, "complex": complex}
+209 
+210     def __init__(self, *names: str, **attrs: Any) -> None:
+211         """Store parms in private vars for use in add_argument."""
+212         self._attrs = attrs
+213         self._short_opts: List[str] = []
+214         self._long_opts: List[str] = []
+215         if "%default" in (attrs.get("help") or ""):
+216             warnings.warn(
+217                 'pytest now uses argparse. "%default" should be'
+218                 ' changed to "%(default)s" ',
+219                 DeprecationWarning,
+220                 stacklevel=3,
+221             )
+222         try:
+223             typ = attrs["type"]
+224         except KeyError:
+225             pass
+226         else:
+227             # This might raise a keyerror as well, don't want to catch that.
+228             if isinstance(typ, str):
+229                 if typ == "choice":
+230                     warnings.warn(
+231                         "`type` argument to addoption() is the string %r."
+232                         " For choices this is optional and can be omitted, "
+233                         " but when supplied should be a type (for example `str` or `int`)."
+234                         " (options: %s)" % (typ, names),
+235                         DeprecationWarning,
+236                         stacklevel=4,
+237                     )
+238                     # argparse expects a type here take it from
+239                     # the type of the first element
+240                     attrs["type"] = type(attrs["choices"][0])
+241                 else:
+242                     warnings.warn(
+243                         "`type` argument to addoption() is the string %r, "
+244                         " but when supplied should be a type (for example `str` or `int`)."
+245                         " (options: %s)" % (typ, names),
+246                         DeprecationWarning,
+247                         stacklevel=4,
+248                     )
+249                     attrs["type"] = Argument._typ_map[typ]
+250                 # Used in test_parseopt -> test_parse_defaultgetter.
+251                 self.type = attrs["type"]
+252             else:
+253                 self.type = typ
+254         try:
+255             # Attribute existence is tested in Config._processopt.
+256             self.default = attrs["default"]
+257         except KeyError:
+258             pass
+259         self._set_opt_strings(names)
+260         dest: Optional[str] = attrs.get("dest")
+261         if dest:
+262             self.dest = dest
+263         elif self._long_opts:
+264             self.dest = self._long_opts[0][2:].replace("-", "_")
+265         else:
+266             try:
+267                 self.dest = self._short_opts[0][1:]
+268             except IndexError as e:
+269                 self.dest = "???"  # Needed for the error repr.
+270                 raise ArgumentError("need a long or short option", self) from e
+271 
+272     def names(self) -> List[str]:
+273         return self._short_opts + self._long_opts
+274 
+275     def attrs(self) -> Mapping[str, Any]:
+276         # Update any attributes set by processopt.
+277         attrs = "default dest help".split()
+278         attrs.append(self.dest)
+279         for attr in attrs:
+280             try:
+281                 self._attrs[attr] = getattr(self, attr)
+282             except AttributeError:
+283                 pass
+284         if self._attrs.get("help"):
+285             a = self._attrs["help"]
+286             a = a.replace("%default", "%(default)s")
+287             # a = a.replace('%prog', '%(prog)s')
+288             self._attrs["help"] = a
+289         return self._attrs
+290 
+291     def _set_opt_strings(self, opts: Sequence[str]) -> None:
+292         """Directly from optparse.
+293 
+294         Might not be necessary as this is passed to argparse later on.
+295         """
+296         for opt in opts:
+297             if len(opt) < 2:
+298                 raise ArgumentError(
+299                     "invalid option string %r: "
+300                     "must be at least two characters long" % opt,
+301                     self,
+302                 )
+303             elif len(opt) == 2:
+304                 if not (opt[0] == "-" and opt[1] != "-"):
+305                     raise ArgumentError(
+306                         "invalid short option string %r: "
+307                         "must be of the form -x, (x any non-dash char)" % opt,
+308                         self,
+309                     )
+310                 self._short_opts.append(opt)
+311             else:
+312                 if not (opt[0:2] == "--" and opt[2] != "-"):
+313                     raise ArgumentError(
+314                         "invalid long option string %r: "
+315                         "must start with --, followed by non-dash" % opt,
+316                         self,
+317                     )
+318                 self._long_opts.append(opt)
+319 
+320     def __repr__(self) -> str:
+321         args: List[str] = []
+322         if self._short_opts:
+323             args += ["_short_opts: " + repr(self._short_opts)]
+324         if self._long_opts:
+325             args += ["_long_opts: " + repr(self._long_opts)]
+326         args += ["dest: " + repr(self.dest)]
+327         if hasattr(self, "type"):
+328             args += ["type: " + repr(self.type)]
+329         if hasattr(self, "default"):
+330             args += ["default: " + repr(self.default)]
+331         return "Argument({})".format(", ".join(args))
+332 
+333 
+334 class OptionGroup:
+335     def __init__(
+336         self, name: str, description: str = "", parser: Optional[Parser] = None
+337     ) -> None:
+338         self.name = name
+339         self.description = description
+340         self.options: List[Argument] = []
+341         self.parser = parser
+342 
+343     def addoption(self, *optnames: str, **attrs: Any) -> None:
+344         """Add an option to this group.
+345 
+346         If a shortened version of a long option is specified, it will
+347         be suppressed in the help. addoption('--twowords', '--two-words')
+348         results in help showing '--two-words' only, but --twowords gets
+349         accepted **and** the automatic destination is in args.twowords.
+350         """
+351         conflict = set(optnames).intersection(
+352             name for opt in self.options for name in opt.names()
+353         )
+354         if conflict:
+355             raise ValueError("option names %s already added" % conflict)
+356         option = Argument(*optnames, **attrs)
+357         self._addoption_instance(option, shortupper=False)
+358 
+359     def _addoption(self, *optnames: str, **attrs: Any) -> None:
+360         option = Argument(*optnames, **attrs)
+361         self._addoption_instance(option, shortupper=True)
+362 
+363     def _addoption_instance(self, option: "Argument", shortupper: bool = False) -> None:
+364         if not shortupper:
+365             for opt in option._short_opts:
+366                 if opt[0] == "-" and opt[1].islower():
+367                     raise ValueError("lowercase shortoptions reserved")
+368         if self.parser:
+369             self.parser.processoption(option)
+370         self.options.append(option)
+371 
+372 
+373 class MyOptionParser(argparse.ArgumentParser):
+374     def __init__(
+375         self,
+376         parser: Parser,
+377         extra_info: Optional[Dict[str, Any]] = None,
+378         prog: Optional[str] = None,
+379     ) -> None:
+380         self._parser = parser
+381         argparse.ArgumentParser.__init__(
+382             self,
+383             prog=prog,
+384             usage=parser._usage,
+385             add_help=False,
+386             formatter_class=DropShorterLongHelpFormatter,
+387             allow_abbrev=False,
+388         )
+389         # extra_info is a dict of (param -> value) to display if there's
+390         # an usage error to provide more contextual information to the user.
+391         self.extra_info = extra_info if extra_info else {}
+392 
+393     def error(self, message: str) -> "NoReturn":
+394         """Transform argparse error message into UsageError."""
+395         msg = f"{self.prog}: error: {message}"
+396 
+397         if hasattr(self._parser, "_config_source_hint"):
+398             # Type ignored because the attribute is set dynamically.
+399             msg = f"{msg} ({self._parser._config_source_hint})"  # type: ignore
+400 
+401         raise UsageError(self.format_usage() + msg)
+402 
+403     # Type ignored because typeshed has a very complex type in the superclass.
+404     def parse_args(  # type: ignore
+405         self,
+406         args: Optional[Sequence[str]] = None,
+407         namespace: Optional[argparse.Namespace] = None,
+408     ) -> argparse.Namespace:
+409         """Allow splitting of positional arguments."""
+410         parsed, unrecognized = self.parse_known_args(args, namespace)
+411         if unrecognized:
+412             for arg in unrecognized:
+413                 if arg and arg[0] == "-":
+414                     lines = ["unrecognized arguments: %s" % (" ".join(unrecognized))]
+415                     for k, v in sorted(self.extra_info.items()):
+416                         lines.append(f"  {k}: {v}")
+417                     self.error("\n".join(lines))
+418             getattr(parsed, FILE_OR_DIR).extend(unrecognized)
+419         return parsed
+420 
+421     if sys.version_info[:2] < (3, 9):  # pragma: no cover
+422         # Backport of https://github.com/python/cpython/pull/14316 so we can
+423         # disable long --argument abbreviations without breaking short flags.
+424         def _parse_optional(
+425             self, arg_string: str
+426         ) -> Optional[Tuple[Optional[argparse.Action], str, Optional[str]]]:
+427             if not arg_string:
+428                 return None
+429             if not arg_string[0] in self.prefix_chars:
+430                 return None
+431             if arg_string in self._option_string_actions:
+432                 action = self._option_string_actions[arg_string]
+433                 return action, arg_string, None
+434             if len(arg_string) == 1:
+435                 return None
+436             if "=" in arg_string:
+437                 option_string, explicit_arg = arg_string.split("=", 1)
+438                 if option_string in self._option_string_actions:
+439                     action = self._option_string_actions[option_string]
+440                     return action, option_string, explicit_arg
+441             if self.allow_abbrev or not arg_string.startswith("--"):
+442                 option_tuples = self._get_option_tuples(arg_string)
+443                 if len(option_tuples) > 1:
+444                     msg = gettext(
+445                         "ambiguous option: %(option)s could match %(matches)s"
+446                     )
+447                     options = ", ".join(option for _, option, _ in option_tuples)
+448                     self.error(msg % {"option": arg_string, "matches": options})
+449                 elif len(option_tuples) == 1:
+450                     (option_tuple,) = option_tuples
+451                     return option_tuple
+452             if self._negative_number_matcher.match(arg_string):
+453                 if not self._has_negative_number_optionals:
+454                     return None
+455             if " " in arg_string:
+456                 return None
+457             return None, arg_string, None
+458 
+459 
+460 class DropShorterLongHelpFormatter(argparse.HelpFormatter):
+461     """Shorten help for long options that differ only in extra hyphens.
+462 
+463     - Collapse **long** options that are the same except for extra hyphens.
+464     - Shortcut if there are only two options and one of them is a short one.
+465     - Cache result on the action object as this is called at least 2 times.
+466     """
+467 
+468     def __init__(self, *args: Any, **kwargs: Any) -> None:
+469         # Use more accurate terminal width.
+470         if "width" not in kwargs:
+471             kwargs["width"] = _pytest._io.get_terminal_width()
+472         super().__init__(*args, **kwargs)
+473 
+474     def _format_action_invocation(self, action: argparse.Action) -> str:
+475         orgstr = argparse.HelpFormatter._format_action_invocation(self, action)
+476         if orgstr and orgstr[0] != "-":  # only optional arguments
+477             return orgstr
+478         res: Optional[str] = getattr(action, "_formatted_action_invocation", None)
+479         if res:
+480             return res
+481         options = orgstr.split(", ")
+482         if len(options) == 2 and (len(options[0]) == 2 or len(options[1]) == 2):
+483             # a shortcut for '-h, --help' or '--abc', '-a'
+484             action._formatted_action_invocation = orgstr  # type: ignore
+485             return orgstr
+486         return_list = []
+487         short_long: Dict[str, str] = {}
+488         for option in options:
+489             if len(option) == 2 or option[2] == " ":
+490                 continue
+491             if not option.startswith("--"):
+492                 raise ArgumentError(
+493                     'long optional argument without "--": [%s]' % (option), option
+494                 )
+495             xxoption = option[2:]
+496             shortened = xxoption.replace("-", "")
+497             if shortened not in short_long or len(short_long[shortened]) < len(
+498                 xxoption
+499             ):
+500                 short_long[shortened] = xxoption
+501         # now short_long has been filled out to the longest with dashes
+502         # **and** we keep the right option ordering from add_argument
+503         for option in options:
+504             if len(option) == 2 or option[2] == " ":
+505                 return_list.append(option)
+506             if option[2:] == short_long.get(option.replace("-", "")):
+507                 return_list.append(option.replace(" ", "=", 1))
+508         formatted_action_invocation = ", ".join(return_list)
+509         action._formatted_action_invocation = formatted_action_invocation  # type: ignore
+510         return formatted_action_invocation
+511 
+512     def _split_lines(self, text, width):
+513         """Wrap lines after splitting on original newlines.
+514 
+515         This allows to have explicit line breaks in the help text.
+516         """
+517         import textwrap
+518 
+519         lines = []
+520         for line in text.splitlines():
+521             lines.extend(textwrap.wrap(line.strip(), width))
+522         return lines
+
+</code><intended_behavior>This file should continue to facilitate the addition of command-line options, including `--strict`. Modifications or patches should ensure that if `--strict` remains, it is clearly defined what its behavior is, how it affects pytest execution, and that it’s clearly documented within the context of this file. This is crucial for maintainability and usability.</intended_behavior>, <file>src/_pytest/deprecated.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Deprecation messages and bits of code used elsewhere in the codebase that
+2 is planned to be removed in the next pytest release.
+3 
+4 Keeping it in a central location makes it easy to track what is deprecated and should
+5 be removed when the time comes.
+6 
+7 All constants defined in this module should be either instances of
+8 :class:`PytestWarning`, or :class:`UnformattedWarning`
+9 in case of warnings which need to format their messages.
+10 """
+11 from _pytest.warning_types import PytestDeprecationWarning
+12 from _pytest.warning_types import UnformattedWarning
+13 
+14 # set of plugins which have been integrated into the core; we use this list to ignore
+15 # them during registration to avoid conflicts
+16 DEPRECATED_EXTERNAL_PLUGINS = {
+17     "pytest_catchlog",
+18     "pytest_capturelog",
+19     "pytest_faulthandler",
+20 }
+21 
+22 
+23 FILLFUNCARGS = UnformattedWarning(
+24     PytestDeprecationWarning,
+25     "{name} is deprecated, use "
+26     "function._request._fillfixtures() instead if you cannot avoid reaching into internals.",
+27 )
+28 
+29 PYTEST_COLLECT_MODULE = UnformattedWarning(
+30     PytestDeprecationWarning,
+31     "pytest.collect.{name} was moved to pytest.{name}\n"
+32     "Please update to the new name.",
+33 )
+34 
+35 
+36 MINUS_K_DASH = PytestDeprecationWarning(
+37     "The `-k '-expr'` syntax to -k is deprecated.\nUse `-k 'not expr'` instead."
+38 )
+39 
+40 MINUS_K_COLON = PytestDeprecationWarning(
+41     "The `-k 'expr:'` syntax to -k is deprecated.\n"
+42     "Please open an issue if you use this and want a replacement."
+43 )
+44 
+45 WARNING_CAPTURED_HOOK = PytestDeprecationWarning(
+46     "The pytest_warning_captured is deprecated and will be removed in a future release.\n"
+47     "Please use pytest_warning_recorded instead."
+48 )
+49 
+50 FSCOLLECTOR_GETHOOKPROXY_ISINITPATH = PytestDeprecationWarning(
+51     "The gethookproxy() and isinitpath() methods of FSCollector and Package are deprecated; "
+52     "use self.session.gethookproxy() and self.session.isinitpath() instead. "
+53 )
+
+</code><intended_behavior>If `--strict` deprecation is rolled back or managed, this file should provide clear guidance or mechanisms on how that deprecation warning is handled. It should offer users clear instructions on how `--strict` is to be used going forward and how it impacts their current usage.</intended_behavior>]
+2026-01-14 15:39:53.099 | INFO     | Search completed. Bug locations: [<file>src/_pytest/main.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Core implementation of the testing process: init, session, runtest loop."""
+2 import argparse
+3 import fnmatch
+4 import functools
+5 import importlib
+6 import os
+7 import sys
+8 from pathlib import Path
+9 from typing import Callable
+10 from typing import Dict
+11 from typing import FrozenSet
+12 from typing import Iterator
+13 from typing import List
+14 from typing import Optional
+15 from typing import overload
+16 from typing import Sequence
+17 from typing import Set
+18 from typing import Tuple
+19 from typing import Type
+20 from typing import TYPE_CHECKING
+21 from typing import Union
+22 
+23 import attr
+24 import py
+25 
+26 import _pytest._code
+27 from _pytest import nodes
+28 from _pytest.compat import final
+29 from _pytest.config import Config
+30 from _pytest.config import directory_arg
+31 from _pytest.config import ExitCode
+32 from _pytest.config import hookimpl
+33 from _pytest.config import PytestPluginManager
+34 from _pytest.config import UsageError
+35 from _pytest.config.argparsing import Parser
+36 from _pytest.fixtures import FixtureManager
+37 from _pytest.outcomes import exit
+38 from _pytest.pathlib import absolutepath
+39 from _pytest.pathlib import bestrelpath
+40 from _pytest.pathlib import visit
+41 from _pytest.reports import CollectReport
+42 from _pytest.reports import TestReport
+43 from _pytest.runner import collect_one_node
+44 from _pytest.runner import SetupState
+45 
+46 
+47 if TYPE_CHECKING:
+48     from typing_extensions import Literal
+49 
+50 
+51 def pytest_addoption(parser: Parser) -> None:
+52     parser.addini(
+53         "norecursedirs",
+54         "directory patterns to avoid for recursion",
+55         type="args",
+56         default=[".*", "build", "dist", "CVS", "_darcs", "{arch}", "*.egg", "venv"],
+57     )
+58     parser.addini(
+59         "testpaths",
+60         "directories to search for tests when no files or directories are given in the "
+61         "command line.",
+62         type="args",
+63         default=[],
+64     )
+65     group = parser.getgroup("general", "running and selection options")
+66     group._addoption(
+67         "-x",
+68         "--exitfirst",
+69         action="store_const",
+70         dest="maxfail",
+71         const=1,
+72         help="exit instantly on first error or failed test.",
+73     )
+74     group = parser.getgroup("pytest-warnings")
+75     group.addoption(
+76         "-W",
+77         "--pythonwarnings",
+78         action="append",
+79         help="set which warnings to report, see -W option of python itself.",
+80     )
+81     parser.addini(
+82         "filterwarnings",
+83         type="linelist",
+84         help="Each line specifies a pattern for "
+85         "warnings.filterwarnings. "
+86         "Processed after -W/--pythonwarnings.",
+87     )
+88     group._addoption(
+89         "--maxfail",
+90         metavar="num",
+91         action="store",
+92         type=int,
+93         dest="maxfail",
+94         default=0,
+95         help="exit after first num failures or errors.",
+96     )
+97     group._addoption(
+98         "--strict-config",
+99         action="store_true",
+100         help="any warnings encountered while parsing the `pytest` section of the configuration file raise errors.",
+101     )
+102     group._addoption(
+103         "--strict-markers",
+104         "--strict",
+105         action="store_true",
+106         help="markers not registered in the `markers` section of the configuration file raise errors.",
+107     )
+108     group._addoption(
+109         "-c",
+110         metavar="file",
+111         type=str,
+112         dest="inifilename",
+113         help="load configuration from `file` instead of trying to locate one of the implicit "
+114         "configuration files.",
+115     )
+116     group._addoption(
+117         "--continue-on-collection-errors",
+118         action="store_true",
+119         default=False,
+120         dest="continue_on_collection_errors",
+121         help="Force test execution even if collection errors occur.",
+122     )
+123     group._addoption(
+124         "--rootdir",
+125         action="store",
+126         dest="rootdir",
+127         help="Define root directory for tests. Can be relative path: 'root_dir', './root_dir', "
+128         "'root_dir/another_dir/'; absolute path: '/home/user/root_dir'; path with variables: "
+129         "'$HOME/root_dir'.",
+130     )
+131 
+132     group = parser.getgroup("collect", "collection")
+133     group.addoption(
+134         "--collectonly",
+135         "--collect-only",
+136         "--co",
+137         action="store_true",
+138         help="only collect tests, don't execute them.",
+139     )
+140     group.addoption(
+141         "--pyargs",
+142         action="store_true",
+143         help="try to interpret all arguments as python packages.",
+144     )
+145     group.addoption(
+146         "--ignore",
+147         action="append",
+148         metavar="path",
+149         help="ignore path during collection (multi-allowed).",
+150     )
+151     group.addoption(
+152         "--ignore-glob",
+153         action="append",
+154         metavar="path",
+155         help="ignore path pattern during collection (multi-allowed).",
+156     )
+157     group.addoption(
+158         "--deselect",
+159         action="append",
+160         metavar="nodeid_prefix",
+161         help="deselect item (via node id prefix) during collection (multi-allowed).",
+162     )
+163     group.addoption(
+164         "--confcutdir",
+165         dest="confcutdir",
+166         default=None,
+167         metavar="dir",
+168         type=functools.partial(directory_arg, optname="--confcutdir"),
+169         help="only load conftest.py's relative to specified dir.",
+170     )
+171     group.addoption(
+172         "--noconftest",
+173         action="store_true",
+174         dest="noconftest",
+175         default=False,
+176         help="Don't load any conftest.py files.",
+177     )
+178     group.addoption(
+179         "--keepduplicates",
+180         "--keep-duplicates",
+181         action="store_true",
+182         dest="keepduplicates",
+183         default=False,
+184         help="Keep duplicate tests.",
+185     )
+186     group.addoption(
+187         "--collect-in-virtualenv",
+188         action="store_true",
+189         dest="collect_in_virtualenv",
+190         default=False,
+191         help="Don't ignore tests in a local virtualenv directory",
+192     )
+193     group.addoption(
+194         "--import-mode",
+195         default="prepend",
+196         choices=["prepend", "append", "importlib"],
+197         dest="importmode",
+198         help="prepend/append to sys.path when importing test modules and conftest files, "
+199         "default is to prepend.",
+200     )
+201 
+202     group = parser.getgroup("debugconfig", "test session debugging and configuration")
+203     group.addoption(
+204         "--basetemp",
+205         dest="basetemp",
+206         default=None,
+207         type=validate_basetemp,
+208         metavar="dir",
+209         help=(
+210             "base temporary directory for this test run."
+211             "(warning: this directory is removed if it exists)"
+212         ),
+213     )
+214 
+215 
+216 def validate_basetemp(path: str) -> str:
+217     # GH 7119
+218     msg = "basetemp must not be empty, the current working directory or any parent directory of it"
+219 
+220     # empty path
+221     if not path:
+222         raise argparse.ArgumentTypeError(msg)
+223 
+224     def is_ancestor(base: Path, query: Path) -> bool:
+225         """Return whether query is an ancestor of base."""
+226         if base == query:
+227             return True
+228         for parent in base.parents:
+229             if parent == query:
+230                 return True
+231         return False
+232 
+233     # check if path is an ancestor of cwd
+234     if is_ancestor(Path.cwd(), Path(path).absolute()):
+235         raise argparse.ArgumentTypeError(msg)
+236 
+237     # check symlinks for ancestors
+238     if is_ancestor(Path.cwd().resolve(), Path(path).resolve()):
+239         raise argparse.ArgumentTypeError(msg)
+240 
+241     return path
+242 
+243 
+244 def wrap_session(
+245     config: Config, doit: Callable[[Config, "Session"], Optional[Union[int, ExitCode]]]
+246 ) -> Union[int, ExitCode]:
+247     """Skeleton command line program."""
+248     session = Session.from_config(config)
+249     session.exitstatus = ExitCode.OK
+250     initstate = 0
+251     try:
+252         try:
+253             config._do_configure()
+254             initstate = 1
+255             config.hook.pytest_sessionstart(session=session)
+256             initstate = 2
+257             session.exitstatus = doit(config, session) or 0
+258         except UsageError:
+259             session.exitstatus = ExitCode.USAGE_ERROR
+260             raise
+261         except Failed:
+262             session.exitstatus = ExitCode.TESTS_FAILED
+263         except (KeyboardInterrupt, exit.Exception):
+264             excinfo = _pytest._code.ExceptionInfo.from_current()
+265             exitstatus: Union[int, ExitCode] = ExitCode.INTERRUPTED
+266             if isinstance(excinfo.value, exit.Exception):
+267                 if excinfo.value.returncode is not None:
+268                     exitstatus = excinfo.value.returncode
+269                 if initstate < 2:
+270                     sys.stderr.write(f"{excinfo.typename}: {excinfo.value.msg}\n")
+271             config.hook.pytest_keyboard_interrupt(excinfo=excinfo)
+272             session.exitstatus = exitstatus
+273         except BaseException:
+274             session.exitstatus = ExitCode.INTERNAL_ERROR
+275             excinfo = _pytest._code.ExceptionInfo.from_current()
+276             try:
+277                 config.notify_exception(excinfo, config.option)
+278             except exit.Exception as exc:
+279                 if exc.returncode is not None:
+280                     session.exitstatus = exc.returncode
+281                 sys.stderr.write("{}: {}\n".format(type(exc).__name__, exc))
+282             else:
+283                 if isinstance(excinfo.value, SystemExit):
+284                     sys.stderr.write("mainloop: caught unexpected SystemExit!\n")
+285 
+286     finally:
+287         # Explicitly break reference cycle.
+288         excinfo = None  # type: ignore
+289         session.startdir.chdir()
+290         if initstate >= 2:
+291             try:
+292                 config.hook.pytest_sessionfinish(
+293                     session=session, exitstatus=session.exitstatus
+294                 )
+295             except exit.Exception as exc:
+296                 if exc.returncode is not None:
+297                     session.exitstatus = exc.returncode
+298                 sys.stderr.write("{}: {}\n".format(type(exc).__name__, exc))
+299         config._ensure_unconfigure()
+300     return session.exitstatus
+301 
+302 
+303 def pytest_cmdline_main(config: Config) -> Union[int, ExitCode]:
+304     return wrap_session(config, _main)
+305 
+306 
+307 def _main(config: Config, session: "Session") -> Optional[Union[int, ExitCode]]:
+308     """Default command line protocol for initialization, session,
+309     running tests and reporting."""
+310     config.hook.pytest_collection(session=session)
+311     config.hook.pytest_runtestloop(session=session)
+312 
+313     if session.testsfailed:
+314         return ExitCode.TESTS_FAILED
+315     elif session.testscollected == 0:
+316         return ExitCode.NO_TESTS_COLLECTED
+317     return None
+318 
+319 
+320 def pytest_collection(session: "Session") -> None:
+321     session.perform_collect()
+322 
+323 
+324 def pytest_runtestloop(session: "Session") -> bool:
+325     if session.testsfailed and not session.config.option.continue_on_collection_errors:
+326         raise session.Interrupted(
+327             "%d error%s during collection"
+328             % (session.testsfailed, "s" if session.testsfailed != 1 else "")
+329         )
+330 
+331     if session.config.option.collectonly:
+332         return True
+333 
+334     for i, item in enumerate(session.items):
+335         nextitem = session.items[i + 1] if i + 1 < len(session.items) else None
+336         item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+337         if session.shouldfail:
+338             raise session.Failed(session.shouldfail)
+339         if session.shouldstop:
+340             raise session.Interrupted(session.shouldstop)
+341     return True
+342 
+343 
+344 def _in_venv(path: py.path.local) -> bool:
+345     """Attempt to detect if ``path`` is the root of a Virtual Environment by
+346     checking for the existence of the appropriate activate script."""
+347     bindir = path.join("Scripts" if sys.platform.startswith("win") else "bin")
+348     if not bindir.isdir():
+349         return False
+350     activates = (
+351         "activate",
+352         "activate.csh",
+353         "activate.fish",
+354         "Activate",
+355         "Activate.bat",
+356         "Activate.ps1",
+357     )
+358     return any([fname.basename in activates for fname in bindir.listdir()])
+359 
+360 
+361 def pytest_ignore_collect(path: py.path.local, config: Config) -> Optional[bool]:
+362     ignore_paths = config._getconftest_pathlist("collect_ignore", path=path.dirpath())
+363     ignore_paths = ignore_paths or []
+364     excludeopt = config.getoption("ignore")
+365     if excludeopt:
+366         ignore_paths.extend([py.path.local(x) for x in excludeopt])
+367 
+368     if py.path.local(path) in ignore_paths:
+369         return True
+370 
+371     ignore_globs = config._getconftest_pathlist(
+372         "collect_ignore_glob", path=path.dirpath()
+373     )
+374     ignore_globs = ignore_globs or []
+375     excludeglobopt = config.getoption("ignore_glob")
+376     if excludeglobopt:
+377         ignore_globs.extend([py.path.local(x) for x in excludeglobopt])
+378 
+379     if any(fnmatch.fnmatch(str(path), str(glob)) for glob in ignore_globs):
+380         return True
+381 
+382     allow_in_venv = config.getoption("collect_in_virtualenv")
+383     if not allow_in_venv and _in_venv(path):
+384         return True
+385     return None
+386 
+387 
+388 def pytest_collection_modifyitems(items: List[nodes.Item], config: Config) -> None:
+389     deselect_prefixes = tuple(config.getoption("deselect") or [])
+390     if not deselect_prefixes:
+391         return
+392 
+393     remaining = []
+394     deselected = []
+395     for colitem in items:
+396         if colitem.nodeid.startswith(deselect_prefixes):
+397             deselected.append(colitem)
+398         else:
+399             remaining.append(colitem)
+400 
+401     if deselected:
+402         config.hook.pytest_deselected(items=deselected)
+403         items[:] = remaining
+404 
+405 
+406 class FSHookProxy:
+407     def __init__(self, pm: PytestPluginManager, remove_mods) -> None:
+408         self.pm = pm
+409         self.remove_mods = remove_mods
+410 
+411     def __getattr__(self, name: str):
+412         x = self.pm.subset_hook_caller(name, remove_plugins=self.remove_mods)
+413         self.__dict__[name] = x
+414         return x
+415 
+416 
+417 class Interrupted(KeyboardInterrupt):
+418     """Signals that the test run was interrupted."""
+419 
+420     __module__ = "builtins"  # For py3.
+421 
+422 
+423 class Failed(Exception):
+424     """Signals a stop as failed test run."""
+425 
+426 
+427 @attr.s
+428 class _bestrelpath_cache(Dict[Path, str]):
+429     path = attr.ib(type=Path)
+430 
+431     def __missing__(self, path: Path) -> str:
+432         r = bestrelpath(self.path, path)
+433         self[path] = r
+434         return r
+435 
+436 
+437 @final
+438 class Session(nodes.FSCollector):
+439     Interrupted = Interrupted
+440     Failed = Failed
+441     # Set on the session by runner.pytest_sessionstart.
+442     _setupstate: SetupState
+443     # Set on the session by fixtures.pytest_sessionstart.
+444     _fixturemanager: FixtureManager
+445     exitstatus: Union[int, ExitCode]
+446 
+447     def __init__(self, config: Config) -> None:
+448         super().__init__(
+449             config.rootdir, parent=None, config=config, session=self, nodeid=""
+450         )
+451         self.testsfailed = 0
+452         self.testscollected = 0
+453         self.shouldstop: Union[bool, str] = False
+454         self.shouldfail: Union[bool, str] = False
+455         self.trace = config.trace.root.get("collection")
+456         self.startdir = config.invocation_dir
+457         self._initialpaths: FrozenSet[py.path.local] = frozenset()
+458 
+459         self._bestrelpathcache: Dict[Path, str] = _bestrelpath_cache(config.rootpath)
+460 
+461         self.config.pluginmanager.register(self, name="session")
+462 
+463     @classmethod
+464     def from_config(cls, config: Config) -> "Session":
+465         session: Session = cls._create(config)
+466         return session
+467 
+468     def __repr__(self) -> str:
+469         return "<%s %s exitstatus=%r testsfailed=%d testscollected=%d>" % (
+470             self.__class__.__name__,
+471             self.name,
+472             getattr(self, "exitstatus", "<UNSET>"),
+473             self.testsfailed,
+474             self.testscollected,
+475         )
+476 
+477     def _node_location_to_relpath(self, node_path: Path) -> str:
+478         # bestrelpath is a quite slow function.
+479         return self._bestrelpathcache[node_path]
+480 
+481     @hookimpl(tryfirst=True)
+482     def pytest_collectstart(self) -> None:
+483         if self.shouldfail:
+484             raise self.Failed(self.shouldfail)
+485         if self.shouldstop:
+486             raise self.Interrupted(self.shouldstop)
+487 
+488     @hookimpl(tryfirst=True)
+489     def pytest_runtest_logreport(
+490         self, report: Union[TestReport, CollectReport]
+491     ) -> None:
+492         if report.failed and not hasattr(report, "wasxfail"):
+493             self.testsfailed += 1
+494             maxfail = self.config.getvalue("maxfail")
+495             if maxfail and self.testsfailed >= maxfail:
+496                 self.shouldfail = "stopping after %d failures" % (self.testsfailed)
+497 
+498     pytest_collectreport = pytest_runtest_logreport
+499 
+500     def isinitpath(self, path: py.path.local) -> bool:
+501         return path in self._initialpaths
+502 
+503     def gethookproxy(self, fspath: py.path.local):
+504         # Check if we have the common case of running
+505         # hooks with all conftest.py files.
+506         pm = self.config.pluginmanager
+507         my_conftestmodules = pm._getconftestmodules(
+508             fspath, self.config.getoption("importmode")
+509         )
+510         remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
+511         if remove_mods:
+512             # One or more conftests are not in use at this fspath.
+513             proxy = FSHookProxy(pm, remove_mods)
+514         else:
+515             # All plugins are active for this fspath.
+516             proxy = self.config.hook
+517         return proxy
+518 
+519     def _recurse(self, direntry: "os.DirEntry[str]") -> bool:
+520         if direntry.name == "__pycache__":
+521             return False
+522         path = py.path.local(direntry.path)
+523         ihook = self.gethookproxy(path.dirpath())
+524         if ihook.pytest_ignore_collect(path=path, config=self.config):
+525             return False
+526         norecursepatterns = self.config.getini("norecursedirs")
+527         if any(path.check(fnmatch=pat) for pat in norecursepatterns):
+528             return False
+529         return True
+530 
+531     def _collectfile(
+532         self, path: py.path.local, handle_dupes: bool = True
+533     ) -> Sequence[nodes.Collector]:
+534         assert (
+535             path.isfile()
+536         ), "{!r} is not a file (isdir={!r}, exists={!r}, islink={!r})".format(
+537             path, path.isdir(), path.exists(), path.islink()
+538         )
+539         ihook = self.gethookproxy(path)
+540         if not self.isinitpath(path):
+541             if ihook.pytest_ignore_collect(path=path, config=self.config):
+542                 return ()
+543 
+544         if handle_dupes:
+545             keepduplicates = self.config.getoption("keepduplicates")
+546             if not keepduplicates:
+547                 duplicate_paths = self.config.pluginmanager._duplicatepaths
+548                 if path in duplicate_paths:
+549                     return ()
+550                 else:
+551                     duplicate_paths.add(path)
+552 
+553         return ihook.pytest_collect_file(path=path, parent=self)  # type: ignore[no-any-return]
+554 
+555     @overload
+556     def perform_collect(
+557         self, args: Optional[Sequence[str]] = ..., genitems: "Literal[True]" = ...
+558     ) -> Sequence[nodes.Item]:
+559         ...
+560 
+561     @overload
+562     def perform_collect(
+563         self, args: Optional[Sequence[str]] = ..., genitems: bool = ...
+564     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+565         ...
+566 
+567     def perform_collect(
+568         self, args: Optional[Sequence[str]] = None, genitems: bool = True
+569     ) -> Sequence[Union[nodes.Item, nodes.Collector]]:
+570         """Perform the collection phase for this session.
+571 
+572         This is called by the default
+573         :func:`pytest_collection <_pytest.hookspec.pytest_collection>` hook
+574         implementation; see the documentation of this hook for more details.
+575         For testing purposes, it may also be called directly on a fresh
+576         ``Session``.
+577 
+578         This function normally recursively expands any collectors collected
+579         from the session to their items, and only items are returned. For
+580         testing purposes, this may be suppressed by passing ``genitems=False``,
+581         in which case the return value contains these collectors unexpanded,
+582         and ``session.items`` is empty.
+583         """
+584         if args is None:
+585             args = self.config.args
+586 
+587         self.trace("perform_collect", self, args)
+588         self.trace.root.indent += 1
+589 
+590         self._notfound: List[Tuple[str, Sequence[nodes.Collector]]] = []
+591         self._initial_parts: List[Tuple[py.path.local, List[str]]] = []
+592         self.items: List[nodes.Item] = []
+593 
+594         hook = self.config.hook
+595 
+596         items: Sequence[Union[nodes.Item, nodes.Collector]] = self.items
+597         try:
+598             initialpaths: List[py.path.local] = []
+599             for arg in args:
+600                 fspath, parts = resolve_collection_argument(
+601                     self.config.invocation_params.dir,
+602                     arg,
+603                     as_pypath=self.config.option.pyargs,
+604                 )
+605                 self._initial_parts.append((fspath, parts))
+606                 initialpaths.append(fspath)
+607             self._initialpaths = frozenset(initialpaths)
+608             rep = collect_one_node(self)
+609             self.ihook.pytest_collectreport(report=rep)
+610             self.trace.root.indent -= 1
+611             if self._notfound:
+612                 errors = []
+613                 for arg, cols in self._notfound:
+614                     line = f"(no name {arg!r} in any of {cols!r})"
+615                     errors.append(f"not found: {arg}\n{line}")
+616                 raise UsageError(*errors)
+617             if not genitems:
+618                 items = rep.result
+619             else:
+620                 if rep.passed:
+621                     for node in rep.result:
+622                         self.items.extend(self.genitems(node))
+623 
+624             self.config.pluginmanager.check_pending()
+625             hook.pytest_collection_modifyitems(
+626                 session=self, config=self.config, items=items
+627             )
+628         finally:
+629             hook.pytest_collection_finish(session=self)
+630 
+631         self.testscollected = len(items)
+632         return items
+633 
+634     def collect(self) -> Iterator[Union[nodes.Item, nodes.Collector]]:
+635         from _pytest.python import Package
+636 
+637         # Keep track of any collected nodes in here, so we don't duplicate fixtures.
+638         node_cache1: Dict[py.path.local, Sequence[nodes.Collector]] = {}
+639         node_cache2: Dict[
+640             Tuple[Type[nodes.Collector], py.path.local], nodes.Collector
+641         ] = ({})
+642 
+643         # Keep track of any collected collectors in matchnodes paths, so they
+644         # are not collected more than once.
+645         matchnodes_cache: Dict[Tuple[Type[nodes.Collector], str], CollectReport] = ({})
+646 
+647         # Dirnames of pkgs with dunder-init files.
+648         pkg_roots: Dict[str, Package] = {}
+649 
+650         for argpath, names in self._initial_parts:
+651             self.trace("processing argument", (argpath, names))
+652             self.trace.root.indent += 1
+653 
+654             # Start with a Session root, and delve to argpath item (dir or file)
+655             # and stack all Packages found on the way.
+656             # No point in finding packages when collecting doctests.
+657             if not self.config.getoption("doctestmodules", False):
+658                 pm = self.config.pluginmanager
+659                 for parent in reversed(argpath.parts()):
+660                     if pm._confcutdir and pm._confcutdir.relto(parent):
+661                         break
+662 
+663                     if parent.isdir():
+664                         pkginit = parent.join("__init__.py")
+665                         if pkginit.isfile() and pkginit not in node_cache1:
+666                             col = self._collectfile(pkginit, handle_dupes=False)
+667                             if col:
+668                                 if isinstance(col[0], Package):
+669                                     pkg_roots[str(parent)] = col[0]
+670                                 node_cache1[col[0].fspath] = [col[0]]
+671 
+672             # If it's a directory argument, recurse and look for any Subpackages.
+673             # Let the Package collector deal with subnodes, don't collect here.
+674             if argpath.check(dir=1):
+675                 assert not names, "invalid arg {!r}".format((argpath, names))
+676 
+677                 seen_dirs: Set[py.path.local] = set()
+678                 for direntry in visit(str(argpath), self._recurse):
+679                     if not direntry.is_file():
+680                         continue
+681 
+682                     path = py.path.local(direntry.path)
+683                     dirpath = path.dirpath()
+684 
+685                     if dirpath not in seen_dirs:
+686                         # Collect packages first.
+687                         seen_dirs.add(dirpath)
+688                         pkginit = dirpath.join("__init__.py")
+689                         if pkginit.exists():
+690                             for x in self._collectfile(pkginit):
+691                                 yield x
+692                                 if isinstance(x, Package):
+693                                     pkg_roots[str(dirpath)] = x
+694                     if str(dirpath) in pkg_roots:
+695                         # Do not collect packages here.
+696                         continue
+697 
+698                     for x in self._collectfile(path):
+699                         key = (type(x), x.fspath)
+700                         if key in node_cache2:
+701                             yield node_cache2[key]
+702                         else:
+703                             node_cache2[key] = x
+704                             yield x
+705             else:
+706                 assert argpath.check(file=1)
+707 
+708                 if argpath in node_cache1:
+709                     col = node_cache1[argpath]
+710                 else:
+711                     collect_root = pkg_roots.get(argpath.dirname, self)
+712                     col = collect_root._collectfile(argpath, handle_dupes=False)
+713                     if col:
+714                         node_cache1[argpath] = col
+715 
+716                 matching = []
+717                 work: List[
+718                     Tuple[Sequence[Union[nodes.Item, nodes.Collector]], Sequence[str]]
+719                 ] = [(col, names)]
+720                 while work:
+721                     self.trace("matchnodes", col, names)
+722                     self.trace.root.indent += 1
+723 
+724                     matchnodes, matchnames = work.pop()
+725                     for node in matchnodes:
+726                         if not matchnames:
+727                             matching.append(node)
+728                             continue
+729                         if not isinstance(node, nodes.Collector):
+730                             continue
+731                         key = (type(node), node.nodeid)
+732                         if key in matchnodes_cache:
+733                             rep = matchnodes_cache[key]
+734                         else:
+735                             rep = collect_one_node(node)
+736                             matchnodes_cache[key] = rep
+737                         if rep.passed:
+738                             submatchnodes = []
+739                             for r in rep.result:
+740                                 # TODO: Remove parametrized workaround once collection structure contains
+741                                 # parametrization.
+742                                 if (
+743                                     r.name == matchnames[0]
+744                                     or r.name.split("[")[0] == matchnames[0]
+745                                 ):
+746                                     submatchnodes.append(r)
+747                             if submatchnodes:
+748                                 work.append((submatchnodes, matchnames[1:]))
+749                             # XXX Accept IDs that don't have "()" for class instances.
+750                             elif len(rep.result) == 1 and rep.result[0].name == "()":
+751                                 work.append((rep.result, matchnames))
+752                         else:
+753                             # Report collection failures here to avoid failing to run some test
+754                             # specified in the command line because the module could not be
+755                             # imported (#134).
+756                             node.ihook.pytest_collectreport(report=rep)
+757 
+758                     self.trace("matchnodes finished -> ", len(matching), "nodes")
+759                     self.trace.root.indent -= 1
+760 
+761                 if not matching:
+762                     report_arg = "::".join((str(argpath), *names))
+763                     self._notfound.append((report_arg, col))
+764                     continue
+765 
+766                 # If __init__.py was the only file requested, then the matched node will be
+767                 # the corresponding Package, and the first yielded item will be the __init__
+768                 # Module itself, so just use that. If this special case isn't taken, then all
+769                 # the files in the package will be yielded.
+770                 if argpath.basename == "__init__.py":
+771                     assert isinstance(matching[0], nodes.Collector)
+772                     try:
+773                         yield next(iter(matching[0].collect()))
+774                     except StopIteration:
+775                         # The package collects nothing with only an __init__.py
+776                         # file in it, which gets ignored by the default
+777                         # "python_files" option.
+778                         pass
+779                     continue
+780 
+781                 yield from matching
+782 
+783             self.trace.root.indent -= 1
+784 
+785     def genitems(
+786         self, node: Union[nodes.Item, nodes.Collector]
+787     ) -> Iterator[nodes.Item]:
+788         self.trace("genitems", node)
+789         if isinstance(node, nodes.Item):
+790             node.ihook.pytest_itemcollected(item=node)
+791             yield node
+792         else:
+793             assert isinstance(node, nodes.Collector)
+794             rep = collect_one_node(node)
+795             if rep.passed:
+796                 for subnode in rep.result:
+797                     yield from self.genitems(subnode)
+798             node.ihook.pytest_collectreport(report=rep)
+799 
+800 
+801 def search_pypath(module_name: str) -> str:
+802     """Search sys.path for the given a dotted module name, and return its file system path."""
+803     try:
+804         spec = importlib.util.find_spec(module_name)
+805     # AttributeError: looks like package module, but actually filename
+806     # ImportError: module does not exist
+807     # ValueError: not a module name
+808     except (AttributeError, ImportError, ValueError):
+809         return module_name
+810     if spec is None or spec.origin is None or spec.origin == "namespace":
+811         return module_name
+812     elif spec.submodule_search_locations:
+813         return os.path.dirname(spec.origin)
+814     else:
+815         return spec.origin
+816 
+817 
+818 def resolve_collection_argument(
+819     invocation_path: Path, arg: str, *, as_pypath: bool = False
+820 ) -> Tuple[py.path.local, List[str]]:
+821     """Parse path arguments optionally containing selection parts and return (fspath, names).
+822 
+823     Command-line arguments can point to files and/or directories, and optionally contain
+824     parts for specific tests selection, for example:
+825 
+826         "pkg/tests/test_foo.py::TestClass::test_foo"
+827 
+828     This function ensures the path exists, and returns a tuple:
+829 
+830         (py.path.path("/full/path/to/pkg/tests/test_foo.py"), ["TestClass", "test_foo"])
+831 
+832     When as_pypath is True, expects that the command-line argument actually contains
+833     module paths instead of file-system paths:
+834 
+835         "pkg.tests.test_foo::TestClass::test_foo"
+836 
+837     In which case we search sys.path for a matching module, and then return the *path* to the
+838     found module.
+839 
+840     If the path doesn't exist, raise UsageError.
+841     If the path is a directory and selection parts are present, raise UsageError.
+842     """
+843     strpath, *parts = str(arg).split("::")
+844     if as_pypath:
+845         strpath = search_pypath(strpath)
+846     fspath = invocation_path / strpath
+847     fspath = absolutepath(fspath)
+848     if not fspath.exists():
+849         msg = (
+850             "module or package not found: {arg} (missing __init__.py?)"
+851             if as_pypath
+852             else "file or directory not found: {arg}"
+853         )
+854         raise UsageError(msg.format(arg=arg))
+855     if parts and fspath.is_dir():
+856         msg = (
+857             "package argument cannot contain :: selection parts: {arg}"
+858             if as_pypath
+859             else "directory argument cannot contain :: selection parts: {arg}"
+860         )
+861         raise UsageError(msg.format(arg=arg))
+862     return py.path.local(str(fspath)), parts
+
+</code><intended_behavior>Ensure the `--strict` flag functions as intended, controlling strictness levels within pytest. If `--strict` is re-introduced after deprecation, ensure it integrates seamlessly with existing functionality, possibly providing enhanced controls or clarity on strictness in tests without breaking backward compatibility. This might also involve updating the handling around command line arguments or configuration handling where `--strict` plays a role.</intended_behavior>, <file>src/_pytest/config/argparsing.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 import argparse
+2 import sys
+3 import warnings
+4 from gettext import gettext
+5 from typing import Any
+6 from typing import Callable
+7 from typing import cast
+8 from typing import Dict
+9 from typing import List
+10 from typing import Mapping
+11 from typing import Optional
+12 from typing import Sequence
+13 from typing import Tuple
+14 from typing import TYPE_CHECKING
+15 from typing import Union
+16 
+17 import py
+18 
+19 import _pytest._io
+20 from _pytest.compat import final
+21 from _pytest.config.exceptions import UsageError
+22 
+23 if TYPE_CHECKING:
+24     from typing import NoReturn
+25     from typing_extensions import Literal
+26 
+27 FILE_OR_DIR = "file_or_dir"
+28 
+29 
+30 @final
+31 class Parser:
+32     """Parser for command line arguments and ini-file values.
+33 
+34     :ivar extra_info: Dict of generic param -> value to display in case
+35         there's an error processing the command line arguments.
+36     """
+37 
+38     prog: Optional[str] = None
+39 
+40     def __init__(
+41         self,
+42         usage: Optional[str] = None,
+43         processopt: Optional[Callable[["Argument"], None]] = None,
+44     ) -> None:
+45         self._anonymous = OptionGroup("custom options", parser=self)
+46         self._groups: List[OptionGroup] = []
+47         self._processopt = processopt
+48         self._usage = usage
+49         self._inidict: Dict[str, Tuple[str, Optional[str], Any]] = {}
+50         self._ininames: List[str] = []
+51         self.extra_info: Dict[str, Any] = {}
+52 
+53     def processoption(self, option: "Argument") -> None:
+54         if self._processopt:
+55             if option.dest:
+56                 self._processopt(option)
+57 
+58     def getgroup(
+59         self, name: str, description: str = "", after: Optional[str] = None
+60     ) -> "OptionGroup":
+61         """Get (or create) a named option Group.
+62 
+63         :name: Name of the option group.
+64         :description: Long description for --help output.
+65         :after: Name of another group, used for ordering --help output.
+66 
+67         The returned group object has an ``addoption`` method with the same
+68         signature as :py:func:`parser.addoption
+69         <_pytest.config.argparsing.Parser.addoption>` but will be shown in the
+70         respective group in the output of ``pytest. --help``.
+71         """
+72         for group in self._groups:
+73             if group.name == name:
+74                 return group
+75         group = OptionGroup(name, description, parser=self)
+76         i = 0
+77         for i, grp in enumerate(self._groups):
+78             if grp.name == after:
+79                 break
+80         self._groups.insert(i + 1, group)
+81         return group
+82 
+83     def addoption(self, *opts: str, **attrs: Any) -> None:
+84         """Register a command line option.
+85 
+86         :opts: Option names, can be short or long options.
+87         :attrs: Same attributes which the ``add_argument()`` function of the
+88            `argparse library <https://docs.python.org/library/argparse.html>`_
+89            accepts.
+90 
+91         After command line parsing, options are available on the pytest config
+92         object via ``config.option.NAME`` where ``NAME`` is usually set
+93         by passing a ``dest`` attribute, for example
+94         ``addoption("--long", dest="NAME", ...)``.
+95         """
+96         self._anonymous.addoption(*opts, **attrs)
+97 
+98     def parse(
+99         self,
+100         args: Sequence[Union[str, py.path.local]],
+101         namespace: Optional[argparse.Namespace] = None,
+102     ) -> argparse.Namespace:
+103         from _pytest._argcomplete import try_argcomplete
+104 
+105         self.optparser = self._getparser()
+106         try_argcomplete(self.optparser)
+107         strargs = [str(x) if isinstance(x, py.path.local) else x for x in args]
+108         return self.optparser.parse_args(strargs, namespace=namespace)
+109 
+110     def _getparser(self) -> "MyOptionParser":
+111         from _pytest._argcomplete import filescompleter
+112 
+113         optparser = MyOptionParser(self, self.extra_info, prog=self.prog)
+114         groups = self._groups + [self._anonymous]
+115         for group in groups:
+116             if group.options:
+117                 desc = group.description or group.name
+118                 arggroup = optparser.add_argument_group(desc)
+119                 for option in group.options:
+120                     n = option.names()
+121                     a = option.attrs()
+122                     arggroup.add_argument(*n, **a)
+123         file_or_dir_arg = optparser.add_argument(FILE_OR_DIR, nargs="*")
+124         # bash like autocompletion for dirs (appending '/')
+125         # Type ignored because typeshed doesn't know about argcomplete.
+126         file_or_dir_arg.completer = filescompleter  # type: ignore
+127         return optparser
+128 
+129     def parse_setoption(
+130         self,
+131         args: Sequence[Union[str, py.path.local]],
+132         option: argparse.Namespace,
+133         namespace: Optional[argparse.Namespace] = None,
+134     ) -> List[str]:
+135         parsedoption = self.parse(args, namespace=namespace)
+136         for name, value in parsedoption.__dict__.items():
+137             setattr(option, name, value)
+138         return cast(List[str], getattr(parsedoption, FILE_OR_DIR))
+139 
+140     def parse_known_args(
+141         self,
+142         args: Sequence[Union[str, py.path.local]],
+143         namespace: Optional[argparse.Namespace] = None,
+144     ) -> argparse.Namespace:
+145         """Parse and return a namespace object with known arguments at this point."""
+146         return self.parse_known_and_unknown_args(args, namespace=namespace)[0]
+147 
+148     def parse_known_and_unknown_args(
+149         self,
+150         args: Sequence[Union[str, py.path.local]],
+151         namespace: Optional[argparse.Namespace] = None,
+152     ) -> Tuple[argparse.Namespace, List[str]]:
+153         """Parse and return a namespace object with known arguments, and
+154         the remaining arguments unknown at this point."""
+155         optparser = self._getparser()
+156         strargs = [str(x) if isinstance(x, py.path.local) else x for x in args]
+157         return optparser.parse_known_args(strargs, namespace=namespace)
+158 
+159     def addini(
+160         self,
+161         name: str,
+162         help: str,
+163         type: Optional[
+164             "Literal['string', 'pathlist', 'args', 'linelist', 'bool']"
+165         ] = None,
+166         default=None,
+167     ) -> None:
+168         """Register an ini-file option.
+169 
+170         :name: Name of the ini-variable.
+171         :type: Type of the variable, can be ``string``, ``pathlist``, ``args``,
+172                ``linelist`` or ``bool``.  Defaults to ``string`` if ``None`` or
+173                not passed.
+174         :default: Default value if no ini-file option exists but is queried.
+175 
+176         The value of ini-variables can be retrieved via a call to
+177         :py:func:`config.getini(name) <_pytest.config.Config.getini>`.
+178         """
+179         assert type in (None, "string", "pathlist", "args", "linelist", "bool")
+180         self._inidict[name] = (help, type, default)
+181         self._ininames.append(name)
+182 
+183 
+184 class ArgumentError(Exception):
+185     """Raised if an Argument instance is created with invalid or
+186     inconsistent arguments."""
+187 
+188     def __init__(self, msg: str, option: Union["Argument", str]) -> None:
+189         self.msg = msg
+190         self.option_id = str(option)
+191 
+192     def __str__(self) -> str:
+193         if self.option_id:
+194             return f"option {self.option_id}: {self.msg}"
+195         else:
+196             return self.msg
+197 
+198 
+199 class Argument:
+200     """Class that mimics the necessary behaviour of optparse.Option.
+201 
+202     It's currently a least effort implementation and ignoring choices
+203     and integer prefixes.
+204 
+205     https://docs.python.org/3/library/optparse.html#optparse-standard-option-types
+206     """
+207 
+208     _typ_map = {"int": int, "string": str, "float": float, "complex": complex}
+209 
+210     def __init__(self, *names: str, **attrs: Any) -> None:
+211         """Store parms in private vars for use in add_argument."""
+212         self._attrs = attrs
+213         self._short_opts: List[str] = []
+214         self._long_opts: List[str] = []
+215         if "%default" in (attrs.get("help") or ""):
+216             warnings.warn(
+217                 'pytest now uses argparse. "%default" should be'
+218                 ' changed to "%(default)s" ',
+219                 DeprecationWarning,
+220                 stacklevel=3,
+221             )
+222         try:
+223             typ = attrs["type"]
+224         except KeyError:
+225             pass
+226         else:
+227             # This might raise a keyerror as well, don't want to catch that.
+228             if isinstance(typ, str):
+229                 if typ == "choice":
+230                     warnings.warn(
+231                         "`type` argument to addoption() is the string %r."
+232                         " For choices this is optional and can be omitted, "
+233                         " but when supplied should be a type (for example `str` or `int`)."
+234                         " (options: %s)" % (typ, names),
+235                         DeprecationWarning,
+236                         stacklevel=4,
+237                     )
+238                     # argparse expects a type here take it from
+239                     # the type of the first element
+240                     attrs["type"] = type(attrs["choices"][0])
+241                 else:
+242                     warnings.warn(
+243                         "`type` argument to addoption() is the string %r, "
+244                         " but when supplied should be a type (for example `str` or `int`)."
+245                         " (options: %s)" % (typ, names),
+246                         DeprecationWarning,
+247                         stacklevel=4,
+248                     )
+249                     attrs["type"] = Argument._typ_map[typ]
+250                 # Used in test_parseopt -> test_parse_defaultgetter.
+251                 self.type = attrs["type"]
+252             else:
+253                 self.type = typ
+254         try:
+255             # Attribute existence is tested in Config._processopt.
+256             self.default = attrs["default"]
+257         except KeyError:
+258             pass
+259         self._set_opt_strings(names)
+260         dest: Optional[str] = attrs.get("dest")
+261         if dest:
+262             self.dest = dest
+263         elif self._long_opts:
+264             self.dest = self._long_opts[0][2:].replace("-", "_")
+265         else:
+266             try:
+267                 self.dest = self._short_opts[0][1:]
+268             except IndexError as e:
+269                 self.dest = "???"  # Needed for the error repr.
+270                 raise ArgumentError("need a long or short option", self) from e
+271 
+272     def names(self) -> List[str]:
+273         return self._short_opts + self._long_opts
+274 
+275     def attrs(self) -> Mapping[str, Any]:
+276         # Update any attributes set by processopt.
+277         attrs = "default dest help".split()
+278         attrs.append(self.dest)
+279         for attr in attrs:
+280             try:
+281                 self._attrs[attr] = getattr(self, attr)
+282             except AttributeError:
+283                 pass
+284         if self._attrs.get("help"):
+285             a = self._attrs["help"]
+286             a = a.replace("%default", "%(default)s")
+287             # a = a.replace('%prog', '%(prog)s')
+288             self._attrs["help"] = a
+289         return self._attrs
+290 
+291     def _set_opt_strings(self, opts: Sequence[str]) -> None:
+292         """Directly from optparse.
+293 
+294         Might not be necessary as this is passed to argparse later on.
+295         """
+296         for opt in opts:
+297             if len(opt) < 2:
+298                 raise ArgumentError(
+299                     "invalid option string %r: "
+300                     "must be at least two characters long" % opt,
+301                     self,
+302                 )
+303             elif len(opt) == 2:
+304                 if not (opt[0] == "-" and opt[1] != "-"):
+305                     raise ArgumentError(
+306                         "invalid short option string %r: "
+307                         "must be of the form -x, (x any non-dash char)" % opt,
+308                         self,
+309                     )
+310                 self._short_opts.append(opt)
+311             else:
+312                 if not (opt[0:2] == "--" and opt[2] != "-"):
+313                     raise ArgumentError(
+314                         "invalid long option string %r: "
+315                         "must start with --, followed by non-dash" % opt,
+316                         self,
+317                     )
+318                 self._long_opts.append(opt)
+319 
+320     def __repr__(self) -> str:
+321         args: List[str] = []
+322         if self._short_opts:
+323             args += ["_short_opts: " + repr(self._short_opts)]
+324         if self._long_opts:
+325             args += ["_long_opts: " + repr(self._long_opts)]
+326         args += ["dest: " + repr(self.dest)]
+327         if hasattr(self, "type"):
+328             args += ["type: " + repr(self.type)]
+329         if hasattr(self, "default"):
+330             args += ["default: " + repr(self.default)]
+331         return "Argument({})".format(", ".join(args))
+332 
+333 
+334 class OptionGroup:
+335     def __init__(
+336         self, name: str, description: str = "", parser: Optional[Parser] = None
+337     ) -> None:
+338         self.name = name
+339         self.description = description
+340         self.options: List[Argument] = []
+341         self.parser = parser
+342 
+343     def addoption(self, *optnames: str, **attrs: Any) -> None:
+344         """Add an option to this group.
+345 
+346         If a shortened version of a long option is specified, it will
+347         be suppressed in the help. addoption('--twowords', '--two-words')
+348         results in help showing '--two-words' only, but --twowords gets
+349         accepted **and** the automatic destination is in args.twowords.
+350         """
+351         conflict = set(optnames).intersection(
+352             name for opt in self.options for name in opt.names()
+353         )
+354         if conflict:
+355             raise ValueError("option names %s already added" % conflict)
+356         option = Argument(*optnames, **attrs)
+357         self._addoption_instance(option, shortupper=False)
+358 
+359     def _addoption(self, *optnames: str, **attrs: Any) -> None:
+360         option = Argument(*optnames, **attrs)
+361         self._addoption_instance(option, shortupper=True)
+362 
+363     def _addoption_instance(self, option: "Argument", shortupper: bool = False) -> None:
+364         if not shortupper:
+365             for opt in option._short_opts:
+366                 if opt[0] == "-" and opt[1].islower():
+367                     raise ValueError("lowercase shortoptions reserved")
+368         if self.parser:
+369             self.parser.processoption(option)
+370         self.options.append(option)
+371 
+372 
+373 class MyOptionParser(argparse.ArgumentParser):
+374     def __init__(
+375         self,
+376         parser: Parser,
+377         extra_info: Optional[Dict[str, Any]] = None,
+378         prog: Optional[str] = None,
+379     ) -> None:
+380         self._parser = parser
+381         argparse.ArgumentParser.__init__(
+382             self,
+383             prog=prog,
+384             usage=parser._usage,
+385             add_help=False,
+386             formatter_class=DropShorterLongHelpFormatter,
+387             allow_abbrev=False,
+388         )
+389         # extra_info is a dict of (param -> value) to display if there's
+390         # an usage error to provide more contextual information to the user.
+391         self.extra_info = extra_info if extra_info else {}
+392 
+393     def error(self, message: str) -> "NoReturn":
+394         """Transform argparse error message into UsageError."""
+395         msg = f"{self.prog}: error: {message}"
+396 
+397         if hasattr(self._parser, "_config_source_hint"):
+398             # Type ignored because the attribute is set dynamically.
+399             msg = f"{msg} ({self._parser._config_source_hint})"  # type: ignore
+400 
+401         raise UsageError(self.format_usage() + msg)
+402 
+403     # Type ignored because typeshed has a very complex type in the superclass.
+404     def parse_args(  # type: ignore
+405         self,
+406         args: Optional[Sequence[str]] = None,
+407         namespace: Optional[argparse.Namespace] = None,
+408     ) -> argparse.Namespace:
+409         """Allow splitting of positional arguments."""
+410         parsed, unrecognized = self.parse_known_args(args, namespace)
+411         if unrecognized:
+412             for arg in unrecognized:
+413                 if arg and arg[0] == "-":
+414                     lines = ["unrecognized arguments: %s" % (" ".join(unrecognized))]
+415                     for k, v in sorted(self.extra_info.items()):
+416                         lines.append(f"  {k}: {v}")
+417                     self.error("\n".join(lines))
+418             getattr(parsed, FILE_OR_DIR).extend(unrecognized)
+419         return parsed
+420 
+421     if sys.version_info[:2] < (3, 9):  # pragma: no cover
+422         # Backport of https://github.com/python/cpython/pull/14316 so we can
+423         # disable long --argument abbreviations without breaking short flags.
+424         def _parse_optional(
+425             self, arg_string: str
+426         ) -> Optional[Tuple[Optional[argparse.Action], str, Optional[str]]]:
+427             if not arg_string:
+428                 return None
+429             if not arg_string[0] in self.prefix_chars:
+430                 return None
+431             if arg_string in self._option_string_actions:
+432                 action = self._option_string_actions[arg_string]
+433                 return action, arg_string, None
+434             if len(arg_string) == 1:
+435                 return None
+436             if "=" in arg_string:
+437                 option_string, explicit_arg = arg_string.split("=", 1)
+438                 if option_string in self._option_string_actions:
+439                     action = self._option_string_actions[option_string]
+440                     return action, option_string, explicit_arg
+441             if self.allow_abbrev or not arg_string.startswith("--"):
+442                 option_tuples = self._get_option_tuples(arg_string)
+443                 if len(option_tuples) > 1:
+444                     msg = gettext(
+445                         "ambiguous option: %(option)s could match %(matches)s"
+446                     )
+447                     options = ", ".join(option for _, option, _ in option_tuples)
+448                     self.error(msg % {"option": arg_string, "matches": options})
+449                 elif len(option_tuples) == 1:
+450                     (option_tuple,) = option_tuples
+451                     return option_tuple
+452             if self._negative_number_matcher.match(arg_string):
+453                 if not self._has_negative_number_optionals:
+454                     return None
+455             if " " in arg_string:
+456                 return None
+457             return None, arg_string, None
+458 
+459 
+460 class DropShorterLongHelpFormatter(argparse.HelpFormatter):
+461     """Shorten help for long options that differ only in extra hyphens.
+462 
+463     - Collapse **long** options that are the same except for extra hyphens.
+464     - Shortcut if there are only two options and one of them is a short one.
+465     - Cache result on the action object as this is called at least 2 times.
+466     """
+467 
+468     def __init__(self, *args: Any, **kwargs: Any) -> None:
+469         # Use more accurate terminal width.
+470         if "width" not in kwargs:
+471             kwargs["width"] = _pytest._io.get_terminal_width()
+472         super().__init__(*args, **kwargs)
+473 
+474     def _format_action_invocation(self, action: argparse.Action) -> str:
+475         orgstr = argparse.HelpFormatter._format_action_invocation(self, action)
+476         if orgstr and orgstr[0] != "-":  # only optional arguments
+477             return orgstr
+478         res: Optional[str] = getattr(action, "_formatted_action_invocation", None)
+479         if res:
+480             return res
+481         options = orgstr.split(", ")
+482         if len(options) == 2 and (len(options[0]) == 2 or len(options[1]) == 2):
+483             # a shortcut for '-h, --help' or '--abc', '-a'
+484             action._formatted_action_invocation = orgstr  # type: ignore
+485             return orgstr
+486         return_list = []
+487         short_long: Dict[str, str] = {}
+488         for option in options:
+489             if len(option) == 2 or option[2] == " ":
+490                 continue
+491             if not option.startswith("--"):
+492                 raise ArgumentError(
+493                     'long optional argument without "--": [%s]' % (option), option
+494                 )
+495             xxoption = option[2:]
+496             shortened = xxoption.replace("-", "")
+497             if shortened not in short_long or len(short_long[shortened]) < len(
+498                 xxoption
+499             ):
+500                 short_long[shortened] = xxoption
+501         # now short_long has been filled out to the longest with dashes
+502         # **and** we keep the right option ordering from add_argument
+503         for option in options:
+504             if len(option) == 2 or option[2] == " ":
+505                 return_list.append(option)
+506             if option[2:] == short_long.get(option.replace("-", "")):
+507                 return_list.append(option.replace(" ", "=", 1))
+508         formatted_action_invocation = ", ".join(return_list)
+509         action._formatted_action_invocation = formatted_action_invocation  # type: ignore
+510         return formatted_action_invocation
+511 
+512     def _split_lines(self, text, width):
+513         """Wrap lines after splitting on original newlines.
+514 
+515         This allows to have explicit line breaks in the help text.
+516         """
+517         import textwrap
+518 
+519         lines = []
+520         for line in text.splitlines():
+521             lines.extend(textwrap.wrap(line.strip(), width))
+522         return lines
+
+</code><intended_behavior>This file should continue to facilitate the addition of command-line options, including `--strict`. Modifications or patches should ensure that if `--strict` remains, it is clearly defined what its behavior is, how it affects pytest execution, and that it’s clearly documented within the context of this file. This is crucial for maintainability and usability.</intended_behavior>, <file>src/_pytest/deprecated.py</file>
+<class>None</class>
+<method>None</method>
+<code>
+1 """Deprecation messages and bits of code used elsewhere in the codebase that
+2 is planned to be removed in the next pytest release.
+3 
+4 Keeping it in a central location makes it easy to track what is deprecated and should
+5 be removed when the time comes.
+6 
+7 All constants defined in this module should be either instances of
+8 :class:`PytestWarning`, or :class:`UnformattedWarning`
+9 in case of warnings which need to format their messages.
+10 """
+11 from _pytest.warning_types import PytestDeprecationWarning
+12 from _pytest.warning_types import UnformattedWarning
+13 
+14 # set of plugins which have been integrated into the core; we use this list to ignore
+15 # them during registration to avoid conflicts
+16 DEPRECATED_EXTERNAL_PLUGINS = {
+17     "pytest_catchlog",
+18     "pytest_capturelog",
+19     "pytest_faulthandler",
+20 }
+21 
+22 
+23 FILLFUNCARGS = UnformattedWarning(
+24     PytestDeprecationWarning,
+25     "{name} is deprecated, use "
+26     "function._request._fillfixtures() instead if you cannot avoid reaching into internals.",
+27 )
+28 
+29 PYTEST_COLLECT_MODULE = UnformattedWarning(
+30     PytestDeprecationWarning,
+31     "pytest.collect.{name} was moved to pytest.{name}\n"
+32     "Please update to the new name.",
+33 )
+34 
+35 
+36 MINUS_K_DASH = PytestDeprecationWarning(
+37     "The `-k '-expr'` syntax to -k is deprecated.\nUse `-k 'not expr'` instead."
+38 )
+39 
+40 MINUS_K_COLON = PytestDeprecationWarning(
+41     "The `-k 'expr:'` syntax to -k is deprecated.\n"
+42     "Please open an issue if you use this and want a replacement."
+43 )
+44 
+45 WARNING_CAPTURED_HOOK = PytestDeprecationWarning(
+46     "The pytest_warning_captured is deprecated and will be removed in a future release.\n"
+47     "Please use pytest_warning_recorded instead."
+48 )
+49 
+50 FSCOLLECTOR_GETHOOKPROXY_ISINITPATH = PytestDeprecationWarning(
+51     "The gethookproxy() and isinitpath() methods of FSCollector and Package are deprecated; "
+52     "use self.session.gethookproxy() and self.session.isinitpath() instead. "
+53 )
+
+</code><intended_behavior>If `--strict` deprecation is rolled back or managed, this file should provide clear guidance or mechanisms on how that deprecation warning is handled. It should offer users clear instructions on how `--strict` is to be used going forward and how it impacts their current usage.</intended_behavior>]
+2026-01-14 15:39:53.100 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-14 15:39:53.100 | INFO     | Search-only: skipping patch selection
+2026-01-14 15:39:53.168 | INFO     | Task pytest-dev__pytest-7985 completed successfully.
+2026-01-14 15:39:53.169 | INFO     | No patch generated. You can try running ACR again.

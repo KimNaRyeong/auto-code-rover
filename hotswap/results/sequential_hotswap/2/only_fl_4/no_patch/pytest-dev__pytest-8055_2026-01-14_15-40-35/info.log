@@ -1,0 +1,818 @@
+2026-01-14 15:40:35.408 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-14 15:40:39.822 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=141, output_tokens=13, cost=0.001800
+2026-01-14 15:40:39.823 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-14 15:40:39.828 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 15:40:48.627 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=450, output_tokens=420, cost=0.017100
+2026-01-14 15:40:48.674 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 15:40:52.840 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=774, output_tokens=79, cost=0.010110
+2026-01-14 15:40:52.842 | DEBUG    | Extracted a valid json.
+2026-01-14 15:40:52.842 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_code(\"sys.version_info\")",
+        "search_class(\"PytestPluginManager\")",
+        "search_method_in_class(\"add_hookspecs\", \"PytestPluginManager\")",
+        "search_code(\"sys.excepthook\")",
+        "search_code(\"sys.unraisablehook\")"
+    ],
+    "bug_locations": []
+}
+2026-01-14 15:40:52.938 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-14 15:40:52.939 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-14 15:41:09.104 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=1874, output_tokens=700, cost=0.039740
+2026-01-14 15:41:09.115 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-14 15:41:15.117 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2790, output_tokens=240, cost=0.035100
+2026-01-14 15:41:15.121 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-14 15:41:22.378 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=594, output_tokens=175, cost=0.011190
+2026-01-14 15:41:22.379 | DEBUG    | Extracted a valid json.
+2026-01-14 15:41:22.379 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations":[{"file": "src/_pytest/config/__init__.py", "class": "PytestPluginManager", "method": "", "intended_behavior": "Implement a new method or enhance an existing one within the `PytestPluginManager` to check for the Python version (`sys.version_info`). If Python 3.8 or higher is detected, the method should set `sys.unraisablehook` to a custom function designed by pytest. This function will be responsible for capturing unraisable exceptions and associating them with the tests in which they occurred. The implementation must ensure that this behavior is engaged only when pytest is running tests to avoid side-effects during plugin or pytest initialization phases. This approach will integrate the new Python 3.8 feature into pytest's test handling mechanisms without disrupting existing functionalities."}]
+}
+2026-01-14 15:41:22.383 | DEBUG    | Bug location extracted successfully: [<file>src/_pytest/config/__init__.py</file>
+<class>PytestPluginManager</class>
+<method>None</method>
+<code>
+326 class PytestPluginManager(PluginManager):
+327     """A :py:class:`pluggy.PluginManager <pluggy.PluginManager>` with
+328     additional pytest-specific functionality:
+329 
+330     * Loading plugins from the command line, ``PYTEST_PLUGINS`` env variable and
+331       ``pytest_plugins`` global variables found in plugins being loaded.
+332     * ``conftest.py`` loading during start-up.
+333     """
+334 
+335     def __init__(self) -> None:
+336         import _pytest.assertion
+337 
+338         super().__init__("pytest")
+339         # The objects are module objects, only used generically.
+340         self._conftest_plugins: Set[types.ModuleType] = set()
+341 
+342         # State related to local conftest plugins.
+343         self._dirpath2confmods: Dict[py.path.local, List[types.ModuleType]] = {}
+344         self._conftestpath2mod: Dict[Path, types.ModuleType] = {}
+345         self._confcutdir: Optional[py.path.local] = None
+346         self._noconftest = False
+347         self._duplicatepaths: Set[py.path.local] = set()
+348 
+349         # plugins that were explicitly skipped with pytest.skip
+350         # list of (module name, skip reason)
+351         # previously we would issue a warning when a plugin was skipped, but
+352         # since we refactored warnings as first citizens of Config, they are
+353         # just stored here to be used later.
+354         self.skipped_plugins: List[Tuple[str, str]] = []
+355 
+356         self.add_hookspecs(_pytest.hookspec)
+357         self.register(self)
+358         if os.environ.get("PYTEST_DEBUG"):
+359             err: IO[str] = sys.stderr
+360             encoding: str = getattr(err, "encoding", "utf8")
+361             try:
+362                 err = open(
+363                     os.dup(err.fileno()), mode=err.mode, buffering=1, encoding=encoding,
+364                 )
+365             except Exception:
+366                 pass
+367             self.trace.root.setwriter(err.write)
+368             self.enable_tracing()
+369 
+370         # Config._consider_importhook will set a real object if required.
+371         self.rewrite_hook = _pytest.assertion.DummyRewriteHook()
+372         # Used to know when we are importing conftests after the pytest_configure stage.
+373         self._configured = False
+374 
+375     def parse_hookimpl_opts(self, plugin: _PluggyPlugin, name: str):
+376         # pytest hooks are always prefixed with "pytest_",
+377         # so we avoid accessing possibly non-readable attributes
+378         # (see issue #1073).
+379         if not name.startswith("pytest_"):
+380             return
+381         # Ignore names which can not be hooks.
+382         if name == "pytest_plugins":
+383             return
+384 
+385         method = getattr(plugin, name)
+386         opts = super().parse_hookimpl_opts(plugin, name)
+387 
+388         # Consider only actual functions for hooks (#3775).
+389         if not inspect.isroutine(method):
+390             return
+391 
+392         # Collect unmarked hooks as long as they have the `pytest_' prefix.
+393         if opts is None and name.startswith("pytest_"):
+394             opts = {}
+395         if opts is not None:
+396             # TODO: DeprecationWarning, people should use hookimpl
+397             # https://github.com/pytest-dev/pytest/issues/4562
+398             known_marks = {m.name for m in getattr(method, "pytestmark", [])}
+399 
+400             for name in ("tryfirst", "trylast", "optionalhook", "hookwrapper"):
+401                 opts.setdefault(name, hasattr(method, name) or name in known_marks)
+402         return opts
+403 
+404     def parse_hookspec_opts(self, module_or_class, name: str):
+405         opts = super().parse_hookspec_opts(module_or_class, name)
+406         if opts is None:
+407             method = getattr(module_or_class, name)
+408 
+409             if name.startswith("pytest_"):
+410                 # todo: deprecate hookspec hacks
+411                 # https://github.com/pytest-dev/pytest/issues/4562
+412                 known_marks = {m.name for m in getattr(method, "pytestmark", [])}
+413                 opts = {
+414                     "firstresult": hasattr(method, "firstresult")
+415                     or "firstresult" in known_marks,
+416                     "historic": hasattr(method, "historic")
+417                     or "historic" in known_marks,
+418                 }
+419         return opts
+420 
+421     def register(
+422         self, plugin: _PluggyPlugin, name: Optional[str] = None
+423     ) -> Optional[str]:
+424         if name in _pytest.deprecated.DEPRECATED_EXTERNAL_PLUGINS:
+425             warnings.warn(
+426                 PytestConfigWarning(
+427                     "{} plugin has been merged into the core, "
+428                     "please remove it from your requirements.".format(
+429                         name.replace("_", "-")
+430                     )
+431                 )
+432             )
+433             return None
+434         ret: Optional[str] = super().register(plugin, name)
+435         if ret:
+436             self.hook.pytest_plugin_registered.call_historic(
+437                 kwargs=dict(plugin=plugin, manager=self)
+438             )
+439 
+440             if isinstance(plugin, types.ModuleType):
+441                 self.consider_module(plugin)
+442         return ret
+443 
+444     def getplugin(self, name: str):
+445         # Support deprecated naming because plugins (xdist e.g.) use it.
+446         plugin: Optional[_PluggyPlugin] = self.get_plugin(name)
+447         return plugin
+448 
+449     def hasplugin(self, name: str) -> bool:
+450         """Return whether a plugin with the given name is registered."""
+451         return bool(self.get_plugin(name))
+452 
+453     def pytest_configure(self, config: "Config") -> None:
+454         """:meta private:"""
+455         # XXX now that the pluginmanager exposes hookimpl(tryfirst...)
+456         # we should remove tryfirst/trylast as markers.
+457         config.addinivalue_line(
+458             "markers",
+459             "tryfirst: mark a hook implementation function such that the "
+460             "plugin machinery will try to call it first/as early as possible.",
+461         )
+462         config.addinivalue_line(
+463             "markers",
+464             "trylast: mark a hook implementation function such that the "
+465             "plugin machinery will try to call it last/as late as possible.",
+466         )
+467         self._configured = True
+468 
+469     #
+470     # Internal API for local conftest plugin handling.
+471     #
+472     def _set_initial_conftests(self, namespace: argparse.Namespace) -> None:
+473         """Load initial conftest files given a preparsed "namespace".
+474 
+475         As conftest files may add their own command line options which have
+476         arguments ('--my-opt somepath') we might get some false positives.
+477         All builtin and 3rd party plugins will have been loaded, however, so
+478         common options will not confuse our logic here.
+479         """
+480         current = py.path.local()
+481         self._confcutdir = (
+482             current.join(namespace.confcutdir, abs=True)
+483             if namespace.confcutdir
+484             else None
+485         )
+486         self._noconftest = namespace.noconftest
+487         self._using_pyargs = namespace.pyargs
+488         testpaths = namespace.file_or_dir
+489         foundanchor = False
+490         for testpath in testpaths:
+491             path = str(testpath)
+492             # remove node-id syntax
+493             i = path.find("::")
+494             if i != -1:
+495                 path = path[:i]
+496             anchor = current.join(path, abs=1)
+497             if anchor.exists():  # we found some file object
+498                 self._try_load_conftest(anchor, namespace.importmode)
+499                 foundanchor = True
+500         if not foundanchor:
+501             self._try_load_conftest(current, namespace.importmode)
+502 
+503     def _try_load_conftest(
+504         self, anchor: py.path.local, importmode: Union[str, ImportMode]
+505     ) -> None:
+506         self._getconftestmodules(anchor, importmode)
+507         # let's also consider test* subdirs
+508         if anchor.check(dir=1):
+509             for x in anchor.listdir("test*"):
+510                 if x.check(dir=1):
+511                     self._getconftestmodules(x, importmode)
+512 
+513     @lru_cache(maxsize=128)
+514     def _getconftestmodules(
+515         self, path: py.path.local, importmode: Union[str, ImportMode],
+516     ) -> List[types.ModuleType]:
+517         if self._noconftest:
+518             return []
+519 
+520         if path.isfile():
+521             directory = path.dirpath()
+522         else:
+523             directory = path
+524 
+525         # XXX these days we may rather want to use config.rootpath
+526         # and allow users to opt into looking into the rootdir parent
+527         # directories instead of requiring to specify confcutdir.
+528         clist = []
+529         for parent in directory.parts():
+530             if self._confcutdir and self._confcutdir.relto(parent):
+531                 continue
+532             conftestpath = parent.join("conftest.py")
+533             if conftestpath.isfile():
+534                 mod = self._importconftest(conftestpath, importmode)
+535                 clist.append(mod)
+536         self._dirpath2confmods[directory] = clist
+537         return clist
+538 
+539     def _rget_with_confmod(
+540         self, name: str, path: py.path.local, importmode: Union[str, ImportMode],
+541     ) -> Tuple[types.ModuleType, Any]:
+542         modules = self._getconftestmodules(path, importmode)
+543         for mod in reversed(modules):
+544             try:
+545                 return mod, getattr(mod, name)
+546             except AttributeError:
+547                 continue
+548         raise KeyError(name)
+549 
+550     def _importconftest(
+551         self, conftestpath: py.path.local, importmode: Union[str, ImportMode],
+552     ) -> types.ModuleType:
+553         # Use a resolved Path object as key to avoid loading the same conftest
+554         # twice with build systems that create build directories containing
+555         # symlinks to actual files.
+556         # Using Path().resolve() is better than py.path.realpath because
+557         # it resolves to the correct path/drive in case-insensitive file systems (#5792)
+558         key = Path(str(conftestpath)).resolve()
+559 
+560         with contextlib.suppress(KeyError):
+561             return self._conftestpath2mod[key]
+562 
+563         pkgpath = conftestpath.pypkgpath()
+564         if pkgpath is None:
+565             _ensure_removed_sysmodule(conftestpath.purebasename)
+566 
+567         try:
+568             mod = import_path(conftestpath, mode=importmode)
+569         except Exception as e:
+570             assert e.__traceback__ is not None
+571             exc_info = (type(e), e, e.__traceback__)
+572             raise ConftestImportFailure(conftestpath, exc_info) from e
+573 
+574         self._check_non_top_pytest_plugins(mod, conftestpath)
+575 
+576         self._conftest_plugins.add(mod)
+577         self._conftestpath2mod[key] = mod
+578         dirpath = conftestpath.dirpath()
+579         if dirpath in self._dirpath2confmods:
+580             for path, mods in self._dirpath2confmods.items():
+581                 if path and path.relto(dirpath) or path == dirpath:
+582                     assert mod not in mods
+583                     mods.append(mod)
+584         self.trace(f"loading conftestmodule {mod!r}")
+585         self.consider_conftest(mod)
+586         return mod
+587 
+588     def _check_non_top_pytest_plugins(
+589         self, mod: types.ModuleType, conftestpath: py.path.local,
+590     ) -> None:
+591         if (
+592             hasattr(mod, "pytest_plugins")
+593             and self._configured
+594             and not self._using_pyargs
+595         ):
+596             msg = (
+597                 "Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:\n"
+598                 "It affects the entire test suite instead of just below the conftest as expected.\n"
+599                 "  {}\n"
+600                 "Please move it to a top level conftest file at the rootdir:\n"
+601                 "  {}\n"
+602                 "For more information, visit:\n"
+603                 "  https://docs.pytest.org/en/stable/deprecations.html#pytest-plugins-in-non-top-level-conftest-files"
+604             )
+605             fail(msg.format(conftestpath, self._confcutdir), pytrace=False)
+606 
+607     #
+608     # API for bootstrapping plugin loading
+609     #
+610     #
+611 
+612     def consider_preparse(
+613         self, args: Sequence[str], *, exclude_only: bool = False
+614     ) -> None:
+615         i = 0
+616         n = len(args)
+617         while i < n:
+618             opt = args[i]
+619             i += 1
+620             if isinstance(opt, str):
+621                 if opt == "-p":
+622                     try:
+623                         parg = args[i]
+624                     except IndexError:
+625                         return
+626                     i += 1
+627                 elif opt.startswith("-p"):
+628                     parg = opt[2:]
+629                 else:
+630                     continue
+631                 if exclude_only and not parg.startswith("no:"):
+632                     continue
+633                 self.consider_pluginarg(parg)
+634 
+635     def consider_pluginarg(self, arg: str) -> None:
+636         if arg.startswith("no:"):
+637             name = arg[3:]
+638             if name in essential_plugins:
+639                 raise UsageError("plugin %s cannot be disabled" % name)
+640 
+641             # PR #4304: remove stepwise if cacheprovider is blocked.
+642             if name == "cacheprovider":
+643                 self.set_blocked("stepwise")
+644                 self.set_blocked("pytest_stepwise")
+645 
+646             self.set_blocked(name)
+647             if not name.startswith("pytest_"):
+648                 self.set_blocked("pytest_" + name)
+649         else:
+650             name = arg
+651             # Unblock the plugin.  None indicates that it has been blocked.
+652             # There is no interface with pluggy for this.
+653             if self._name2plugin.get(name, -1) is None:
+654                 del self._name2plugin[name]
+655             if not name.startswith("pytest_"):
+656                 if self._name2plugin.get("pytest_" + name, -1) is None:
+657                     del self._name2plugin["pytest_" + name]
+658             self.import_plugin(arg, consider_entry_points=True)
+659 
+660     def consider_conftest(self, conftestmodule: types.ModuleType) -> None:
+661         self.register(conftestmodule, name=conftestmodule.__file__)
+662 
+663     def consider_env(self) -> None:
+664         self._import_plugin_specs(os.environ.get("PYTEST_PLUGINS"))
+665 
+666     def consider_module(self, mod: types.ModuleType) -> None:
+667         self._import_plugin_specs(getattr(mod, "pytest_plugins", []))
+668 
+669     def _import_plugin_specs(
+670         self, spec: Union[None, types.ModuleType, str, Sequence[str]]
+671     ) -> None:
+672         plugins = _get_plugin_specs_as_list(spec)
+673         for import_spec in plugins:
+674             self.import_plugin(import_spec)
+675 
+676     def import_plugin(self, modname: str, consider_entry_points: bool = False) -> None:
+677         """Import a plugin with ``modname``.
+678 
+679         If ``consider_entry_points`` is True, entry point names are also
+680         considered to find a plugin.
+681         """
+682         # Most often modname refers to builtin modules, e.g. "pytester",
+683         # "terminal" or "capture".  Those plugins are registered under their
+684         # basename for historic purposes but must be imported with the
+685         # _pytest prefix.
+686         assert isinstance(modname, str), (
+687             "module name as text required, got %r" % modname
+688         )
+689         if self.is_blocked(modname) or self.get_plugin(modname) is not None:
+690             return
+691 
+692         importspec = "_pytest." + modname if modname in builtin_plugins else modname
+693         self.rewrite_hook.mark_rewrite(importspec)
+694 
+695         if consider_entry_points:
+696             loaded = self.load_setuptools_entrypoints("pytest11", name=modname)
+697             if loaded:
+698                 return
+699 
+700         try:
+701             __import__(importspec)
+702         except ImportError as e:
+703             raise ImportError(
+704                 'Error importing plugin "{}": {}'.format(modname, str(e.args[0]))
+705             ).with_traceback(e.__traceback__) from e
+706 
+707         except Skipped as e:
+708             self.skipped_plugins.append((modname, e.msg or ""))
+709         else:
+710             mod = sys.modules[importspec]
+711             self.register(mod, modname)
+
+</code><intended_behavior>Implement a new method or enhance an existing one within the `PytestPluginManager` to check for the Python version (`sys.version_info`). If Python 3.8 or higher is detected, the method should set `sys.unraisablehook` to a custom function designed by pytest. This function will be responsible for capturing unraisable exceptions and associating them with the tests in which they occurred. The implementation must ensure that this behavior is engaged only when pytest is running tests to avoid side-effects during plugin or pytest initialization phases. This approach will integrate the new Python 3.8 feature into pytest's test handling mechanisms without disrupting existing functionalities.</intended_behavior>]
+2026-01-14 15:41:22.383 | INFO     | Search completed. Bug locations: [<file>src/_pytest/config/__init__.py</file>
+<class>PytestPluginManager</class>
+<method>None</method>
+<code>
+326 class PytestPluginManager(PluginManager):
+327     """A :py:class:`pluggy.PluginManager <pluggy.PluginManager>` with
+328     additional pytest-specific functionality:
+329 
+330     * Loading plugins from the command line, ``PYTEST_PLUGINS`` env variable and
+331       ``pytest_plugins`` global variables found in plugins being loaded.
+332     * ``conftest.py`` loading during start-up.
+333     """
+334 
+335     def __init__(self) -> None:
+336         import _pytest.assertion
+337 
+338         super().__init__("pytest")
+339         # The objects are module objects, only used generically.
+340         self._conftest_plugins: Set[types.ModuleType] = set()
+341 
+342         # State related to local conftest plugins.
+343         self._dirpath2confmods: Dict[py.path.local, List[types.ModuleType]] = {}
+344         self._conftestpath2mod: Dict[Path, types.ModuleType] = {}
+345         self._confcutdir: Optional[py.path.local] = None
+346         self._noconftest = False
+347         self._duplicatepaths: Set[py.path.local] = set()
+348 
+349         # plugins that were explicitly skipped with pytest.skip
+350         # list of (module name, skip reason)
+351         # previously we would issue a warning when a plugin was skipped, but
+352         # since we refactored warnings as first citizens of Config, they are
+353         # just stored here to be used later.
+354         self.skipped_plugins: List[Tuple[str, str]] = []
+355 
+356         self.add_hookspecs(_pytest.hookspec)
+357         self.register(self)
+358         if os.environ.get("PYTEST_DEBUG"):
+359             err: IO[str] = sys.stderr
+360             encoding: str = getattr(err, "encoding", "utf8")
+361             try:
+362                 err = open(
+363                     os.dup(err.fileno()), mode=err.mode, buffering=1, encoding=encoding,
+364                 )
+365             except Exception:
+366                 pass
+367             self.trace.root.setwriter(err.write)
+368             self.enable_tracing()
+369 
+370         # Config._consider_importhook will set a real object if required.
+371         self.rewrite_hook = _pytest.assertion.DummyRewriteHook()
+372         # Used to know when we are importing conftests after the pytest_configure stage.
+373         self._configured = False
+374 
+375     def parse_hookimpl_opts(self, plugin: _PluggyPlugin, name: str):
+376         # pytest hooks are always prefixed with "pytest_",
+377         # so we avoid accessing possibly non-readable attributes
+378         # (see issue #1073).
+379         if not name.startswith("pytest_"):
+380             return
+381         # Ignore names which can not be hooks.
+382         if name == "pytest_plugins":
+383             return
+384 
+385         method = getattr(plugin, name)
+386         opts = super().parse_hookimpl_opts(plugin, name)
+387 
+388         # Consider only actual functions for hooks (#3775).
+389         if not inspect.isroutine(method):
+390             return
+391 
+392         # Collect unmarked hooks as long as they have the `pytest_' prefix.
+393         if opts is None and name.startswith("pytest_"):
+394             opts = {}
+395         if opts is not None:
+396             # TODO: DeprecationWarning, people should use hookimpl
+397             # https://github.com/pytest-dev/pytest/issues/4562
+398             known_marks = {m.name for m in getattr(method, "pytestmark", [])}
+399 
+400             for name in ("tryfirst", "trylast", "optionalhook", "hookwrapper"):
+401                 opts.setdefault(name, hasattr(method, name) or name in known_marks)
+402         return opts
+403 
+404     def parse_hookspec_opts(self, module_or_class, name: str):
+405         opts = super().parse_hookspec_opts(module_or_class, name)
+406         if opts is None:
+407             method = getattr(module_or_class, name)
+408 
+409             if name.startswith("pytest_"):
+410                 # todo: deprecate hookspec hacks
+411                 # https://github.com/pytest-dev/pytest/issues/4562
+412                 known_marks = {m.name for m in getattr(method, "pytestmark", [])}
+413                 opts = {
+414                     "firstresult": hasattr(method, "firstresult")
+415                     or "firstresult" in known_marks,
+416                     "historic": hasattr(method, "historic")
+417                     or "historic" in known_marks,
+418                 }
+419         return opts
+420 
+421     def register(
+422         self, plugin: _PluggyPlugin, name: Optional[str] = None
+423     ) -> Optional[str]:
+424         if name in _pytest.deprecated.DEPRECATED_EXTERNAL_PLUGINS:
+425             warnings.warn(
+426                 PytestConfigWarning(
+427                     "{} plugin has been merged into the core, "
+428                     "please remove it from your requirements.".format(
+429                         name.replace("_", "-")
+430                     )
+431                 )
+432             )
+433             return None
+434         ret: Optional[str] = super().register(plugin, name)
+435         if ret:
+436             self.hook.pytest_plugin_registered.call_historic(
+437                 kwargs=dict(plugin=plugin, manager=self)
+438             )
+439 
+440             if isinstance(plugin, types.ModuleType):
+441                 self.consider_module(plugin)
+442         return ret
+443 
+444     def getplugin(self, name: str):
+445         # Support deprecated naming because plugins (xdist e.g.) use it.
+446         plugin: Optional[_PluggyPlugin] = self.get_plugin(name)
+447         return plugin
+448 
+449     def hasplugin(self, name: str) -> bool:
+450         """Return whether a plugin with the given name is registered."""
+451         return bool(self.get_plugin(name))
+452 
+453     def pytest_configure(self, config: "Config") -> None:
+454         """:meta private:"""
+455         # XXX now that the pluginmanager exposes hookimpl(tryfirst...)
+456         # we should remove tryfirst/trylast as markers.
+457         config.addinivalue_line(
+458             "markers",
+459             "tryfirst: mark a hook implementation function such that the "
+460             "plugin machinery will try to call it first/as early as possible.",
+461         )
+462         config.addinivalue_line(
+463             "markers",
+464             "trylast: mark a hook implementation function such that the "
+465             "plugin machinery will try to call it last/as late as possible.",
+466         )
+467         self._configured = True
+468 
+469     #
+470     # Internal API for local conftest plugin handling.
+471     #
+472     def _set_initial_conftests(self, namespace: argparse.Namespace) -> None:
+473         """Load initial conftest files given a preparsed "namespace".
+474 
+475         As conftest files may add their own command line options which have
+476         arguments ('--my-opt somepath') we might get some false positives.
+477         All builtin and 3rd party plugins will have been loaded, however, so
+478         common options will not confuse our logic here.
+479         """
+480         current = py.path.local()
+481         self._confcutdir = (
+482             current.join(namespace.confcutdir, abs=True)
+483             if namespace.confcutdir
+484             else None
+485         )
+486         self._noconftest = namespace.noconftest
+487         self._using_pyargs = namespace.pyargs
+488         testpaths = namespace.file_or_dir
+489         foundanchor = False
+490         for testpath in testpaths:
+491             path = str(testpath)
+492             # remove node-id syntax
+493             i = path.find("::")
+494             if i != -1:
+495                 path = path[:i]
+496             anchor = current.join(path, abs=1)
+497             if anchor.exists():  # we found some file object
+498                 self._try_load_conftest(anchor, namespace.importmode)
+499                 foundanchor = True
+500         if not foundanchor:
+501             self._try_load_conftest(current, namespace.importmode)
+502 
+503     def _try_load_conftest(
+504         self, anchor: py.path.local, importmode: Union[str, ImportMode]
+505     ) -> None:
+506         self._getconftestmodules(anchor, importmode)
+507         # let's also consider test* subdirs
+508         if anchor.check(dir=1):
+509             for x in anchor.listdir("test*"):
+510                 if x.check(dir=1):
+511                     self._getconftestmodules(x, importmode)
+512 
+513     @lru_cache(maxsize=128)
+514     def _getconftestmodules(
+515         self, path: py.path.local, importmode: Union[str, ImportMode],
+516     ) -> List[types.ModuleType]:
+517         if self._noconftest:
+518             return []
+519 
+520         if path.isfile():
+521             directory = path.dirpath()
+522         else:
+523             directory = path
+524 
+525         # XXX these days we may rather want to use config.rootpath
+526         # and allow users to opt into looking into the rootdir parent
+527         # directories instead of requiring to specify confcutdir.
+528         clist = []
+529         for parent in directory.parts():
+530             if self._confcutdir and self._confcutdir.relto(parent):
+531                 continue
+532             conftestpath = parent.join("conftest.py")
+533             if conftestpath.isfile():
+534                 mod = self._importconftest(conftestpath, importmode)
+535                 clist.append(mod)
+536         self._dirpath2confmods[directory] = clist
+537         return clist
+538 
+539     def _rget_with_confmod(
+540         self, name: str, path: py.path.local, importmode: Union[str, ImportMode],
+541     ) -> Tuple[types.ModuleType, Any]:
+542         modules = self._getconftestmodules(path, importmode)
+543         for mod in reversed(modules):
+544             try:
+545                 return mod, getattr(mod, name)
+546             except AttributeError:
+547                 continue
+548         raise KeyError(name)
+549 
+550     def _importconftest(
+551         self, conftestpath: py.path.local, importmode: Union[str, ImportMode],
+552     ) -> types.ModuleType:
+553         # Use a resolved Path object as key to avoid loading the same conftest
+554         # twice with build systems that create build directories containing
+555         # symlinks to actual files.
+556         # Using Path().resolve() is better than py.path.realpath because
+557         # it resolves to the correct path/drive in case-insensitive file systems (#5792)
+558         key = Path(str(conftestpath)).resolve()
+559 
+560         with contextlib.suppress(KeyError):
+561             return self._conftestpath2mod[key]
+562 
+563         pkgpath = conftestpath.pypkgpath()
+564         if pkgpath is None:
+565             _ensure_removed_sysmodule(conftestpath.purebasename)
+566 
+567         try:
+568             mod = import_path(conftestpath, mode=importmode)
+569         except Exception as e:
+570             assert e.__traceback__ is not None
+571             exc_info = (type(e), e, e.__traceback__)
+572             raise ConftestImportFailure(conftestpath, exc_info) from e
+573 
+574         self._check_non_top_pytest_plugins(mod, conftestpath)
+575 
+576         self._conftest_plugins.add(mod)
+577         self._conftestpath2mod[key] = mod
+578         dirpath = conftestpath.dirpath()
+579         if dirpath in self._dirpath2confmods:
+580             for path, mods in self._dirpath2confmods.items():
+581                 if path and path.relto(dirpath) or path == dirpath:
+582                     assert mod not in mods
+583                     mods.append(mod)
+584         self.trace(f"loading conftestmodule {mod!r}")
+585         self.consider_conftest(mod)
+586         return mod
+587 
+588     def _check_non_top_pytest_plugins(
+589         self, mod: types.ModuleType, conftestpath: py.path.local,
+590     ) -> None:
+591         if (
+592             hasattr(mod, "pytest_plugins")
+593             and self._configured
+594             and not self._using_pyargs
+595         ):
+596             msg = (
+597                 "Defining 'pytest_plugins' in a non-top-level conftest is no longer supported:\n"
+598                 "It affects the entire test suite instead of just below the conftest as expected.\n"
+599                 "  {}\n"
+600                 "Please move it to a top level conftest file at the rootdir:\n"
+601                 "  {}\n"
+602                 "For more information, visit:\n"
+603                 "  https://docs.pytest.org/en/stable/deprecations.html#pytest-plugins-in-non-top-level-conftest-files"
+604             )
+605             fail(msg.format(conftestpath, self._confcutdir), pytrace=False)
+606 
+607     #
+608     # API for bootstrapping plugin loading
+609     #
+610     #
+611 
+612     def consider_preparse(
+613         self, args: Sequence[str], *, exclude_only: bool = False
+614     ) -> None:
+615         i = 0
+616         n = len(args)
+617         while i < n:
+618             opt = args[i]
+619             i += 1
+620             if isinstance(opt, str):
+621                 if opt == "-p":
+622                     try:
+623                         parg = args[i]
+624                     except IndexError:
+625                         return
+626                     i += 1
+627                 elif opt.startswith("-p"):
+628                     parg = opt[2:]
+629                 else:
+630                     continue
+631                 if exclude_only and not parg.startswith("no:"):
+632                     continue
+633                 self.consider_pluginarg(parg)
+634 
+635     def consider_pluginarg(self, arg: str) -> None:
+636         if arg.startswith("no:"):
+637             name = arg[3:]
+638             if name in essential_plugins:
+639                 raise UsageError("plugin %s cannot be disabled" % name)
+640 
+641             # PR #4304: remove stepwise if cacheprovider is blocked.
+642             if name == "cacheprovider":
+643                 self.set_blocked("stepwise")
+644                 self.set_blocked("pytest_stepwise")
+645 
+646             self.set_blocked(name)
+647             if not name.startswith("pytest_"):
+648                 self.set_blocked("pytest_" + name)
+649         else:
+650             name = arg
+651             # Unblock the plugin.  None indicates that it has been blocked.
+652             # There is no interface with pluggy for this.
+653             if self._name2plugin.get(name, -1) is None:
+654                 del self._name2plugin[name]
+655             if not name.startswith("pytest_"):
+656                 if self._name2plugin.get("pytest_" + name, -1) is None:
+657                     del self._name2plugin["pytest_" + name]
+658             self.import_plugin(arg, consider_entry_points=True)
+659 
+660     def consider_conftest(self, conftestmodule: types.ModuleType) -> None:
+661         self.register(conftestmodule, name=conftestmodule.__file__)
+662 
+663     def consider_env(self) -> None:
+664         self._import_plugin_specs(os.environ.get("PYTEST_PLUGINS"))
+665 
+666     def consider_module(self, mod: types.ModuleType) -> None:
+667         self._import_plugin_specs(getattr(mod, "pytest_plugins", []))
+668 
+669     def _import_plugin_specs(
+670         self, spec: Union[None, types.ModuleType, str, Sequence[str]]
+671     ) -> None:
+672         plugins = _get_plugin_specs_as_list(spec)
+673         for import_spec in plugins:
+674             self.import_plugin(import_spec)
+675 
+676     def import_plugin(self, modname: str, consider_entry_points: bool = False) -> None:
+677         """Import a plugin with ``modname``.
+678 
+679         If ``consider_entry_points`` is True, entry point names are also
+680         considered to find a plugin.
+681         """
+682         # Most often modname refers to builtin modules, e.g. "pytester",
+683         # "terminal" or "capture".  Those plugins are registered under their
+684         # basename for historic purposes but must be imported with the
+685         # _pytest prefix.
+686         assert isinstance(modname, str), (
+687             "module name as text required, got %r" % modname
+688         )
+689         if self.is_blocked(modname) or self.get_plugin(modname) is not None:
+690             return
+691 
+692         importspec = "_pytest." + modname if modname in builtin_plugins else modname
+693         self.rewrite_hook.mark_rewrite(importspec)
+694 
+695         if consider_entry_points:
+696             loaded = self.load_setuptools_entrypoints("pytest11", name=modname)
+697             if loaded:
+698                 return
+699 
+700         try:
+701             __import__(importspec)
+702         except ImportError as e:
+703             raise ImportError(
+704                 'Error importing plugin "{}": {}'.format(modname, str(e.args[0]))
+705             ).with_traceback(e.__traceback__) from e
+706 
+707         except Skipped as e:
+708             self.skipped_plugins.append((modname, e.msg or ""))
+709         else:
+710             mod = sys.modules[importspec]
+711             self.register(mod, modname)
+
+</code><intended_behavior>Implement a new method or enhance an existing one within the `PytestPluginManager` to check for the Python version (`sys.version_info`). If Python 3.8 or higher is detected, the method should set `sys.unraisablehook` to a custom function designed by pytest. This function will be responsible for capturing unraisable exceptions and associating them with the tests in which they occurred. The implementation must ensure that this behavior is engaged only when pytest is running tests to avoid side-effects during plugin or pytest initialization phases. This approach will integrate the new Python 3.8 feature into pytest's test handling mechanisms without disrupting existing functionalities.</intended_behavior>]
+2026-01-14 15:41:22.383 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-14 15:41:22.383 | INFO     | Search-only: skipping patch selection
+2026-01-14 15:41:22.451 | INFO     | Task pytest-dev__pytest-8055 completed successfully.
+2026-01-14 15:41:22.452 | INFO     | No patch generated. You can try running ACR again.

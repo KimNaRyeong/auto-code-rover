@@ -1,0 +1,567 @@
+2026-01-15 05:53:36.999 | INFO     | Starting overall retry 0 with model gpt-4-0125-preview
+2026-01-15 05:53:40.291 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=389, output_tokens=12, cost=0.004250
+2026-01-15 05:53:40.292 | INFO     | Test agent decides that the issue statement does not contain reproduction steps; skipping reproducer tracing
+2026-01-15 05:53:40.297 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 05:53:47.737 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=696, output_tokens=329, cost=0.016830
+2026-01-15 05:53:47.744 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 05:53:51.385 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=683, output_tokens=100, cost=0.009830
+2026-01-15 05:53:51.387 | DEBUG    | Extracted a valid json.
+2026-01-15 05:53:51.388 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [
+        "search_class(\"SearchIndex\")",
+        "search_class(\"IndexBuilder\")",
+        "search_method(\"build_index\")",
+        "search_method(\"generate_index\")",
+        "search_method(\"search_results\")",
+        "search_method(\"get_search_results\")",
+        "search_code(\".. index::\")",
+        "search_class(\"DirectiveParser\")",
+        "search_method(\"parse_directive\")"
+    ],
+    "bug_locations": []
+}
+2026-01-15 05:53:51.434 | DEBUG    | Obtained search results from API invocation. Going into next retrieval round.
+2026-01-15 05:53:51.435 | DEBUG    | <Agent search> Analyzing search results.
+2026-01-15 05:54:07.592 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=2091, output_tokens=759, cost=0.043680
+2026-01-15 05:54:07.603 | DEBUG    | <Agent search> Selecting APIs to call.
+2026-01-15 05:54:13.720 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=3066, output_tokens=241, cost=0.037890
+2026-01-15 05:54:13.725 | DEBUG    | Trying to convert API calls/bug locations into json. Try 1 of 5.
+2026-01-15 05:54:19.744 | INFO     | Model (gpt-4-0125-preview) API request cost info: input_tokens=595, output_tokens=173, cost=0.011140
+2026-01-15 05:54:19.745 | DEBUG    | Extracted a valid json.
+2026-01-15 05:54:19.745 | DEBUG    | Agent proxy return the following json: {
+    "API_calls": [],
+    "bug_locations": [
+        {
+            "file": "sphinx/search/__init__.py",
+            "class": "IndexBuilder",
+            "method": "",
+            "intended_behavior": "To resolve the issue, `IndexBuilder` might need modifications or additional methods to better process and integrate index directives (`.. index::`) into the search index. The enhancements should allow the search engine to recognize and prioritize content marked with index directives, especially with the bang notation (`!`) for manual search result boosting. This could involve a new method for parsing and incorporating index directive content into the indexing process in a way that such entries are given higher priority or made more visible in search results. Importantly, these enhancements should not disrupt the existing functionality of building and managing the search index for Sphinx documentation."
+        }
+    ]
+}
+2026-01-15 05:54:19.750 | DEBUG    | Bug location extracted successfully: [<file>sphinx/search/__init__.py</file>
+<class>IndexBuilder</class>
+<method>None</method>
+<code>
+227 class IndexBuilder:
+228     """
+229     Helper class that creates a search index based on the doctrees
+230     passed to the `feed` method.
+231     """
+232     formats = {
+233         'json':     json,
+234         'pickle':   pickle
+235     }
+236 
+237     def __init__(self, env: BuildEnvironment, lang: str, options: Dict, scoring: str) -> None:
+238         self.env = env
+239         self._titles: Dict[str, str] = {}           # docname -> title
+240         self._filenames: Dict[str, str] = {}        # docname -> filename
+241         self._mapping: Dict[str, Set[str]] = {}     # stemmed word -> set(docname)
+242         # stemmed words in titles -> set(docname)
+243         self._title_mapping: Dict[str, Set[str]] = {}
+244         self._all_titles: Dict[str, List[Tuple[str, str]]] = {}  # docname -> all titles
+245         self._stem_cache: Dict[str, str] = {}       # word -> stemmed word
+246         self._objtypes: Dict[Tuple[str, str], int] = {}     # objtype -> index
+247         # objtype index -> (domain, type, objname (localized))
+248         self._objnames: Dict[int, Tuple[str, str, str]] = {}
+249         # add language-specific SearchLanguage instance
+250         lang_class = languages.get(lang)
+251 
+252         # fallback; try again with language-code
+253         if lang_class is None and '_' in lang:
+254             lang_class = languages.get(lang.split('_')[0])
+255 
+256         if lang_class is None:
+257             self.lang: SearchLanguage = SearchEnglish(options)
+258         elif isinstance(lang_class, str):
+259             module, classname = lang_class.rsplit('.', 1)
+260             lang_class: Type[SearchLanguage] = getattr(import_module(module), classname)  # type: ignore[no-redef]
+261             self.lang = lang_class(options)  # type: ignore[operator]
+262         else:
+263             # it's directly a class (e.g. added by app.add_search_language)
+264             self.lang = lang_class(options)
+265 
+266         if scoring:
+267             with open(scoring, 'rb') as fp:
+268                 self.js_scorer_code = fp.read().decode()
+269         else:
+270             self.js_scorer_code = ''
+271         self.js_splitter_code = ""
+272 
+273     def load(self, stream: IO, format: Any) -> None:
+274         """Reconstruct from frozen data."""
+275         if format == "jsdump":
+276             warnings.warn("format=jsdump is deprecated, use json instead",
+277                           RemovedInSphinx70Warning, stacklevel=2)
+278             format = self.formats["json"]
+279         elif isinstance(format, str):
+280             format = self.formats[format]
+281         frozen = format.load(stream)
+282         # if an old index is present, we treat it as not existing.
+283         if not isinstance(frozen, dict) or \
+284            frozen.get('envversion') != self.env.version:
+285             raise ValueError('old format')
+286         index2fn = frozen['docnames']
+287         self._filenames = dict(zip(index2fn, frozen['filenames']))
+288         self._titles = dict(zip(index2fn, frozen['titles']))
+289         self._all_titles = {}
+290 
+291         for title, doc_tuples in frozen['alltitles'].items():
+292             for doc, titleid in doc_tuples:
+293                 self._all_titles.setdefault(index2fn[doc], []).append((title, titleid))
+294 
+295         def load_terms(mapping: Dict[str, Any]) -> Dict[str, Set[str]]:
+296             rv = {}
+297             for k, v in mapping.items():
+298                 if isinstance(v, int):
+299                     rv[k] = {index2fn[v]}
+300                 else:
+301                     rv[k] = {index2fn[i] for i in v}
+302             return rv
+303 
+304         self._mapping = load_terms(frozen['terms'])
+305         self._title_mapping = load_terms(frozen['titleterms'])
+306         # no need to load keywords/objtypes
+307 
+308     def dump(self, stream: IO, format: Any) -> None:
+309         """Dump the frozen index to a stream."""
+310         if format == "jsdump":
+311             warnings.warn("format=jsdump is deprecated, use json instead",
+312                           RemovedInSphinx70Warning, stacklevel=2)
+313             format = self.formats["json"]
+314         elif isinstance(format, str):
+315             format = self.formats[format]
+316         format.dump(self.freeze(), stream)
+317 
+318     def get_objects(self, fn2index: Dict[str, int]
+319                     ) -> Dict[str, List[Tuple[int, int, int, str, str]]]:
+320         rv: Dict[str, List[Tuple[int, int, int, str, str]]] = {}
+321         otypes = self._objtypes
+322         onames = self._objnames
+323         for domainname, domain in sorted(self.env.domains.items()):
+324             for fullname, dispname, type, docname, anchor, prio in \
+325                     sorted(domain.get_objects()):
+326                 if docname not in fn2index:
+327                     continue
+328                 if prio < 0:
+329                     continue
+330                 fullname = html.escape(fullname)
+331                 dispname = html.escape(dispname)
+332                 prefix, _, name = dispname.rpartition('.')
+333                 plist = rv.setdefault(prefix, [])
+334                 try:
+335                     typeindex = otypes[domainname, type]
+336                 except KeyError:
+337                     typeindex = len(otypes)
+338                     otypes[domainname, type] = typeindex
+339                     otype = domain.object_types.get(type)
+340                     if otype:
+341                         # use str() to fire translation proxies
+342                         onames[typeindex] = (domainname, type,
+343                                              str(domain.get_type_name(otype)))
+344                     else:
+345                         onames[typeindex] = (domainname, type, type)
+346                 if anchor == fullname:
+347                     shortanchor = ''
+348                 elif anchor == type + '-' + fullname:
+349                     shortanchor = '-'
+350                 else:
+351                     shortanchor = anchor
+352                 plist.append((fn2index[docname], typeindex, prio, shortanchor, name))
+353         return rv
+354 
+355     def get_terms(self, fn2index: Dict) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+356         rvs: Tuple[Dict[str, List[str]], Dict[str, List[str]]] = ({}, {})
+357         for rv, mapping in zip(rvs, (self._mapping, self._title_mapping)):
+358             for k, v in mapping.items():
+359                 if len(v) == 1:
+360                     fn, = v
+361                     if fn in fn2index:
+362                         rv[k] = fn2index[fn]
+363                 else:
+364                     rv[k] = sorted([fn2index[fn] for fn in v if fn in fn2index])
+365         return rvs
+366 
+367     def freeze(self) -> Dict[str, Any]:
+368         """Create a usable data structure for serializing."""
+369         docnames, titles = zip(*sorted(self._titles.items()))
+370         filenames = [self._filenames.get(docname) for docname in docnames]
+371         fn2index = {f: i for (i, f) in enumerate(docnames)}
+372         terms, title_terms = self.get_terms(fn2index)
+373 
+374         objects = self.get_objects(fn2index)  # populates _objtypes
+375         objtypes = {v: k[0] + ':' + k[1] for (k, v) in self._objtypes.items()}
+376         objnames = self._objnames
+377 
+378         alltitles: Dict[str, List[Tuple[int, str]]] = {}
+379         for docname, titlelist in self._all_titles.items():
+380             for title, titleid in titlelist:
+381                 alltitles.setdefault(title, []).append((fn2index[docname],  titleid))
+382 
+383         return dict(docnames=docnames, filenames=filenames, titles=titles, terms=terms,
+384                     objects=objects, objtypes=objtypes, objnames=objnames,
+385                     titleterms=title_terms, envversion=self.env.version,
+386                     alltitles=alltitles)
+387 
+388     def label(self) -> str:
+389         return "%s (code: %s)" % (self.lang.language_name, self.lang.lang)
+390 
+391     def prune(self, docnames: Iterable[str]) -> None:
+392         """Remove data for all docnames not in the list."""
+393         new_titles = {}
+394         new_alltitles = {}
+395         new_filenames = {}
+396         for docname in docnames:
+397             if docname in self._titles:
+398                 new_titles[docname] = self._titles[docname]
+399                 new_alltitles[docname] = self._all_titles[docname]
+400                 new_filenames[docname] = self._filenames[docname]
+401         self._titles = new_titles
+402         self._filenames = new_filenames
+403         self._all_titles = new_alltitles
+404         for wordnames in self._mapping.values():
+405             wordnames.intersection_update(docnames)
+406         for wordnames in self._title_mapping.values():
+407             wordnames.intersection_update(docnames)
+408 
+409     def feed(self, docname: str, filename: str, title: str, doctree: nodes.document) -> None:
+410         """Feed a doctree to the index."""
+411         self._titles[docname] = title
+412         self._filenames[docname] = filename
+413 
+414         visitor = WordCollector(doctree, self.lang)
+415         doctree.walk(visitor)
+416 
+417         # memoize self.lang.stem
+418         def stem(word: str) -> str:
+419             try:
+420                 return self._stem_cache[word]
+421             except KeyError:
+422                 self._stem_cache[word] = self.lang.stem(word).lower()
+423                 return self._stem_cache[word]
+424         _filter = self.lang.word_filter
+425 
+426         self._all_titles[docname] = visitor.found_titles
+427 
+428         for word in visitor.found_title_words:
+429             stemmed_word = stem(word)
+430             if _filter(stemmed_word):
+431                 self._title_mapping.setdefault(stemmed_word, set()).add(docname)
+432             elif _filter(word): # stemmer must not remove words from search index
+433                 self._title_mapping.setdefault(word, set()).add(docname)
+434 
+435         for word in visitor.found_words:
+436             stemmed_word = stem(word)
+437             # again, stemmer must not remove words from search index
+438             if not _filter(stemmed_word) and _filter(word):
+439                 stemmed_word = word
+440             already_indexed = docname in self._title_mapping.get(stemmed_word, set())
+441             if _filter(stemmed_word) and not already_indexed:
+442                 self._mapping.setdefault(stemmed_word, set()).add(docname)
+443 
+444     def context_for_searchtool(self) -> Dict[str, Any]:
+445         if self.lang.js_splitter_code:
+446             js_splitter_code = self.lang.js_splitter_code
+447         else:
+448             js_splitter_code = self.js_splitter_code
+449 
+450         return {
+451             'search_language_stemming_code': self.get_js_stemmer_code(),
+452             'search_language_stop_words': json.dumps(sorted(self.lang.stopwords)),
+453             'search_scorer_tool': self.js_scorer_code,
+454             'search_word_splitter_code': js_splitter_code,
+455         }
+456 
+457     def get_js_stemmer_rawcodes(self) -> List[str]:
+458         """Returns a list of non-minified stemmer JS files to copy."""
+459         if self.lang.js_stemmer_rawcode:
+460             return [
+461                 path.join(package_dir, 'search', 'non-minified-js', fname)
+462                 for fname in ('base-stemmer.js', self.lang.js_stemmer_rawcode)
+463             ]
+464         else:
+465             return []
+466 
+467     def get_js_stemmer_rawcode(self) -> Optional[str]:
+468         return None
+469 
+470     def get_js_stemmer_code(self) -> str:
+471         """Returns JS code that will be inserted into language_data.js."""
+472         if self.lang.js_stemmer_rawcode:
+473             js_dir = path.join(package_dir, 'search', 'minified-js')
+474             with open(path.join(js_dir, 'base-stemmer.js'), encoding='utf-8') as js_file:
+475                 base_js = js_file.read()
+476             with open(path.join(js_dir, self.lang.js_stemmer_rawcode), encoding='utf-8') as js_file:
+477                 language_js = js_file.read()
+478             return ('%s\n%s\nStemmer = %sStemmer;' %
+479                     (base_js, language_js, self.lang.language_name))
+480         else:
+481             return self.lang.js_stemmer_code
+
+</code><intended_behavior>To resolve the issue, `IndexBuilder` might need modifications or additional methods to better process and integrate index directives (`.. index::`) into the search index. The enhancements should allow the search engine to recognize and prioritize content marked with index directives, especially with the bang notation (`!`) for manual search result boosting. This could involve a new method for parsing and incorporating index directive content into the indexing process in a way that such entries are given higher priority or made more visible in search results. Importantly, these enhancements should not disrupt the existing functionality of building and managing the search index for Sphinx documentation.</intended_behavior>]
+2026-01-15 05:54:19.750 | INFO     | Search completed. Bug locations: [<file>sphinx/search/__init__.py</file>
+<class>IndexBuilder</class>
+<method>None</method>
+<code>
+227 class IndexBuilder:
+228     """
+229     Helper class that creates a search index based on the doctrees
+230     passed to the `feed` method.
+231     """
+232     formats = {
+233         'json':     json,
+234         'pickle':   pickle
+235     }
+236 
+237     def __init__(self, env: BuildEnvironment, lang: str, options: Dict, scoring: str) -> None:
+238         self.env = env
+239         self._titles: Dict[str, str] = {}           # docname -> title
+240         self._filenames: Dict[str, str] = {}        # docname -> filename
+241         self._mapping: Dict[str, Set[str]] = {}     # stemmed word -> set(docname)
+242         # stemmed words in titles -> set(docname)
+243         self._title_mapping: Dict[str, Set[str]] = {}
+244         self._all_titles: Dict[str, List[Tuple[str, str]]] = {}  # docname -> all titles
+245         self._stem_cache: Dict[str, str] = {}       # word -> stemmed word
+246         self._objtypes: Dict[Tuple[str, str], int] = {}     # objtype -> index
+247         # objtype index -> (domain, type, objname (localized))
+248         self._objnames: Dict[int, Tuple[str, str, str]] = {}
+249         # add language-specific SearchLanguage instance
+250         lang_class = languages.get(lang)
+251 
+252         # fallback; try again with language-code
+253         if lang_class is None and '_' in lang:
+254             lang_class = languages.get(lang.split('_')[0])
+255 
+256         if lang_class is None:
+257             self.lang: SearchLanguage = SearchEnglish(options)
+258         elif isinstance(lang_class, str):
+259             module, classname = lang_class.rsplit('.', 1)
+260             lang_class: Type[SearchLanguage] = getattr(import_module(module), classname)  # type: ignore[no-redef]
+261             self.lang = lang_class(options)  # type: ignore[operator]
+262         else:
+263             # it's directly a class (e.g. added by app.add_search_language)
+264             self.lang = lang_class(options)
+265 
+266         if scoring:
+267             with open(scoring, 'rb') as fp:
+268                 self.js_scorer_code = fp.read().decode()
+269         else:
+270             self.js_scorer_code = ''
+271         self.js_splitter_code = ""
+272 
+273     def load(self, stream: IO, format: Any) -> None:
+274         """Reconstruct from frozen data."""
+275         if format == "jsdump":
+276             warnings.warn("format=jsdump is deprecated, use json instead",
+277                           RemovedInSphinx70Warning, stacklevel=2)
+278             format = self.formats["json"]
+279         elif isinstance(format, str):
+280             format = self.formats[format]
+281         frozen = format.load(stream)
+282         # if an old index is present, we treat it as not existing.
+283         if not isinstance(frozen, dict) or \
+284            frozen.get('envversion') != self.env.version:
+285             raise ValueError('old format')
+286         index2fn = frozen['docnames']
+287         self._filenames = dict(zip(index2fn, frozen['filenames']))
+288         self._titles = dict(zip(index2fn, frozen['titles']))
+289         self._all_titles = {}
+290 
+291         for title, doc_tuples in frozen['alltitles'].items():
+292             for doc, titleid in doc_tuples:
+293                 self._all_titles.setdefault(index2fn[doc], []).append((title, titleid))
+294 
+295         def load_terms(mapping: Dict[str, Any]) -> Dict[str, Set[str]]:
+296             rv = {}
+297             for k, v in mapping.items():
+298                 if isinstance(v, int):
+299                     rv[k] = {index2fn[v]}
+300                 else:
+301                     rv[k] = {index2fn[i] for i in v}
+302             return rv
+303 
+304         self._mapping = load_terms(frozen['terms'])
+305         self._title_mapping = load_terms(frozen['titleterms'])
+306         # no need to load keywords/objtypes
+307 
+308     def dump(self, stream: IO, format: Any) -> None:
+309         """Dump the frozen index to a stream."""
+310         if format == "jsdump":
+311             warnings.warn("format=jsdump is deprecated, use json instead",
+312                           RemovedInSphinx70Warning, stacklevel=2)
+313             format = self.formats["json"]
+314         elif isinstance(format, str):
+315             format = self.formats[format]
+316         format.dump(self.freeze(), stream)
+317 
+318     def get_objects(self, fn2index: Dict[str, int]
+319                     ) -> Dict[str, List[Tuple[int, int, int, str, str]]]:
+320         rv: Dict[str, List[Tuple[int, int, int, str, str]]] = {}
+321         otypes = self._objtypes
+322         onames = self._objnames
+323         for domainname, domain in sorted(self.env.domains.items()):
+324             for fullname, dispname, type, docname, anchor, prio in \
+325                     sorted(domain.get_objects()):
+326                 if docname not in fn2index:
+327                     continue
+328                 if prio < 0:
+329                     continue
+330                 fullname = html.escape(fullname)
+331                 dispname = html.escape(dispname)
+332                 prefix, _, name = dispname.rpartition('.')
+333                 plist = rv.setdefault(prefix, [])
+334                 try:
+335                     typeindex = otypes[domainname, type]
+336                 except KeyError:
+337                     typeindex = len(otypes)
+338                     otypes[domainname, type] = typeindex
+339                     otype = domain.object_types.get(type)
+340                     if otype:
+341                         # use str() to fire translation proxies
+342                         onames[typeindex] = (domainname, type,
+343                                              str(domain.get_type_name(otype)))
+344                     else:
+345                         onames[typeindex] = (domainname, type, type)
+346                 if anchor == fullname:
+347                     shortanchor = ''
+348                 elif anchor == type + '-' + fullname:
+349                     shortanchor = '-'
+350                 else:
+351                     shortanchor = anchor
+352                 plist.append((fn2index[docname], typeindex, prio, shortanchor, name))
+353         return rv
+354 
+355     def get_terms(self, fn2index: Dict) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+356         rvs: Tuple[Dict[str, List[str]], Dict[str, List[str]]] = ({}, {})
+357         for rv, mapping in zip(rvs, (self._mapping, self._title_mapping)):
+358             for k, v in mapping.items():
+359                 if len(v) == 1:
+360                     fn, = v
+361                     if fn in fn2index:
+362                         rv[k] = fn2index[fn]
+363                 else:
+364                     rv[k] = sorted([fn2index[fn] for fn in v if fn in fn2index])
+365         return rvs
+366 
+367     def freeze(self) -> Dict[str, Any]:
+368         """Create a usable data structure for serializing."""
+369         docnames, titles = zip(*sorted(self._titles.items()))
+370         filenames = [self._filenames.get(docname) for docname in docnames]
+371         fn2index = {f: i for (i, f) in enumerate(docnames)}
+372         terms, title_terms = self.get_terms(fn2index)
+373 
+374         objects = self.get_objects(fn2index)  # populates _objtypes
+375         objtypes = {v: k[0] + ':' + k[1] for (k, v) in self._objtypes.items()}
+376         objnames = self._objnames
+377 
+378         alltitles: Dict[str, List[Tuple[int, str]]] = {}
+379         for docname, titlelist in self._all_titles.items():
+380             for title, titleid in titlelist:
+381                 alltitles.setdefault(title, []).append((fn2index[docname],  titleid))
+382 
+383         return dict(docnames=docnames, filenames=filenames, titles=titles, terms=terms,
+384                     objects=objects, objtypes=objtypes, objnames=objnames,
+385                     titleterms=title_terms, envversion=self.env.version,
+386                     alltitles=alltitles)
+387 
+388     def label(self) -> str:
+389         return "%s (code: %s)" % (self.lang.language_name, self.lang.lang)
+390 
+391     def prune(self, docnames: Iterable[str]) -> None:
+392         """Remove data for all docnames not in the list."""
+393         new_titles = {}
+394         new_alltitles = {}
+395         new_filenames = {}
+396         for docname in docnames:
+397             if docname in self._titles:
+398                 new_titles[docname] = self._titles[docname]
+399                 new_alltitles[docname] = self._all_titles[docname]
+400                 new_filenames[docname] = self._filenames[docname]
+401         self._titles = new_titles
+402         self._filenames = new_filenames
+403         self._all_titles = new_alltitles
+404         for wordnames in self._mapping.values():
+405             wordnames.intersection_update(docnames)
+406         for wordnames in self._title_mapping.values():
+407             wordnames.intersection_update(docnames)
+408 
+409     def feed(self, docname: str, filename: str, title: str, doctree: nodes.document) -> None:
+410         """Feed a doctree to the index."""
+411         self._titles[docname] = title
+412         self._filenames[docname] = filename
+413 
+414         visitor = WordCollector(doctree, self.lang)
+415         doctree.walk(visitor)
+416 
+417         # memoize self.lang.stem
+418         def stem(word: str) -> str:
+419             try:
+420                 return self._stem_cache[word]
+421             except KeyError:
+422                 self._stem_cache[word] = self.lang.stem(word).lower()
+423                 return self._stem_cache[word]
+424         _filter = self.lang.word_filter
+425 
+426         self._all_titles[docname] = visitor.found_titles
+427 
+428         for word in visitor.found_title_words:
+429             stemmed_word = stem(word)
+430             if _filter(stemmed_word):
+431                 self._title_mapping.setdefault(stemmed_word, set()).add(docname)
+432             elif _filter(word): # stemmer must not remove words from search index
+433                 self._title_mapping.setdefault(word, set()).add(docname)
+434 
+435         for word in visitor.found_words:
+436             stemmed_word = stem(word)
+437             # again, stemmer must not remove words from search index
+438             if not _filter(stemmed_word) and _filter(word):
+439                 stemmed_word = word
+440             already_indexed = docname in self._title_mapping.get(stemmed_word, set())
+441             if _filter(stemmed_word) and not already_indexed:
+442                 self._mapping.setdefault(stemmed_word, set()).add(docname)
+443 
+444     def context_for_searchtool(self) -> Dict[str, Any]:
+445         if self.lang.js_splitter_code:
+446             js_splitter_code = self.lang.js_splitter_code
+447         else:
+448             js_splitter_code = self.js_splitter_code
+449 
+450         return {
+451             'search_language_stemming_code': self.get_js_stemmer_code(),
+452             'search_language_stop_words': json.dumps(sorted(self.lang.stopwords)),
+453             'search_scorer_tool': self.js_scorer_code,
+454             'search_word_splitter_code': js_splitter_code,
+455         }
+456 
+457     def get_js_stemmer_rawcodes(self) -> List[str]:
+458         """Returns a list of non-minified stemmer JS files to copy."""
+459         if self.lang.js_stemmer_rawcode:
+460             return [
+461                 path.join(package_dir, 'search', 'non-minified-js', fname)
+462                 for fname in ('base-stemmer.js', self.lang.js_stemmer_rawcode)
+463             ]
+464         else:
+465             return []
+466 
+467     def get_js_stemmer_rawcode(self) -> Optional[str]:
+468         return None
+469 
+470     def get_js_stemmer_code(self) -> str:
+471         """Returns JS code that will be inserted into language_data.js."""
+472         if self.lang.js_stemmer_rawcode:
+473             js_dir = path.join(package_dir, 'search', 'minified-js')
+474             with open(path.join(js_dir, 'base-stemmer.js'), encoding='utf-8') as js_file:
+475                 base_js = js_file.read()
+476             with open(path.join(js_dir, self.lang.js_stemmer_rawcode), encoding='utf-8') as js_file:
+477                 language_js = js_file.read()
+478             return ('%s\n%s\nStemmer = %sStemmer;' %
+479                     (base_js, language_js, self.lang.language_name))
+480         else:
+481             return self.lang.js_stemmer_code
+
+</code><intended_behavior>To resolve the issue, `IndexBuilder` might need modifications or additional methods to better process and integrate index directives (`.. index::`) into the search index. The enhancements should allow the search engine to recognize and prioritize content marked with index directives, especially with the bang notation (`!`) for manual search result boosting. This could involve a new method for parsing and incorporating index directive content into the indexing process in a way that such entries are given higher priority or made more visible in search results. Importantly, these enhancements should not disrupt the existing functionality of building and managing the search index for Sphinx documentation.</intended_behavior>]
+2026-01-15 05:54:19.750 | INFO     | Overall retry 0 succeeded; ending workflow
+2026-01-15 05:54:19.750 | INFO     | Search-only: skipping patch selection
+2026-01-15 05:54:19.829 | INFO     | Task sphinx-doc__sphinx-10819 completed successfully.
+2026-01-15 05:54:19.830 | INFO     | No patch generated. You can try running ACR again.
