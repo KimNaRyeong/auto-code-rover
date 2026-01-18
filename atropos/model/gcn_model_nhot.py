@@ -239,7 +239,7 @@ def train_and_test_model(dataset, criterion, output_dim, K, kf, lr, batch_size, 
         with open(result_file, "a+") as rf:
             rf.write(f'k={k}\n')
         
-        ckpt_base = os.path.join(dir_dict['trained_model'], str(k))
+        ckpt_base = os.path.join(dir_dict['trained_model'], dataset_type, str(k))
 
         print(f"==================For {k}=======================")
         
@@ -475,7 +475,7 @@ def save_checkpoint(model, path, meta=None):
 
 
 
-def main(dir_dict):
+def main(dir_dict, llm_model):
     set_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -513,16 +513,16 @@ def main(dir_dict):
     num_layer = 2
     num_epochs = 150
 
-    train_and_test_model(dataset_S, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_S", dir_dict)
-    train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict)
-    train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict)
+    train_and_test_model(dataset_S, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_S", dir_dict, llm_model)
+    train_and_test_model(dataset_F, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_F", dir_dict, llm_model)
+    train_and_test_model(dataset_FA, criterion, output_dim, K, kf, lr, batch_size, hidden_dim, dropout_p, num_layer, num_epochs, ks, result_file, device, "dataset_FA", dir_dict, llm_model)
 
-def get_dir_dict(label_criteria):    
+def get_dir_dict(label_criteria, model, truncation):    
     dir_dict = {
-        'data': f'../data/parallel/nhot/label_criteria_{label_criteria}',
-        'result': f'../results/parallel/nhot/label_criteria_{label_criteria}',
-        'trained_model': f'../trained_model/parallel/nhot/label_criteria_{label_criteria}',
-        'train_graph': f'../train_graph/parallel/nhot/label_criteria_{label_criteria}'
+        'data': f'./data/ablation/{truncation}/{model}/label_criteria_{label_criteria}',
+        'result': f'./results/ablation/{truncation}/{model}/label_criteria_{label_criteria}',
+        'trained_model': f'./trained_model/ablation/{truncation}/{model}/label_criteria_{label_criteria}',
+        'train_graph': f'./train_graph/ablation/{truncation}/{model}/label_criteria_{label_criteria}'
     }
 
     return dir_dict
@@ -531,8 +531,14 @@ def get_dir_dict(label_criteria):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--label_criteria', default=1, type=int)
+    parser.add_argument('-m', '--model', default='mixtral', type=str)
+    parser.add_argument('-t', '--truncation', default='parallel', type=str)
     args = parser.parse_args()
+    if args.model not in ['mixtral', 'gpt-4']:
+        raise ValueError("model should be 'mixtral' or 'gpt-4'")
+    if args.truncation not in ['parallel', 'sequential']:
+        raise ValueError("model should be 'parallel' or 'sequential'")
     
-    dir_dict = get_dir_dict(args.label_criteria)
+    dir_dict = get_dir_dict(args.label_criteria, args.model, args.truncation)
 
-    main(dir_dict)
+    main(dir_dict, args.model)

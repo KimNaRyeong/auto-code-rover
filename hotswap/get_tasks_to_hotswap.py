@@ -16,13 +16,15 @@ def get_prev_output_dir(task_id, base_dir):
 if __name__ == '__main__':
     resume_from = 8
 
-    predicted_incorrect_tasks_file = f'./predictions/k{resume_from}_tasks_to_rerun.json'
-    with open(predicted_incorrect_tasks_file, 'r') as f:
-        predicted_incorrect_tasks = json.load(f)
-        predicted_incorrect_tasks_list = []
+    # predicted_incorrect_tasks_file = f'./predictions/k{resume_from}_tasks_to_rerun.json'
+    # with open(predicted_incorrect_tasks_file, 'r') as f:
+    #     predicted_incorrect_tasks = json.load(f)
+    #     predicted_incorrect_tasks_list = []
 
-        for fold_idx, tasks in predicted_incorrect_tasks.items():
-            predicted_incorrect_tasks_list.extend(tasks)
+    #     for fold_idx, tasks in predicted_incorrect_tasks.items():
+    #         predicted_incorrect_tasks_list.extend(tasks)
+
+    predicted_incorrect_tasks_list = ['django__django-14667', 'scikit-learn__scikit-learn-10198', 'django__django-15128', 'sympy__sympy-23021', 'astropy__astropy-13668', 'sympy__sympy-21806', 'django__django-11555', 'sympy__sympy-18650', 'django__django-10316', 'django__django-11405', 'scikit-learn__scikit-learn-12784', 'scikit-learn__scikit-learn-12421', 'scikit-learn__scikit-learn-25500', 'django__django-15737', 'django__django-12148', 'scikit-learn__scikit-learn-13549', 'django__django-14880']
 
     k8_tasks_to_hotswap = {}
     for i in range(1, 6):
@@ -48,6 +50,6 @@ if __name__ == '__main__':
             if os.path.exists(eighth_search_file):
                 k8_tasks_to_hotswap[i].append(task)
     
-    output_file = './predictions/k8_tasks_to_hotswap_for_r.json'
+    output_file = './predictions/new_k8_tasks_to_hotswap_for_r.json'
     with open(output_file, 'w') as f:
         json.dump(k8_tasks_to_hotswap, f, indent=2)
