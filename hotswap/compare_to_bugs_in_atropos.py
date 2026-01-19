@@ -1,7 +1,7 @@
 import json
 
 original_file = '/home/kimnal0/auto-code-rover/hotswap/predictions/k8_tasks_to_rerun.json'
-new_file = '/home/kimnal0/atropos/hotswap/auto-code-rover/parallel_predictions/k6_tasks_to_rerun.json'
+new_file = '/home/kimnal0/atropos/hotswap/auto-code-rover/parallel_predictions/k8_tasks_to_rerun.json'
 
 with open(original_file, 'r') as f:
     original_results = json.load(f)
