@@ -24,8 +24,7 @@ if __name__ == '__main__':
     #     for fold_idx, tasks in predicted_incorrect_tasks.items():
     #         predicted_incorrect_tasks_list.extend(tasks)
 
-    predicted_incorrect_tasks_list = ['django__django-14667', 'scikit-learn__scikit-learn-10198', 'django__django-15128', 'sympy__sympy-23021', 'astropy__astropy-13668', 'sympy__sympy-21806', 'django__django-11555', 'sympy__sympy-18650', 'django__django-10316', 'django__django-11405', 'scikit-learn__scikit-learn-12784', 'scikit-learn__scikit-learn-12421', 'scikit-learn__scikit-learn-25500', 'django__django-15737', 'django__django-12148', 'scikit-learn__scikit-learn-13549', 'django__django-14880']
-
+    predicted_incorrect_tasks_list = ['django__django-11555', 'pytest-dev__pytest-9709', 'sympy__sympy-13757', 'scikit-learn__scikit-learn-25500', 'django__django-15737']
     k8_tasks_to_hotswap = {}
     for i in range(1, 6):
         k8_tasks_to_hotswap[i]= []
